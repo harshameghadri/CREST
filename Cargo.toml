@@ -1,0 +1,15 @@
+[package]
+name = "biopolars"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "biopolars"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.21.2", features = ["extension-module"] }
+pyo3-polars = { version = "0.15.0", features = ["derive"] }
+polars = { version = "0.41.3", default-features = false, features = ["lazy"] }
+serde = { version = "1", features = ["derive"] }
+statrs = "0.16.1"

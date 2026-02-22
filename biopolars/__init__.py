@@ -17,3 +17,12 @@ class BioPolarsExpr:
             function_name="log1p",
             is_elementwise=True,
         )
+
+    def wilcoxon(self, other_expr: pl.Expr) -> pl.Expr:
+        """Calculate Tie-Corrected Mann-Whitney U test natively in Rust."""
+        return register_plugin_function(
+            args=[self._expr.cast(pl.List(pl.Float32)), other_expr.cast(pl.List(pl.Float32))],
+            plugin_path=lib,
+            function_name="wilcoxon_rank_sum",
+            is_elementwise=True
+        )
