@@ -9,6 +9,13 @@ class BioPolarsExpr:
     def __init__(self, expr: pl.Expr):
         self._expr = expr
 
+    def normalize_cpm(self, cell_id_col: pl.Expr, target_sum: float = 10_000.0) -> pl.Expr:
+        """
+        Normalize counts to a target sum per cell (default 10,000 / CP10k).
+        Utilizes Polars native `.over()` syntax for maximum parallel performance.
+        """
+        return (self._expr / self._expr.sum().over(cell_id_col)) * target_sum
+
     def log1p(self) -> pl.Expr:
         """Calculate ln(1+x) using the native Rust Polar extension."""
         return register_plugin_function(
