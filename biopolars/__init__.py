@@ -33,3 +33,21 @@ class BioPolarsExpr:
             function_name="wilcoxon_rank_sum",
             is_elementwise=True
         )
+
+    def deseq2(self, size_factors: pl.Expr, design_matrix: pl.Expr, num_covariates: pl.Expr, dispersion: pl.Expr) -> pl.Expr:
+        """
+        Fit a Negative Binomial GLM using an Iteratively Reweighted Least Squares (IRLS) solver natively in Rust.
+        Outputs a List of Beta coefficients for each gene.
+        """
+        return register_plugin_function(
+            args=[
+                self._expr.cast(pl.List(pl.Float32)), 
+                size_factors.cast(pl.List(pl.Float32)),
+                design_matrix.cast(pl.List(pl.Float32)),
+                num_covariates.cast(pl.UInt32),
+                dispersion.cast(pl.Float32)
+            ],
+            plugin_path=lib,
+            function_name="deseq2_irls",
+            is_elementwise=True
+        )
