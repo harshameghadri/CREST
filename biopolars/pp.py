@@ -1,12 +1,13 @@
 import polars as pl
 from typing import Union
 
+from .core import BioFrame
+
 def highly_variable_genes(
-    lazy_df: pl.LazyFrame, 
+    adata: BioFrame, 
     n_top_genes: int = 2000, 
-    flavor: str = "seurat",
-    total_cells: int = None
-) -> pl.LazyFrame:
+    flavor: str = "seurat"
+) -> BioFrame:
     """
     Identifies highly variable genes across a streaming sparse Triplet dataframe.
     
@@ -21,8 +22,11 @@ def highly_variable_genes(
     # Note: .var() requires >1 observation. For sparse data, zeros are implicitly missing.
     # To compute accurate variance across ALL cells, we need the total number of cells.
     
-    if total_cells is None:
-        raise ValueError("total_cells must be provided to correctly calculate variance across implicit zeros.")
+    if adata.obs is None:
+        raise ValueError("BioFrame must have `.obs` cell metadata to determine 'total_cells' for valid zero-expanded variance.")
+    
+    total_cells = adata.obs.height
+    lazy_df = adata.X
     
     # Calculate true mean and variance accounting for structural zeros
     # True Mean = (Sum of counts) / Total Cells
@@ -51,5 +55,15 @@ def highly_variable_genes(
         .select("gene_id")
     )
     
-    # Filter the original massive streaming dataframe using an exact inner join
-    return lazy_df.join(top_genes, on="gene_id", how="inner")
+    # Filter the original massive streaming dataframe using a SemiJoin
+    # We update the `var` metadata as well to track which genes were selected
+    
+    # BioFrame zero-copy semi join internally
+    filtered_X = lazy_df.join(top_genes.lazy(), on="gene_id", how="semi")
+    
+    # Filter the var metadata
+    new_var = top_genes
+    if adata.var is not None:
+        new_var = adata.var.join(top_genes, on="gene_id", how="inner")
+        
+    return BioFrame(X=filtered_X, obs=adata.obs, var=new_var)

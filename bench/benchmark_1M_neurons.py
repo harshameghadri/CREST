@@ -51,12 +51,19 @@ normalized = df.join(cell_sums, on="cell_id").with_columns(
     pl.col("cpm").bio.log1p().alias("log1p_count")
 ])
 
-# 2. Compute Highly Variable Genes natively with zero-inflation correctly handled
-# Number of cells = 20,000 for this dataset
-num_cells = 20_000
-hvgs = biopolars.pp.highly_variable_genes(normalized, total_cells=num_cells)
+# 2. Build explicit metadata (obs) to formally encode the graph shape
+# In production, this would be loaded from a `.obs` CSV or AnnData
+unique_cells = df.select("cell_id").unique().collect()
+obs = unique_cells.with_columns(pl.lit("Unknown").alias("cluster"))
+print(f"BioFrame Initialization: Detected {obs.height} total cells.")
 
-result = hvgs.collect(engine="streaming")
+# Instantiate BioFrame V2
+adata = biopolars.BioFrame(X=normalized, obs=obs)
+
+# 3. Compute Highly Variable Genes natively with zero-inflation internally tracked
+hvgs = biopolars.pp.highly_variable_genes(adata)
+
+result = hvgs.X.collect(engine="streaming")
 
 mem_after = process.memory_info().rss
 t1 = time.time()

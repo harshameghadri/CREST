@@ -1,6 +1,7 @@
 import polars as pl
 from polars.plugins import register_plugin_function
 from pathlib import Path
+from .core import BioFrame
 
 lib = Path(__file__).parent
 
@@ -8,6 +9,19 @@ lib = Path(__file__).parent
 class BioPolarsExpr:
     def __init__(self, expr: pl.Expr):
         self._expr = expr
+        # State tracking for Implicit Zero expansion (e.g. true variance despite COO format)
+        self._n_cells: Optional[int] = None
+        self._n_genes: Optional[int] = None
+
+    def set_shape(self, n_cells: int, n_genes: int) -> pl.Expr:
+        """
+        Inject global dataset dimensions into the Polars lazy expression.
+        This is absolutely critical for calculating scientifically valid statistics 
+        (like Variance) on a sparse Triplet COO DataFrame where zeros are implicitly missing.
+        """
+        self._n_cells = n_cells
+        self._n_genes = n_genes
+        return self._expr
 
     def normalize_cpm(self, cell_id_col: pl.Expr, target_sum: float = 10_000.0) -> pl.Expr:
         """
@@ -49,5 +63,28 @@ class BioPolarsExpr:
             ],
             plugin_path=lib,
             function_name="deseq2_irls",
+            is_elementwise=True
+        )
+
+    def svd(self, gene_id_col: pl.Expr, count_col: pl.Expr, n_comps: int = 50) -> pl.Expr:
+        """
+        Computes Truncated Randomized SVD directly in Rust natively over Sparse Arrow Matrices,
+        bypassing Scipy and Python's GIL completely.
+        Expected usage: df.group_by("cell_id").agg(pl.col("cell_id").bio.svd(pl.col("gene_id"), pl.col("count")))
+        """
+        if self._n_cells is None or self._n_genes is None:
+            raise ValueError("`.bio.svd()` requires explicit dimensionality. Please call `.bio.set_shape(n_cells, n_genes)` first.")
+            
+        return register_plugin_function(
+            args=[
+                self._expr.cast(pl.List(pl.UInt32)),   # cell_ids 
+                gene_id_col.cast(pl.List(pl.UInt32)),  # gene_ids
+                count_col.cast(pl.List(pl.Float32)),   # counts
+                pl.lit(self._n_cells).cast(pl.UInt32), # metadata needed to construct the CSR shape internally
+                pl.lit(self._n_genes).cast(pl.UInt32),
+                pl.lit(n_comps).cast(pl.UInt32)
+            ],
+            plugin_path=lib,
+            function_name="sparse_randomized_svd",
             is_elementwise=True
         )
