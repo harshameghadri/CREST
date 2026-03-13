@@ -48,3 +48,4 @@ rust_analysis/
 # Project Docs (Only needed if building documentation in Docker)
 *.md
 !README.md
+bench/

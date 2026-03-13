@@ -47,23 +47,23 @@ def highly_variable_genes(
         (pl.col("variance") / pl.col("mean")).alias("dispersion")
     ])
     
-    # Sort by dispersion to get top genes
-    top_genes = (
+    # Evaluate top genes to a tiny list to enforce Parquet pushdown filtering
+    top_genes_list = (
         gene_stats
         .sort("dispersion", descending=True)
         .limit(n_top_genes)
         .select("gene_id")
+        .collect(streaming=True)["gene_id"]
+        .to_list()
     )
     
-    # Filter the original massive streaming dataframe using a SemiJoin
-    # We update the `var` metadata as well to track which genes were selected
-    
-    # BioFrame zero-copy semi join internally
-    filtered_X = lazy_df.join(top_genes.lazy(), on="gene_id", how="semi")
+    # Filter the original massive streaming dataframe using Parquet Pushdown
+    filtered_X = lazy_df.filter(pl.col("gene_id").is_in(top_genes_list))
     
     # Filter the var metadata
-    new_var = top_genes
+    top_genes_df = pl.DataFrame({"gene_id": top_genes_list})
+    new_var = top_genes_df
     if adata.var is not None:
-        new_var = adata.var.join(top_genes, on="gene_id", how="inner")
+        new_var = adata.var.join(top_genes_df, on="gene_id", how="inner")
         
     return BioFrame(X=filtered_X, obs=adata.obs, var=new_var)
