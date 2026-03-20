@@ -1,0 +1,87 @@
+use polars::prelude::*;
+use pyo3_polars::derive::polars_expr;
+
+#[polars_expr(output_type=Float32)]
+fn native_umap(inputs: &[Series]) -> PolarsResult<Series> {
+    // Expected inputs:
+    // 0: A List(Float32) column representing the PCA coordinates for each cell
+    // 1: n_components (UInt32)
+    // 2: n_neighbors (UInt32)
+    // 3: min_dist (Float32)
+    // 4: spread (Float32)
+    // 5: n_epochs (UInt32)
+    // 6: spectral_n_iter (UInt32)
+    
+    if inputs.len() < 3 {
+        return Err(PolarsError::ComputeError("native_umap requires at least 3 inputs: [pca_coords, n_components, n_neighbors]".into()));
+    }
+
+    let pca_coords = &inputs[0].list()?;
+    let n_components = inputs[1].u32()?.get(0).unwrap_or(2) as usize;
+    let n_neighbors = inputs[2].u32()?.get(0).unwrap_or(15) as usize;
+    
+    let min_dist = if inputs.len() > 3 { inputs[3].f32()?.get(0).unwrap_or(0.1) } else { 0.1 };
+    let spread = if inputs.len() > 4 { inputs[4].f32()?.get(0).unwrap_or(1.0) } else { 1.0 };
+    let n_epochs = if inputs.len() > 5 { inputs[5].u32()?.get(0).unwrap_or(200) as usize } else { 200 };
+    let spectral_n_iter = if inputs.len() > 6 { inputs[6].u32()?.get(0).unwrap_or(50) as usize } else { 50 };
+    
+    let n_cells = pca_coords.len();
+    if n_cells == 0 {
+        return Err(PolarsError::ComputeError("Cannot perform UMAP on empty DataFrame".into()));
+    }
+
+    // Check if the input is a grouped (imploded) doubly nested List(List(f32))
+    // This happens if `.bio.svd(...)` imploded the matrix to fit inside a single DataFrame row group.
+    let mut data: Vec<Vec<f32>> = Vec::with_capacity(n_cells);
+    
+    // Check the data type of the inner items
+    if let Some(first_row) = pca_coords.get_as_series(0).map(|s| s.list().is_ok()) {
+        if first_row {
+            // Unpack the doubly nested list
+            let inner_series = pca_coords.get_as_series(0).unwrap();
+            let inner_list = inner_series.list()?;
+            for opt_row in inner_list.into_iter() {
+                if let Some(row_series) = opt_row {
+                    let float_ca = row_series.f32()?;
+                    data.push(float_ca.into_no_null_iter().collect());
+                } else {
+                    data.push(vec![0.0f32; n_components]); // Fallback
+                }
+            }
+        } else {
+            // Unpack flattened rows
+            for opt_row in pca_coords.into_iter() {
+                if let Some(row_series) = opt_row {
+                    let float_ca = row_series.f32()?;
+                    data.push(float_ca.into_no_null_iter().collect());
+                } else {
+                    data.push(vec![0.0f32; n_components]);
+                }
+            }
+        }
+    }
+    
+    // Execute our custom Native Rust UMAP core
+    let embeddings = crate::umap::core::run_umap(
+        &data,
+        n_components,
+        n_neighbors,
+        min_dist,
+        spread,
+        n_epochs,
+        spectral_n_iter
+    );
+    
+    let mut builder = ListPrimitiveChunkedBuilder::<Float32Type>::new(
+        "umap",
+        n_cells,
+        n_components,
+        DataType::Float32
+    );
+    
+    for row in embeddings {
+        builder.append_slice(&row);
+    }
+    
+    Ok(builder.finish().into_series().implode()?.into_series())
+}

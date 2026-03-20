@@ -15,6 +15,7 @@ mod deseq2;
 // mod expressions;
 mod svd;
 mod umap;
+mod umap_binding;
 mod leiden;
 
 #[polars_expr(output_type=Float32)]

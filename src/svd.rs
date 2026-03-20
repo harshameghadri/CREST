@@ -1,4 +1,4 @@
-use nalgebra_sparse::{coo::CooMatrix, csr::CsrMatrix};
+use nalgebra_sparse::coo::CooMatrix;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 // use single_svdlib::*; // We'll implement this iteratively once the CSR matrix is built.
@@ -45,36 +45,32 @@ fn sparse_randomized_svd(inputs: &[Series]) -> PolarsResult<Series> {
         }
     }
 
-    // Convert to CSR format, which is required for efficient matrix multiplication in SVD
-    let csr = CsrMatrix::from(&coo);
+    // Perform Truncated SVD natively in Rust
+    use single_svdlib::legacy::svd_dim;
+    let svd_result = svd_dim(&coo, _n_comps)
+        .map_err(|e| PolarsError::ComputeError(format!("SVD failed: {:?}", e).into()))?;
     
-    // single-svdlib has a smat structure:
-    use single_svdlib::SMat;
+    let k = svd_result.d;
+    let ut = svd_result.ut; // Shape: (k, n_cells)
+    let s = svd_result.s;   // Shape: (k,)
     
-    let mut pointr: Vec<usize> = vec![0; n_genes + 1];
-    let mut rowind: Vec<usize> = Vec::with_capacity(coo.nnz());
-    let mut value: Vec<f64> = Vec::with_capacity(coo.nnz());
-    
-    // We must build CSC since svd_las2A historically expects CSC from SVDLIBC (columns are genes)
-    // But let's build a dummy result for now to ensure the macro boundary functions
-    let _ = pointr; let _ = rowind; let _ = value;
-
-    
-    // Phase 6 V2 implementation: Performs Truncated SVD natively in Rust
-    let pca_data = vec![1.0f32; n_cells * 2];
-    
-    // Convert flat slice into a Polars Series (Matrix of `n_cells` x 2)
     // To properly return 2D matrices in Polars plugins, we return a `ListBuilder`
     let mut builder = ListPrimitiveChunkedBuilder::<Float32Type>::new(
         "pca",
         n_cells,
-        2,
+        k,
         DataType::Float32
     );
     
-    for row in pca_data.chunks(2) {
-        builder.append_slice(row);
+    for i in 0..n_cells {
+        let mut row_vec = Vec::with_capacity(k);
+        for c in 0..k {
+            // PCA coordinate = U_{i,c} * S_c = U^T_{c,i} * S_c
+            let val = ut[[c, i]] * s[c];
+            row_vec.push(val as f32);
+        }
+        builder.append_slice(&row_vec);
     }
     
-    Ok(builder.finish().into_series())
+    Ok(builder.finish().into_series().implode()?.into_series())
 }
