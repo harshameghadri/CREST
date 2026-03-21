@@ -4,6 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "biopolars"
+description = "High-performance bioinformatics as native Rust Polars plugins"
 requires-python = ">=3.8"
 classifiers = [
     "Programming Language :: Rust",
@@ -11,3 +12,12 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dynamic = ["version"]
+
+dependencies = [
+    "polars>=1.0.0",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+slaf = ["slafdb>=0.4.0"]
+all = ["slafdb>=0.4.0", "matplotlib>=3.5.0"]
