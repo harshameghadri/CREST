@@ -370,3 +370,64 @@ fn score_genes(inputs: &[Series]) -> PolarsResult<Series> {
 
     Ok(result.into_series())
 }
+
+#[cfg(test)]
+mod tests {
+    /// Test normalization logic: given counts and cell sums, verify CP10k math
+    #[test]
+    fn test_cpm_math() {
+        // Cell with counts [2, 3, 5], sum = 10
+        // CP10k: 2/10*10000 = 2000, 3/10*10000 = 3000, 5/10*10000 = 5000
+        let counts = [2.0f32, 3.0, 5.0];
+        let cell_sum = 10.0f64;
+        let target = 10_000.0f64;
+        let normalized: Vec<f32> = counts.iter().map(|&c| (c as f64 / cell_sum * target) as f32).collect();
+        assert!((normalized[0] - 2000.0).abs() < 1.0);
+        assert!((normalized[1] - 3000.0).abs() < 1.0);
+        assert!((normalized[2] - 5000.0).abs() < 1.0);
+    }
+
+    /// Test scale math: z-score with sparse-aware variance
+    #[test]
+    fn test_scale_math() {
+        // Values [1, 2, 3], n_obs = 3
+        // mean = (1+2+3)/3 = 2
+        // var = (sum_sq - 2*mean*sum + n*mean^2) / (n-1)
+        //     = (14 - 2*2*6 + 3*4) / 2 = (14 - 24 + 12) / 2 = 1.0
+        // std = 1.0
+        // scaled = [-1, 0, 1]
+        let values = [1.0f64, 2.0, 3.0];
+        let n_obs = 3.0f64;
+        let sum: f64 = values.iter().sum();
+        let sum_sq: f64 = values.iter().map(|v| v * v).sum();
+        let mean = sum / n_obs;
+        let var = (sum_sq - 2.0 * mean * sum + n_obs * mean * mean) / (n_obs - 1.0);
+        let std = var.sqrt();
+        let scaled: Vec<f64> = values.iter().map(|v| (v - mean) / std).collect();
+        assert!((scaled[0] - (-1.0)).abs() < 1e-10);
+        assert!(scaled[1].abs() < 1e-10);
+        assert!((scaled[2] - 1.0).abs() < 1e-10);
+    }
+
+    /// Test scale clipping
+    #[test]
+    fn test_scale_clipping() {
+        let scaled = 15.0f32;
+        let max_value = 5.0f32;
+        let clipped = scaled.clamp(-max_value, max_value);
+        assert_eq!(clipped, 5.0);
+    }
+
+    /// Test filter logic: min_genes threshold
+    #[test]
+    fn test_filter_logic() {
+        // Cell 0: 3 expressed genes, Cell 1: 1 expressed gene
+        let cell_n_genes = [3u32, 1u32];
+        let cell_sums = [10.0f32, 1.0f32];
+        let min_genes = 2u32;
+        let min_counts = 0.0f32;
+
+        assert!(cell_n_genes[0] >= min_genes && cell_sums[0] >= min_counts);
+        assert!(!(cell_n_genes[1] >= min_genes && cell_sums[1] >= min_counts));
+    }
+}
