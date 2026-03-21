@@ -185,3 +185,52 @@ class BioPolarsExpr:
             function_name="score_genes",
             is_elementwise=True,
         )
+
+    def rank_genes_groups(self, cell_id_col: pl.Expr, gene_id_col: pl.Expr, group_col: pl.Expr, target_group: int = 1) -> pl.Expr:
+        """
+        Differential expression via Welch's t-test with Benjamini-Hochberg FDR correction.
+        Returns List(List(Float32)): each inner list = [gene_id, t_stat, p_value, adj_p_value, log2_fc].
+        Sorted by adjusted p-value (most significant first).
+        """
+        return register_plugin_function(
+            args=[
+                self._expr,
+                cell_id_col,
+                gene_id_col,
+                group_col.cast(pl.UInt32),
+                pl.lit(target_group).cast(pl.UInt32),
+            ],
+            plugin_path=lib,
+            function_name="rank_genes_groups",
+            is_elementwise=False,
+        )
+
+    def neighbors(self, n_neighbors: int = 15) -> pl.Expr:
+        """
+        Build K-nearest neighbor graph from PCA coordinates.
+        Returns per-cell neighbor indices and distances as [idx0, dist0, idx1, dist1, ...].
+        """
+        return register_plugin_function(
+            args=[
+                self._expr,
+                pl.lit(n_neighbors).cast(pl.UInt32),
+            ],
+            plugin_path=lib,
+            function_name="compute_neighbors",
+            is_elementwise=False,
+        )
+
+    def connectivities(self, n_neighbors: int = 15) -> pl.Expr:
+        """
+        Build UMAP-style fuzzy simplicial set connectivities from PCA coordinates.
+        Returns sparse COO triplets [cell_i, cell_j, weight, ...] with Gaussian kernel weights.
+        """
+        return register_plugin_function(
+            args=[
+                self._expr,
+                pl.lit(n_neighbors).cast(pl.UInt32),
+            ],
+            plugin_path=lib,
+            function_name="compute_connectivities",
+            is_elementwise=False,
+        )
