@@ -35,7 +35,7 @@ scipy_time = t1 - t0
 print(f"SciPy Time (2000 genes): {scipy_time:.2f} seconds")
 
 print("\n--- PHASE 2: BioPolars Native Parallel Formulation ---")
-import biopolars
+import crest
 
 # Pack matrix into Polars Lists (simulating the streaming groupby output)
 df = pl.DataFrame({

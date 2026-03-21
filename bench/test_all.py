@@ -1,10 +1,10 @@
-"""Integration tests and benchmarks for all biopolars functions."""
+"""Integration tests and benchmarks for all crest functions."""
 import polars as pl
-import biopolars
+import crest
 import numpy as np
 import time
 
-print("=== BioPolars Integration Test Suite ===")
+print("=== CREST Integration Test Suite ===")
 print()
 
 # Test 1: log1p

@@ -1,7 +1,7 @@
 import polars as pl
 import time
 import numpy as np
-import biopolars  # Our custom Rust-Polars plugin
+import crest  # Our custom Rust-Polars plugin
 
 # Simulate a massive sparse single-cell dataset
 # Let's say 1,000,000 cells (for speed of generation right now)

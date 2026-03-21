@@ -1,8 +1,8 @@
 """
-SLAF I/O Bridge for BioPolars.
+SLAF I/O Bridge for CREST.
 
 Reads SLAF (Sparse Lazy Array Format) datasets directly into the COO format
-expected by biopolars' Rust SVD/UMAP/Leiden plugins. Writes embeddings and
+expected by CREST's Rust SVD/UMAP/Leiden plugins. Writes embeddings and
 cluster results back to SLAF.
 
 Requires: pip install slafdb
@@ -15,11 +15,11 @@ from typing import Optional, Tuple
 
 def read_slaf_expression(slaf_path: str) -> Tuple[pl.DataFrame, int, int]:
     """
-    Read a SLAF dataset's expression table into biopolars SVD-ready format.
+    Read a SLAF dataset's expression table into CREST SVD-ready format.
 
     SLAF stores expression data as COO triplets (cell_integer_id, gene_integer_id, value)
     in a Lance columnar table. This function reads that data and aggregates it into
-    the List(UInt32/Float32) format expected by biopolars' Rust SVD plugin.
+    the List(UInt32/Float32) format expected by CREST's Rust SVD plugin.
 
     Args:
         slaf_path: Path to SLAF dataset directory (local, s3://, or hf://).
@@ -32,7 +32,7 @@ def read_slaf_expression(slaf_path: str) -> Tuple[pl.DataFrame, int, int]:
         - n_genes: Total number of genes in the dataset.
 
     Example:
-        >>> from biopolars.slaf_io import read_slaf_expression
+        >>> from crest.slaf_io import read_slaf_expression
         >>> df, n_cells, n_genes = read_slaf_expression("pbmc3k.slaf")
         >>> print(f"{n_cells} cells x {n_genes} genes")
     """
@@ -55,7 +55,7 @@ def read_slaf_expression(slaf_path: str) -> Tuple[pl.DataFrame, int, int]:
         ORDER BY cell_integer_id, gene_integer_id
     """)
 
-    # Aggregate into List columns for biopolars plugin input
+    # Aggregate into List columns for crest plugin input
     # The SVD plugin expects a single row with all COO data as lists
     agg_df = expr_df.select([
         pl.col("cell_integer_id").cast(pl.UInt32).alias("cell_id"),
@@ -116,11 +116,11 @@ def run_svd_umap(
         np.ndarray of shape (n_cells, n_components) containing UMAP coordinates.
 
     Example:
-        >>> from biopolars.slaf_io import run_svd_umap
+        >>> from crest.slaf_io import run_svd_umap
         >>> umap_coords = run_svd_umap("pbmc3k.slaf", n_comps=50)
         >>> print(umap_coords.shape)  # (2700, 2)
     """
-    import biopolars  # noqa: F401 — registers .bio namespace
+    import crest  # noqa: F401 — registers .bio namespace
 
     agg_df, n_cells, n_genes = read_slaf_expression(slaf_path)
 
@@ -167,7 +167,7 @@ def run_svd_louvain(
     Returns:
         np.ndarray of shape (n_cells,) containing cluster IDs.
     """
-    import biopolars  # noqa: F401
+    import crest  # noqa: F401
 
     agg_df, n_cells, n_genes = read_slaf_expression(slaf_path)
 

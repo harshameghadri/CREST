@@ -3,8 +3,8 @@ import os
 import psutil
 import time
 
-import biopolars.io
-import biopolars.pp
+import crest.io
+import crest.pp
 
 print("==========================================================")
 print("  BIOPOLARS: 20K NEURON REAL DATASET BENCHMARK            ")
@@ -22,7 +22,7 @@ print("\n--- PHASE 1: Streaming HDF5 to Parquet ---")
 t0 = time.time()
 if not os.path.exists(parquet_file):
     # Using our chunked parser
-    biopolars.io.convert_h5_to_parquet_stream(
+    crest.io.convert_h5_to_parquet_stream(
         file_path=h5_file,
         output_path=parquet_file,
         chunk_size=50_000
@@ -58,10 +58,10 @@ obs = unique_cells.with_columns(pl.lit("Unknown").alias("cluster"))
 print(f"BioFrame Initialization: Detected {obs.height} total cells.")
 
 # Instantiate BioFrame V2
-adata = biopolars.BioFrame(X=normalized, obs=obs)
+adata = crest.BioFrame(X=normalized, obs=obs)
 
 # 3. Compute Highly Variable Genes natively with zero-inflation internally tracked
-hvgs = biopolars.pp.highly_variable_genes(adata)
+hvgs = crest.pp.highly_variable_genes(adata)
 
 result = hvgs.X.collect(engine="streaming")
 

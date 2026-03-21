@@ -35,7 +35,7 @@ fn louvain_clustering(inputs: &[Series]) -> PolarsResult<Series> {
             let float_ca = row_series.f32()?;
             let actual_dims = float_ca.len();
             if actual_dims > MAX_DIMS && !warned_truncation {
-                eprintln!("biopolars warning: PCA has {} dimensions but Leiden KD-tree supports max {}. Truncating.", actual_dims, MAX_DIMS);
+                eprintln!("crest warning: PCA has {} dimensions but Leiden KD-tree supports max {}. Truncating.", actual_dims, MAX_DIMS);
                 warned_truncation = true;
             }
             let mut pt = [0.0f32; MAX_DIMS];

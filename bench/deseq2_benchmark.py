@@ -4,7 +4,7 @@ import psutil
 import polars as pl
 import numpy as np
 import statsmodels.api as sm
-from biopolars import *
+from crest import *
 
 print("==================================================")
 print("  BIOPOLARS VS STATSMODELS: NATIVE DESEQ2 GLM     ")

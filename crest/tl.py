@@ -12,7 +12,7 @@ def sparse_masked_pca(
     random_state: int = 42
 ) -> dict:
     """
-    BioPolars Native Sparse Masked PCA.
+    CREST Native Sparse Masked PCA.
 
     Pain Point: Standard PCA dense-centers sparse matrices. On 1M cells x 20k genes,
     mean centering creates an 80GB dense matrix, crashing the system.
@@ -93,7 +93,7 @@ def incremental_pca(
     chunk_size: int = 50000,
 ) -> dict:
     """
-    BioPolars Out-Of-Core PCA for massive datasets (>1M cells).
+    CREST Out-Of-Core PCA for massive datasets (>1M cells).
 
     Pain Point: Standard ARPACK SVD requires holding all expressions in a single
     NumPy SciPy Sparse Matrix. For 1.3M cells x 20k genes, just extracting the

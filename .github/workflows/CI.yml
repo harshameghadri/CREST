@@ -35,7 +35,7 @@ jobs:
           pip install maturin
           maturin develop --release
       - name: Smoke test import
-        run: python -c "import biopolars; import polars as pl; print('biopolars imported successfully')"
+        run: python -c "import crest; import polars as pl; print('crest imported successfully')"
 
   linux:
     runs-on: ${{ matrix.platform.runner }}

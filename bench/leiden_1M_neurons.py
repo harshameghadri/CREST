@@ -2,9 +2,9 @@ import polars as pl
 import os
 import psutil
 import time
-import biopolars.io
-import biopolars.pp
-import biopolars.tl
+import crest.io
+import crest.pp
+import crest.tl
 
 print("==========================================================")
 print("  BIOPOLARS: 1 MILLION NEURON LEIDEN CLUSTERING BENCHMARK ")
@@ -59,7 +59,7 @@ max_gene_hvg = norm_df.select(pl.col("gene_id").max()).collect()[0, 0] + 1
 print(f"Streaming Normalized Triplet matrix directly into Sparse PCA...")
 
 t_pca_start = time.time()
-pca_result = biopolars.tl.sparse_masked_pca(
+pca_result = crest.tl.sparse_masked_pca(
     df=norm_df, 
     n_cells=max_cell_hvg, 
     n_genes=max_gene_hvg,

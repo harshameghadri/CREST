@@ -51,7 +51,7 @@ fn compute_neighbors(inputs: &[Series]) -> PolarsResult<Series> {
             let actual_dims = float_ca.len();
             if actual_dims > MAX_DIMS && !warned {
                 eprintln!(
-                    "biopolars warning: PCA has {} dimensions but KD-tree supports max {}. Truncating.",
+                    "crest warning: PCA has {} dimensions but KD-tree supports max {}. Truncating.",
                     actual_dims, MAX_DIMS
                 );
                 warned = true;
@@ -122,7 +122,7 @@ fn compute_connectivities(inputs: &[Series]) -> PolarsResult<Series> {
             let float_ca = row_series.f32()?;
             if float_ca.len() > MAX_DIMS && !warned {
                 eprintln!(
-                    "biopolars warning: PCA has {} dimensions but KD-tree supports max {}. Truncating.",
+                    "crest warning: PCA has {} dimensions but KD-tree supports max {}. Truncating.",
                     float_ca.len(), MAX_DIMS
                 );
                 warned = true;

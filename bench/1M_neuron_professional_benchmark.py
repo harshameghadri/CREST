@@ -7,9 +7,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from memory_profiler import memory_usage
 
-import biopolars.io
-import biopolars.pp
-import biopolars.tl
+import crest.io
+import crest.pp
+import crest.tl
 
 print("==========================================================")
 print("  BIOPOLARS: 1 MILLION NEURON PROFESSIONAL BENCHMARK ")
@@ -114,9 +114,9 @@ subset_df = pl.from_arrow(con.execute(query).fetch_arrow_table()).lazy()
 print("\nCalculating Top 2000 Highly Variable Genes (Locally on 20k Subsample) using Native Polars...")
 t_hvg = time.time()
 obs_df = pl.DataFrame({"cell_id": random_cells})
-bf_subset = biopolars.core.BioFrame(X=subset_df, obs=obs_df)
+bf_subset = crest.core.BioFrame(X=subset_df, obs=obs_df)
 
-bf_hvg = biopolars.pp.highly_variable_genes(bf_subset, n_top_genes=2000)
+bf_hvg = crest.pp.highly_variable_genes(bf_subset, n_top_genes=2000)
 subset_hvg_df = bf_hvg.X
 timing_metrics['1.5_HVG_Subsample'] = time.time() - t_hvg
 print(f"Top 2000 HVGs identified natively in {timing_metrics['1.5_HVG_Subsample']:.2f}s!")
@@ -139,7 +139,7 @@ print(f"Extracted Sample Coordinates! Bounds: Random ~20,000 Cells. Evaluated in
 def run_pca():
     t_pca_start = time.time()
     # Execute EXACT SVD directly skipping the sklearn loop
-    pca_result = biopolars.tl.sparse_masked_pca(
+    pca_result = crest.tl.sparse_masked_pca(
         df=subset_df_mapped, 
         n_cells=len(random_cells), 
         n_genes=max_gene,

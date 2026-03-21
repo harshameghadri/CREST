@@ -42,8 +42,8 @@ def main():
     print("SLAF × BioPolars Pipeline")
     print("=" * 60)
 
-    from biopolars.slaf_io import read_slaf_expression
-    import biopolars  # noqa: F401 — registers .bio namespace
+    from crest.slaf_io import read_slaf_expression
+    import crest  # noqa: F401 — registers .bio namespace
 
     t0 = time.time()
     agg_df, n_cells, n_genes = read_slaf_expression(slaf_path)
@@ -87,7 +87,7 @@ def main():
     # -------------------------------------------------------------------
     write_back = "--write-back" in sys.argv
     if write_back:
-        from biopolars.slaf_io import write_embeddings_to_slaf
+        from crest.slaf_io import write_embeddings_to_slaf
 
         print("\n💾 Writing UMAP embeddings back to SLAF...")
         t0 = time.time()

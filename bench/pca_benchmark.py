@@ -6,7 +6,7 @@ import numpy as np
 import scipy.sparse as sp
 import scanpy as sc
 import anndata
-from biopolars.tl import sparse_masked_pca
+from crest.tl import sparse_masked_pca
 
 print("==================================================")
 print("  BIOPOLARS VS SCANPY: IMPLICIT SPARSE PCA        ")
@@ -41,8 +41,8 @@ results = sparse_masked_pca(df, n_cells=num_cells, n_genes=num_genes, n_comps=50
 t1 = time.time()
 end_mem = get_process_memory()
 
-biopolars_time = t1 - t0
-print(f"BioPolars PCA execution: {biopolars_time:.2f} seconds")
+crest_time = t1 - t0
+print(f"CREST PCA execution: {crest_time:.2f} seconds")
 print(f"Memory moved from {start_mem:.1f}MB to {end_mem:.1f}MB")
 
 print("\n--- PHASE 2: Scanpy PCA Benchmark ---")
@@ -62,5 +62,5 @@ print(f"Memory moved from {start_mem:.1f}MB to {end_mem:.1f}MB")
 print("\n==================================================")
 print("               RESULTS SUMMARY                    ")
 print("==================================================")
-if biopolars_time > 0:
-    print(f"Time Speedup: {scanpy_time / biopolars_time:.2f}x faster")
+if crest_time > 0:
+    print(f"Time Speedup: {scanpy_time / crest_time:.2f}x faster")

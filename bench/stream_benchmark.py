@@ -2,7 +2,7 @@ import time
 import os
 import psutil
 import polars as pl
-import biopolars
+import crest
 import numpy as np
 import scipy.sparse as sp
 import h5py
@@ -43,7 +43,7 @@ if not os.path.exists(h5_path):
     print("Synthetic HDF5 generated.")
 
 print("\n--- PHASE 1: STREAMING HDF5 -> PARQUET ---")
-from biopolars.io import convert_h5_to_parquet_stream
+from crest.io import convert_h5_to_parquet_stream
 start_mem = get_process_memory()
 t0 = time.time()
 convert_h5_to_parquet_stream(h5_path, parquet_path, chunk_size=100_000)

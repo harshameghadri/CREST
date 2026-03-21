@@ -1,13 +1,13 @@
 [package]
-name = "biopolars"
+name = "crest"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "High-performance bioinformatics as native Rust Polars plugins"
-repository = "https://github.com/biopolars/biopolars"
+description = "CREST — Columnar Rust Engine for Single-cell Transcriptomics"
+repository = "https://github.com/crest-bio/crest"
 
 [lib]
-name = "biopolars"
+name = "crest"
 crate-type = ["cdylib"]
 
 [dependencies]

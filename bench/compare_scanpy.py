@@ -5,7 +5,7 @@ import anndata
 import scipy.sparse as sp
 import numpy as np
 import polars as pl
-import biopolars
+import crest
 import urllib.request
 import psutil
 
@@ -31,7 +31,7 @@ scanpy_io_time = t1 - t0
 print(f"Scanpy read_10x_h5: {scanpy_io_time:.4f} sec")
 
 # BioPolars I/O
-from biopolars.io import read_10x_h5
+from crest.io import read_10x_h5
 t0 = time.time()
 bp_data = read_10x_h5(h5_path)
 t1 = time.time()

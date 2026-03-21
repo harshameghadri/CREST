@@ -1,5 +1,5 @@
 services:
-  biopolars-dev:
+  crest-dev:
     build: .
     volumes:
       - .:/app

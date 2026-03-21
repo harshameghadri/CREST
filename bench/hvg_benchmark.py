@@ -6,7 +6,7 @@ import numpy as np
 import scipy.sparse as sp
 import scanpy as sc
 import anndata
-from biopolars.pp import highly_variable_genes
+from crest.pp import highly_variable_genes
 
 print("==================================================")
 print("  BIOPOLARS VS SCANPY: HIGHLY VARIABLE GENES      ")
@@ -62,13 +62,13 @@ result = lazy_hvg.collect()
 t1 = time.time()
 end_mem = get_process_memory()
 
-biopolars_time = t1 - t0
-print(f"BioPolars execution: {biopolars_time:.2f} seconds")
+crest_time = t1 - t0
+print(f"CREST execution: {crest_time:.2f} seconds")
 print(f"Memory moved from {start_mem:.1f}MB to {end_mem:.1f}MB")
 print(f"Result shape (only top 2000 HVG data retained): {result.shape}")
 
 print("\n==================================================")
 print("               RESULTS SUMMARY                    ")
 print("==================================================")
-if biopolars_time > 0:
-    print(f"Time Speedup: {scanpy_time / biopolars_time:.2f}x faster")
+if crest_time > 0:
+    print(f"Time Speedup: {scanpy_time / crest_time:.2f}x faster")

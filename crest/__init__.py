@@ -1,23 +1,23 @@
 import polars as pl
 from polars.plugins import register_plugin_function
 from pathlib import Path
-# from .core import BioFrame # Removed as per diff
+# from .core import BioFrame
 
 def _get_lib_path() -> Path:
     """Finds the compiled shared library (.so, .pyd, .dylib) dynamically"""
     parent = Path(__file__).parent
     
     for file in parent.iterdir():
-        if file.name.startswith("biopolars") and file.suffix in [".so", ".pyd", ".dylib"]:
+        if file.name.startswith("crest") and file.suffix in [".so", ".pyd", ".dylib"]:
             return file
             
     # Fallback to standard name
-    return parent / "biopolars.abi3.so"
+    return parent / "crest.abi3.so"
 
 lib = _get_lib_path()
 
 @pl.api.register_expr_namespace("bio")
-class BioPolarsExpr:
+class CrestExpr:
     def __init__(self, expr: pl.Expr):
         self._expr = expr
 
@@ -75,7 +75,7 @@ class BioPolarsExpr:
         bypassing Scipy and Python's GIL completely.
         Expected usage: df.group_by("cell_id").agg(pl.col("cell_id").bio.svd(pl.col("gene_id"), pl.col("count"), n_cells=..., n_genes=...))
         """
-        # lib = Path(__file__).parent / "biopolars.abi3.so" # This line is removed as `lib` is now global
+        # Plugin path is resolved globally at module level
             
         return register_plugin_function(
             args=[

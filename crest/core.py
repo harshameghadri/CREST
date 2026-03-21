@@ -5,7 +5,7 @@ from typing import Optional
 @dataclass
 class BioFrame:
     """
-    A lightweight wrapper ensuring AnnData-like properties for streaming BioPolars pipelines.
+    A lightweight wrapper ensuring AnnData-like properties for streaming CREST pipelines.
     Designed to prevent 'COO Memory Bloat' by aggressively keeping metadata (`obs`, `var`) 
     mathematically distinct from the expression matrix (`X`).
     """
