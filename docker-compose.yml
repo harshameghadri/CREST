@@ -1,9 +1,6 @@
-version: '3.8'
-
 services:
   biopolars-dev:
     build: .
     volumes:
       - .:/app
-    # Keep the container running in the background for VSCode DevContainers/Exec
     command: tail -f /dev/null

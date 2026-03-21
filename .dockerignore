@@ -1,30 +1,4 @@
-# -----------------------------------------------------------------------------
-# .dockerignore
-# -----------------------------------------------------------------------------
-# This file prevents unnecessary, large, or sensitive files from being sent 
-# to the Docker daemon during the `docker build` context phase.
-
-# Git history (Docker doesn't need version control history to build)
-.git/
-.gitignore
-
-# Rust Build Artifacts
-target/
-Cargo.lock
-
-# Python Virtual Environments & Caches
-.venv/
-venv/
-env/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
-
-# Large Datasets and Processed Outputs
+# Large data files
 data/
 *.h5
 *.h5ad
@@ -34,18 +8,23 @@ data/
 *.tsv
 *.tsv.gz
 
-# Deprecated Architecture / Old Folders
-bio-polars/
-rust_analysis/
+# Build artifacts
+target/
+.venv/
+__pycache__/
+*.so
+*.dylib
+*.egg-info/
+dist/
+build/
 
-# OS / Editor Files
+# IDE / OS
 .DS_Store
 .idea/
 .vscode/
-*.swp
-*.swo
+.claude/
 
-# Project Docs (Only needed if building documentation in Docker)
-*.md
-!README.md
+# Docker shouldn't need these
+.git/
+.github/
 bench/

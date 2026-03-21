@@ -1,17 +1,9 @@
 FROM rust:bookworm
 
-# Install Python 3.11, pip, and venv
-RUN apt-get update && \
-    apt-get install -y python3.11 python3.11-venv python3-pip curl git build-essential && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install uv for fast Python package management
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Set PATH for uv
-ENV PATH="/root/.local/bin:${PATH}"
+RUN apt-get update && apt-get install -y python3 python3-pip python3-venv && \
+    pip3 install --break-system-packages uv maturin[patchelf]
 
 WORKDIR /app
 
-# The container will stay alive so we can attach to it for development
+# Keep running for interactive development
 CMD ["tail", "-f", "/dev/null"]

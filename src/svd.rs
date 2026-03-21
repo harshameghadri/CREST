@@ -3,7 +3,14 @@ use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 // use single_svdlib::*; // We'll implement this iteratively once the CSR matrix is built.
 
-#[polars_expr(output_type=Float32)]
+pub fn svd_output(_: &[Field]) -> PolarsResult<Field> {
+    Ok(Field::new(
+        "pca",
+        DataType::List(Box::new(DataType::List(Box::new(DataType::Float32)))),
+    ))
+}
+
+#[polars_expr(output_type_func=svd_output)]
 fn sparse_randomized_svd(inputs: &[Series]) -> PolarsResult<Series> {
     if inputs.len() != 6 {
         return Err(PolarsError::ComputeError("sparse_randomized_svd requires exactly 6 inputs: [groups, genes, counts, n_cells, n_genes, n_comps]".into()));
@@ -71,6 +78,7 @@ fn sparse_randomized_svd(inputs: &[Series]) -> PolarsResult<Series> {
         }
         builder.append_slice(&row_vec);
     }
-    
-    Ok(builder.finish().into_series().implode()?.into_series())
+    let s_orig = builder.finish().into_series();
+    let s_wrapped = polars::prelude::Series::new("pca".into(), &[polars::prelude::AnyValue::List(s_orig)]);
+    Ok(s_wrapped)
 }

@@ -20,19 +20,7 @@ lib = _get_lib_path()
 class BioPolarsExpr:
     def __init__(self, expr: pl.Expr):
         self._expr = expr
-        # State tracking for Implicit Zero expansion (e.g. true variance despite COO format)
-        self._n_cells: Optional[int] = None
-        self._n_genes: Optional[int] = None
-
-    def set_shape(self, n_cells: int, n_genes: int) -> pl.Expr:
-        """
-        Inject global dataset dimensions into the Polars lazy expression.
-        This is absolutely critical for calculating scientifically valid statistics 
-        (like Variance) on a sparse Triplet COO DataFrame where zeros are implicitly missing.
-        """
-        self._n_cells = n_cells
-        self._n_genes = n_genes
-        return self._expr
+        self._expr = expr
 
     def normalize_cpm(self, cell_id_col: pl.Expr, target_sum: float = 10_000.0) -> pl.Expr:
         """
@@ -93,32 +81,29 @@ class BioPolarsExpr:
             is_elementwise=True
         )
 
-    def svd(self, gene_id_col: pl.Expr, count_col: pl.Expr, n_comps: int = 50) -> pl.Expr:
+    def svd(self, gene_id_col: pl.Expr, count_col: pl.Expr, n_cells: int, n_genes: int, n_comps: int = 50) -> pl.Expr:
         """
         Computes Truncated Randomized SVD directly in Rust natively over Sparse Arrow Matrices,
         bypassing Scipy and Python's GIL completely.
-        Expected usage: df.group_by("cell_id").agg(pl.col("cell_id").bio.svd(pl.col("gene_id"), pl.col("count")))
+        Expected usage: df.group_by("cell_id").agg(pl.col("cell_id").bio.svd(pl.col("gene_id"), pl.col("count"), n_cells=..., n_genes=...))
         """
         # lib = Path(__file__).parent / "biopolars.abi3.so" # This line is removed as `lib` is now global
-        
-        if self._n_cells is None or self._n_genes is None:
-            raise ValueError("`.bio.svd()` requires explicit dimensionality. Please call `.bio.set_shape(n_cells, n_genes)` first.")
             
         return register_plugin_function(
             args=[
                 self._expr.cast(pl.List(pl.UInt32)),   # cell_ids 
                 gene_id_col.cast(pl.List(pl.UInt32)),  # gene_ids
                 count_col.cast(pl.List(pl.Float32)),   # counts
-                pl.lit(self._n_cells).cast(pl.UInt32), # metadata needed to construct the CSR shape internally
-                pl.lit(self._n_genes).cast(pl.UInt32),
+                pl.lit(n_cells).cast(pl.UInt32), # metadata needed to construct the CSR shape internally
+                pl.lit(n_genes).cast(pl.UInt32),
                 pl.lit(n_comps).cast(pl.UInt32)
             ],
             plugin_path=lib,
             function_name="sparse_randomized_svd",
-            is_elementwise=True
+            is_elementwise=False
         )
 
-    def umap(self, n_components: int = 2, n_neighbors: int = 15) -> pl.Expr:
+    def umap(self, n_components: int = 2, n_neighbors: int = 15, min_dist: float = 0.1, spread: float = 1.0, n_epochs: int = 200, spectral_n_iter: int = 50) -> pl.Expr:
         """
         Calculates UMAP dimensionality reduction on the dense PCA coordinates.
         This must be called immediately after `.bio.svd()`.
@@ -127,11 +112,15 @@ class BioPolarsExpr:
             args=[
                 self._expr, # PCA coords `List(Float32)`
                 pl.lit(n_components).cast(pl.UInt32),
-                pl.lit(n_neighbors).cast(pl.UInt32)
+                pl.lit(n_neighbors).cast(pl.UInt32),
+                pl.lit(min_dist).cast(pl.Float32),
+                pl.lit(spread).cast(pl.Float32),
+                pl.lit(n_epochs).cast(pl.UInt32),
+                pl.lit(spectral_n_iter).cast(pl.UInt32)
             ],
             plugin_path=lib,
             function_name="native_umap",
-            is_elementwise=True
+            is_elementwise=False
         )
 
     def louvain(self, n_neighbors: int = 15) -> pl.Expr:
@@ -146,5 +135,5 @@ class BioPolarsExpr:
             ],
             plugin_path=lib,
             function_name="louvain_clustering",
-            is_elementwise=True
+            is_elementwise=False
         )

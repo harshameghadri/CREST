@@ -1,7 +1,14 @@
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 
-#[polars_expr(output_type=Float32)]
+pub fn umap_output(_: &[Field]) -> PolarsResult<Field> {
+    Ok(Field::new(
+        "umap",
+        DataType::List(Box::new(DataType::List(Box::new(DataType::Float32)))),
+    ))
+}
+
+#[polars_expr(output_type_func=umap_output)]
 fn native_umap(inputs: &[Series]) -> PolarsResult<Series> {
     // Expected inputs:
     // 0: A List(Float32) column representing the PCA coordinates for each cell
@@ -83,5 +90,7 @@ fn native_umap(inputs: &[Series]) -> PolarsResult<Series> {
         builder.append_slice(&row);
     }
     
-    Ok(builder.finish().into_series().implode()?.into_series())
+    let s_orig = builder.finish().into_series();
+    let s_wrapped = polars::prelude::Series::new("umap".into(), &[polars::prelude::AnyValue::List(s_orig)]);
+    Ok(s_wrapped)
 }

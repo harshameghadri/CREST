@@ -5,8 +5,9 @@ __pycache__/
 .pytest_cache/
 *.py[cod]
 
-# C extensions
+# Compiled extensions
 *.so
+*.dylib
 
 # Distribution / packaging
 .Python
@@ -72,10 +73,10 @@ docs/_build/
 .python-version
 
 # ================================
-# BioPolars Custom Project Ignores
+# BioPolars Project-Specific
 # ================================
 
-# Large Downloaded Datasets and Data Directories
+# Large datasets and data files
 data/
 *.h5
 *.mtx
@@ -85,17 +86,26 @@ data/
 *.parquet
 *.h5ad
 
-# Deprecated/Failed Architecture Folders
-bio-polars/
-rust_analysis/
-
-# Debug and Benchmark Intermediates
-bench/debug_*.py
+# Benchmark outputs
+bench/__pycache__/
 bench/*.png
 bench/*.svg
 bench/*.pdf
-.pytest_cache/
+
+# Debug and scratch files
+bench/debug_*.py
+
+# Docker build artifacts
+_docker_build/
+
+# Deprecated/removed directories
+bio-polars/
+polars_src/
+polars/
+rust_analysis/
+bench_results/
+research/
+
+# Misc
 .ruff_cache/
-/tmp/read_pdf.py
-test_umap_structured.py
-umap_paper.txt
+.claude/
