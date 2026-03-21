@@ -28,7 +28,7 @@ fn deseq2_irls(inputs: &[Series]) -> PolarsResult<Series> {
     // We will output the fitted beta coefficients as a List of length `num_covariates`
     let mut all_betas: Vec<Option<Series>> = Vec::with_capacity(ca_counts.len());
     
-    for ((((opt_counts, opt_sf), opt_design), opt_disp)) in ca_counts.into_iter()
+    for (((opt_counts, opt_sf), opt_design), opt_disp) in ca_counts.into_iter()
         .zip(ca_size_factors.into_iter())
         .zip(ca_design.into_iter())
         .zip(ca_disp.into_iter()) {
