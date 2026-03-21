@@ -51,17 +51,6 @@ class BioPolarsExpr:
             is_elementwise=True
         )
 
-    def sc_transform(self, cell_id_col: pl.Expr, size_factors_col: pl.Expr) -> pl.Expr:
-        """
-        Performs sctransform variance-stabilizing transformation.
-        """
-        return register_plugin_function(
-            args=[self._expr, cell_id_col, size_factors_col.cast(pl.Float32)],
-            plugin_path=lib,
-            function_name="sc_transform",
-            is_elementwise=True,
-        )
-
     def deseq2(self, size_factors: pl.Expr, design_matrix: pl.Expr, num_covariates: pl.Expr, dispersion: pl.Expr) -> pl.Expr:
         """
         Fit a Negative Binomial GLM using an Iteratively Reweighted Least Squares (IRLS) solver natively in Rust.
@@ -135,4 +124,64 @@ class BioPolarsExpr:
             plugin_path=lib,
             function_name="louvain_clustering",
             is_elementwise=False
+        )
+
+    def qc_total_counts(self, cell_id_col: pl.Expr) -> pl.Expr:
+        """Per-cell total counts (sum of all gene counts per cell)."""
+        return register_plugin_function(
+            args=[self._expr, cell_id_col],
+            plugin_path=lib,
+            function_name="qc_total_counts",
+            is_elementwise=True,
+        )
+
+    def qc_n_genes(self, cell_id_col: pl.Expr) -> pl.Expr:
+        """Per-cell number of expressed genes (count > 0)."""
+        return register_plugin_function(
+            args=[self._expr, cell_id_col],
+            plugin_path=lib,
+            function_name="qc_n_genes",
+            is_elementwise=True,
+        )
+
+    def filter_cells(self, cell_id_col: pl.Expr, min_genes: int = 200, min_counts: float = 0.0) -> pl.Expr:
+        """Filter cells by minimum gene count and total counts thresholds. Returns boolean mask."""
+        return register_plugin_function(
+            args=[
+                self._expr,
+                cell_id_col,
+                pl.lit(min_genes).cast(pl.UInt32),
+                pl.lit(min_counts).cast(pl.Float32),
+            ],
+            plugin_path=lib,
+            function_name="filter_cells",
+            is_elementwise=True,
+        )
+
+    def scale(self, gene_id_col: pl.Expr, n_obs: int, max_value: float = 10.0) -> pl.Expr:
+        """Zero-center and scale to unit variance per gene, with clipping."""
+        return register_plugin_function(
+            args=[
+                self._expr,
+                gene_id_col,
+                pl.lit(n_obs).cast(pl.UInt32),
+                pl.lit(max_value).cast(pl.Float32),
+            ],
+            plugin_path=lib,
+            function_name="scale",
+            is_elementwise=True,
+        )
+
+    def score_genes(self, cell_id_col: pl.Expr, gene_id_col: pl.Expr, gene_set: list) -> pl.Expr:
+        """Score a gene set per cell (mean_set - mean_background), like scanpy.tl.score_genes."""
+        return register_plugin_function(
+            args=[
+                self._expr,
+                cell_id_col,
+                gene_id_col,
+                pl.lit(pl.Series("gene_set", gene_set, dtype=pl.List(pl.UInt32))),
+            ],
+            plugin_path=lib,
+            function_name="score_genes",
+            is_elementwise=True,
         )
