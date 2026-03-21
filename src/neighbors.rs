@@ -10,6 +10,14 @@ fn neighbors_output(_: &[Field]) -> PolarsResult<Field> {
     ))
 }
 
+/// Output type: List(Float32) — flat COO triplets [cell_i, cell_j, weight, ...]
+fn connectivities_output(_: &[Field]) -> PolarsResult<Field> {
+    Ok(Field::new(
+        "connectivities".into(),
+        DataType::List(Box::new(DataType::Float32)),
+    ))
+}
+
 /// compute_neighbors: Build K-nearest neighbor graph from PCA coordinates.
 ///
 /// Inputs:
@@ -91,10 +99,10 @@ fn compute_neighbors(inputs: &[Series]) -> PolarsResult<Series> {
 /// 0: pca_coords (List(List(Float32))) - PCA coordinates per cell
 /// 1: n_neighbors (UInt32) - number of neighbors
 ///
-/// Returns List(List(Float32)): sparse connectivities as [cell_i, cell_j, weight, ...]
-/// triplets, where weight is computed using a Gaussian kernel.
+/// Returns List(Float32): sparse connectivities as flat COO triplets [cell_i, cell_j, weight, ...]
+/// where every 3 values form one (row, col, weight) triplet.
 /// This matches scanpy's .obsp['connectivities'] output.
-#[polars_expr(output_type_func=neighbors_output)]
+#[polars_expr(output_type_func=connectivities_output)]
 fn compute_connectivities(inputs: &[Series]) -> PolarsResult<Series> {
     if inputs.len() < 2 {
         return Err(PolarsError::ComputeError(

@@ -222,7 +222,7 @@ result = result.with_columns(
 )
 ```
 
-**Output:** `List(List(Float32))` — flattened `[cell_i, cell_j, weight, ...]` triplets.
+**Output:** `List(Float32)` — flat COO triplets `[cell_i, cell_j, weight, ...]`. Every 3 consecutive values form one `(row, col, weight)` triplet. Parse with stride=3.
 
 ### Differential Expression
 
@@ -435,3 +435,27 @@ This is a warning, not an error. The KD-tree for neighbors/Louvain uses the firs
 - Use `convert_h5_to_parquet_stream()` with smaller `chunk_size`
 - Use `BioFrame.filter_cells()` / `filter_genes()` early to reduce data
 - Use `incremental_pca()` for >1M cells
+
+---
+
+## Known Limitations & Scaling Notes
+
+### UMAP KNN is O(n²)
+The internal UMAP graph construction (`graph.rs`) uses **brute-force KNN** — it computes pairwise distances between all points. This means `.bio.umap()` scales as O(n²) and is practical up to ~50k cells. For larger datasets:
+- Run SVD/PCA first to reduce to 50 components
+- Use `incremental_pca()` + an external UMAP library for >100k cells
+- The `.bio.neighbors()` and `.bio.connectivities()` functions use a KD-tree and scale much better
+
+**Roadmap:** Replace brute-force with KD-tree or HNSW in `graph.rs` to enable UMAP at 50M+ scale.
+
+### KD-tree dimension limit
+The KD-tree used in `neighbors`, `connectivities`, and `louvain` supports a maximum of **50 dimensions** (compile-time constant). PCA components beyond 50 are silently truncated with a warning. Since standard scRNA-seq pipelines use 30-50 PCs, this is rarely a problem.
+
+### Hogwild! SGD (UMAP optimizer)
+The UMAP SGD optimizer uses lock-free Hogwild! updates via atomic floats. Individual `load + add + store` operations are NOT atomic — concurrent writes can lose updates. This is intentional and mathematically justified for SGD convergence (see Niu et al., 2011). In practice, it produces correct embeddings with significant speedup from Rayon parallelism.
+
+### t-test p-value approximation
+`rank_genes_groups` uses a normal approximation for p-values when degrees of freedom > 30, and a corrected approximation for smaller df. This is accurate to ~1% for typical scRNA-seq group sizes (hundreds to thousands of cells). For very small groups (< 10 cells), consider using the Wilcoxon test instead.
+
+### Float32 precision
+All expression data uses Float32 throughout the pipeline. This is intentional — it halves memory usage compared to Float64 and is more than sufficient for count data (which is integer-valued). Statistical computations in `deseq2`, `rank_genes_groups`, and `scale` promote to Float64 internally for intermediate calculations.

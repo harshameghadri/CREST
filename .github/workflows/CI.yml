@@ -32,7 +32,7 @@ jobs:
         run: cargo test --release
       - name: Build and install wheel
         run: |
-          pip install maturin
+          pip install maturin polars numpy
           maturin develop --release
       - name: Smoke test import
         run: python -c "import crest; import polars as pl; print('crest imported successfully')"

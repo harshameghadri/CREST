@@ -27,7 +27,7 @@ fn sparse_randomized_svd(inputs: &[Series]) -> PolarsResult<Series> {
 
     let n_cells = n_cells_series.get(0).unwrap_or(0) as usize;
     let n_genes = n_genes_series.get(0).unwrap_or(0) as usize;
-    let _n_comps = n_comps_series.get(0).unwrap_or(50) as usize;
+    let n_comps = n_comps_series.get(0).unwrap_or(50) as usize;
     
     if n_cells == 0 || n_genes == 0 {
         return Err(PolarsError::ComputeError("Invalid Sparse array dimensions.".into()));
@@ -62,7 +62,7 @@ fn sparse_randomized_svd(inputs: &[Series]) -> PolarsResult<Series> {
 
     // Perform Truncated SVD natively in Rust
     use single_svdlib::legacy::svd_dim;
-    let svd_result = svd_dim(&coo, _n_comps)
+    let svd_result = svd_dim(&coo, n_comps)
         .map_err(|e| PolarsError::ComputeError(format!("SVD failed: {:?}", e).into()))?;
     
     let k = svd_result.d;

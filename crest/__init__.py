@@ -1,7 +1,11 @@
+"""CREST — Columnar Rust Engine for Single-cell Transcriptomics."""
+
+__version__ = "0.1.0"
+
 import polars as pl
 from polars.plugins import register_plugin_function
 from pathlib import Path
-# from .core import BioFrame
+from .core import BioFrame
 
 def _get_lib_path() -> Path:
     """Finds the compiled shared library (.so, .pyd, .dylib) dynamically"""
@@ -223,7 +227,8 @@ class CrestExpr:
     def connectivities(self, n_neighbors: int = 15) -> pl.Expr:
         """
         Build UMAP-style fuzzy simplicial set connectivities from PCA coordinates.
-        Returns sparse COO triplets [cell_i, cell_j, weight, ...] with Gaussian kernel weights.
+        Returns List(Float32): flat COO triplets [cell_i, cell_j, weight, ...] (stride=3)
+        with Gaussian kernel weights.
         """
         return register_plugin_function(
             args=[

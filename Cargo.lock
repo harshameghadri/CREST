@@ -133,25 +133,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
-name = "biopolars"
-version = "0.1.0"
-dependencies = [
- "graphrs",
- "kiddo",
- "nalgebra 0.32.6",
- "nalgebra-sparse",
- "petgraph",
- "polars",
- "pyo3",
- "pyo3-polars",
- "rand 0.8.5",
- "rayon",
- "serde",
- "single-svdlib",
- "statrs",
-]
-
-[[package]]
 name = "bitflags"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -225,6 +206,25 @@ name = "cmov"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6d5ce5728ecb5285a5dd35f02a6a8e34e0828e0b38e8e632e249a3fe3f320211"
+
+[[package]]
+name = "crest"
+version = "0.1.0"
+dependencies = [
+ "graphrs",
+ "kiddo",
+ "nalgebra 0.32.6",
+ "nalgebra-sparse",
+ "petgraph",
+ "polars",
+ "pyo3",
+ "pyo3-polars",
+ "rand 0.8.5",
+ "rayon",
+ "serde",
+ "single-svdlib",
+ "statrs",
+]
 
 [[package]]
 name = "crossbeam-deque"
