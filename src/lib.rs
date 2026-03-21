@@ -12,6 +12,7 @@ struct RankItem {
 mod deseq2;
 mod leiden;
 mod preprocessing;
+mod rank_genes;
 mod stats;
 mod svd;
 mod umap;
