@@ -45,7 +45,10 @@ fn native_umap(inputs: &[Series]) -> PolarsResult<Series> {
     if let Some(first_row) = pca_coords.get_as_series(0).map(|s| s.list().is_ok()) {
         if first_row {
             // Unpack the doubly nested list
-            let inner_series = pca_coords.get_as_series(0).unwrap();
+            let inner_series = match pca_coords.get_as_series(0) {
+                Some(s) => s,
+                None => return Err(PolarsError::ComputeError("UMAP input list is empty".into())),
+            };
             let inner_list = inner_series.list()?;
             for opt_row in inner_list.into_iter() {
                 if let Some(row_series) = opt_row {

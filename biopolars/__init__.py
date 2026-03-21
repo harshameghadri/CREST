@@ -20,7 +20,6 @@ lib = _get_lib_path()
 class BioPolarsExpr:
     def __init__(self, expr: pl.Expr):
         self._expr = expr
-        self._expr = expr
 
     def normalize_cpm(self, cell_id_col: pl.Expr, target_sum: float = 10_000.0) -> pl.Expr:
         """

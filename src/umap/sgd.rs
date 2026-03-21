@@ -68,7 +68,8 @@ pub fn optimize_layout(
     
     let max_weight = graph.edges.iter()
         .map(|e| e.weight)
-        .max_by(|x, y| x.partial_cmp(y).unwrap())
+        .filter(|w| !w.is_nan())
+        .max_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal))
         .unwrap_or(1.0);
         
     let mut states: Vec<EdgeState> = graph.edges.iter().map(|e| {
@@ -128,7 +129,7 @@ pub fn optimize_layout(
             // 2. Negative sample updates
             while state.next_neg <= e_f32 {
                 let r = lcg(&mut rng_seed);
-                let k = ((r * n as f32) as usize) % n;
+                let k = if n > 0 { ((r * n as f32) as usize) % n } else { break };
                 
                 if i != k {
                     let mut dist_sq = 0.0f32;

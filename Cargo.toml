@@ -2,6 +2,9 @@
 name = "biopolars"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "High-performance bioinformatics as native Rust Polars plugins"
+repository = "https://github.com/biopolars/biopolars"
 
 [lib]
 name = "biopolars"

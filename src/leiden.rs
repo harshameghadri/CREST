@@ -23,23 +23,32 @@ fn louvain_clustering(inputs: &[Series]) -> PolarsResult<Series> {
     }
 
     // 1. Build the Kiddo KD-Tree for exact fast nearest neighbors
-    let mut tree: KdTree<f32, 50> = KdTree::new(); // Assuming max 50 PCs
+    // KdTree is parameterized with max 50 dimensions at compile time.
+    // Input dimensions > 50 will be truncated with a warning.
+    const MAX_DIMS: usize = 50;
+    let mut tree: KdTree<f32, MAX_DIMS> = KdTree::new();
     let mut pcas = Vec::with_capacity(n_cells);
-    
+    let mut warned_truncation = false;
+
     for (i, opt_row) in pca_coords.into_iter().enumerate() {
         if let Some(row_series) = opt_row {
             let float_ca = row_series.f32()?;
-            let mut pt = [0.0f32; 50];
-            
+            let actual_dims = float_ca.len();
+            if actual_dims > MAX_DIMS && !warned_truncation {
+                eprintln!("biopolars warning: PCA has {} dimensions but Leiden KD-tree supports max {}. Truncating.", actual_dims, MAX_DIMS);
+                warned_truncation = true;
+            }
+            let mut pt = [0.0f32; MAX_DIMS];
+
             for (j, val) in float_ca.into_no_null_iter().enumerate() {
-                if j < 50 {
+                if j < MAX_DIMS {
                     pt[j] = val;
                 }
             }
             tree.add(&pt, i as u64);
             pcas.push(pt);
         } else {
-            pcas.push([0.0f32; 50]);
+            pcas.push([0.0f32; MAX_DIMS]);
         }
     }
 
@@ -80,6 +89,10 @@ fn louvain_clustering(inputs: &[Series]) -> PolarsResult<Series> {
         for &cell_idx in community {
             if cell_idx < n_cells {
                 cluster_labels[cell_idx] = cluster_id as u32;
+            } else {
+                return Err(PolarsError::ComputeError(
+                    format!("Louvain returned out-of-bounds cell index {} (n_cells={})", cell_idx, n_cells).into()
+                ));
             }
         }
     }

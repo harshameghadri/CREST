@@ -9,14 +9,13 @@ struct RankItem {
     value: f32,
     group: u8,
 }
-use polars::prelude::*;
 
 mod deseq2;
-// mod expressions;
+mod leiden;
+mod stats;
 mod svd;
 mod umap;
 mod umap_binding;
-mod leiden;
 
 #[polars_expr(output_type=Float32)]
 fn log1p(inputs: &[Series]) -> PolarsResult<Series> {

@@ -26,6 +26,8 @@ def highly_variable_genes(
         raise ValueError("BioFrame must have `.obs` cell metadata to determine 'total_cells' for valid zero-expanded variance.")
     
     total_cells = adata.obs.height
+    if total_cells < 2:
+        raise ValueError(f"BioFrame must have at least 2 cells for variance calculation, got {total_cells}.")
     lazy_df = adata.X
     
     # Calculate true mean and variance accounting for structural zeros
@@ -44,7 +46,11 @@ def highly_variable_genes(
         ((pl.col("sum_squares") - 2 * pl.col("mean") * pl.col("sum_counts") + total_cells * (pl.col("mean") ** 2)) / (total_cells - 1)).alias("variance")
     ]).with_columns([
         # Seurat dispersion = variance / mean
-        (pl.col("variance") / pl.col("mean")).alias("dispersion")
+        # Guard against division by zero for unexpressed genes (mean == 0)
+        pl.when(pl.col("mean") > 0)
+            .then(pl.col("variance") / pl.col("mean"))
+            .otherwise(pl.lit(0.0))
+            .alias("dispersion")
     ])
     
     # Evaluate top genes to a tiny list to enforce Parquet pushdown filtering

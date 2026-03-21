@@ -33,6 +33,14 @@ fn sparse_randomized_svd(inputs: &[Series]) -> PolarsResult<Series> {
         return Err(PolarsError::ComputeError("Invalid Sparse array dimensions.".into()));
     }
 
+    // Guard against unreasonable dimensions that would cause OOM
+    const MAX_DIM: usize = 10_000_000; // 10M cells or genes max
+    if n_cells > MAX_DIM || n_genes > MAX_DIM {
+        return Err(PolarsError::ComputeError(
+            format!("Dimensions too large: {}x{} (max {})", n_cells, n_genes, MAX_DIM).into()
+        ));
+    }
+
     // 1. Reconstruct the CooMatrix natively in Rust
     let mut coo = CooMatrix::new(n_cells, n_genes);
     

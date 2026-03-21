@@ -19,8 +19,27 @@ permissions:
   contents: read
 
 jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run Rust tests
+        run: cargo test --release
+      - name: Build and install wheel
+        run: |
+          pip install maturin
+          maturin develop --release
+      - name: Smoke test import
+        run: python -c "import biopolars; import polars as pl; print('biopolars imported successfully')"
+
   linux:
     runs-on: ${{ matrix.platform.runner }}
+    needs: [test]
     strategy:
       matrix:
         platform:
@@ -56,6 +75,7 @@ jobs:
 
   musllinux:
     runs-on: ${{ matrix.platform.runner }}
+    needs: [test]
     strategy:
       matrix:
         platform:
@@ -87,6 +107,7 @@ jobs:
 
   windows:
     runs-on: ${{ matrix.platform.runner }}
+    needs: [test]
     strategy:
       matrix:
         platform:
@@ -119,6 +140,7 @@ jobs:
 
   macos:
     runs-on: ${{ matrix.platform.runner }}
+    needs: [test]
     strategy:
       matrix:
         platform:

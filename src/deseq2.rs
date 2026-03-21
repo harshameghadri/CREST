@@ -69,7 +69,6 @@ fn deseq2_irls(inputs: &[Series]) -> PolarsResult<Series> {
         let mut beta = DVector::zeros(num_covariates);
         let max_iter = 250;
         let tol = 1e-6;
-        let mut converged = false;
         
         for _iter in 0..max_iter {
             // mu = size_factor * exp(X * beta)
@@ -132,37 +131,35 @@ fn deseq2_irls(inputs: &[Series]) -> PolarsResult<Series> {
                 None => match xtwx.pseudo_inverse(1e-9) {
                     Ok(pinv) => pinv * &xtwz,
                     Err(_) => {
-                        // Matrix is completely degenerate
+                        // Matrix is completely degenerate — keep last valid beta
                         break;
                     }
                 }
             };
-            
+
             let diff = (&beta_new - &beta).norm();
             beta = beta_new;
+
+            if diff.is_nan() {
+                break;
+            }
             
             if diff < tol {
-                converged = true;
                 break;
             }
         }
         
-        if converged {
-            let beta_vec: Vec<f32> = beta.iter().map(|&v| {
-                if v.is_nan() || v.is_infinite() {
-                    0.0
-                } else {
-                    v as f32
-                }
-            }).collect();
-            let out_series = Series::new("beta".into(), &beta_vec);
-            all_betas.push(Some(out_series));
-        } else {
-            // StatsModels returns zeros when IRLS fails to converge. 
-            // Mirroring that behavior to maintain output shape matching.
-            let zeros = vec![0.0f32; num_covariates];
-            all_betas.push(Some(Series::new("beta".into(), &zeros)));
-        }
+        // Return best beta found (converged or last iteration's estimate)
+        // Clean NaN/Inf values to zero for safety
+        let beta_vec: Vec<f32> = beta.iter().map(|&v| {
+            if v.is_nan() || v.is_infinite() {
+                0.0
+            } else {
+                v as f32
+            }
+        }).collect();
+        let out_series = Series::new("beta".into(), &beta_vec);
+        all_betas.push(Some(out_series));
     }
     
     // We return a ListChunked array where each row contains the list of Beta coefficients
@@ -170,8 +167,10 @@ fn deseq2_irls(inputs: &[Series]) -> PolarsResult<Series> {
     
     for opt_b in all_betas {
         if let Some(b) = opt_b {
-            let b_arr = b.f32().unwrap();
-            builder.append_slice(b_arr.cont_slice().unwrap());
+            let b_arr = b.f32()
+                .map_err(|e| PolarsError::ComputeError(format!("Beta series type error: {}", e).into()))?;
+            let values: Vec<f32> = b_arr.into_no_null_iter().collect();
+            builder.append_slice(&values);
         } else {
             builder.append_null();
         }

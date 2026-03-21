@@ -143,6 +143,8 @@ def run_svd_umap(
     )
 
     # Extract UMAP coordinates as numpy array
+    if len(result_df) == 0 or result_df["umap_coords"].is_null().all():
+        raise RuntimeError("SVD/UMAP pipeline returned empty results")
     umap_nested = result_df["umap_coords"][0]
     umap_array = np.array(umap_nested.to_list())
 
@@ -180,6 +182,8 @@ def run_svd_louvain(
         pl.col("pca_coords").bio.louvain(n_neighbors=n_neighbors).alias("cluster_ids")
     )
 
+    if len(result_df) == 0 or result_df["cluster_ids"].is_null().all():
+        raise RuntimeError("SVD/Louvain pipeline returned empty results")
     cluster_nested = result_df["cluster_ids"][0]
     return np.array(cluster_nested.to_list(), dtype=np.uint32)
 
