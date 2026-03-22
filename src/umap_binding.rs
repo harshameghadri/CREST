@@ -32,6 +32,33 @@ fn native_umap(inputs: &[Series]) -> PolarsResult<Series> {
     let n_epochs = if inputs.len() > 5 { inputs[5].u32()?.get(0).unwrap_or(200) as usize } else { 200 };
     let spectral_n_iter = if inputs.len() > 6 { inputs[6].u32()?.get(0).unwrap_or(50) as usize } else { 50 };
     
+    // Validate parameter bounds
+    if n_components == 0 || n_components > 100 {
+        return Err(PolarsError::ComputeError(
+            format!("n_components must be 1-100, got {}", n_components).into()
+        ));
+    }
+    if n_neighbors == 0 || n_neighbors > 1000 {
+        return Err(PolarsError::ComputeError(
+            format!("n_neighbors must be 1-1000, got {}", n_neighbors).into()
+        ));
+    }
+    if n_epochs == 0 || n_epochs > 10_000 {
+        return Err(PolarsError::ComputeError(
+            format!("n_epochs must be 1-10000, got {}", n_epochs).into()
+        ));
+    }
+    if min_dist < 0.0 || !min_dist.is_finite() {
+        return Err(PolarsError::ComputeError(
+            format!("min_dist must be non-negative and finite, got {}", min_dist).into()
+        ));
+    }
+    if spread <= 0.0 || !spread.is_finite() {
+        return Err(PolarsError::ComputeError(
+            format!("spread must be positive and finite, got {}", spread).into()
+        ));
+    }
+
     let n_cells = pca_coords.len();
     if n_cells == 0 {
         return Err(PolarsError::ComputeError("Cannot perform UMAP on empty DataFrame".into()));

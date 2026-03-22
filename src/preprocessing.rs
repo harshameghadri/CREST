@@ -1,6 +1,20 @@
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 
+/// Maximum allowed dimension for cell_id or gene_id indexed vectors.
+/// Prevents OOM from malicious or corrupted inputs (e.g., cell_id = u32::MAX
+/// would try to allocate a 16GB vector). 10M is generous for real datasets.
+const MAX_DIM: usize = 10_000_000;
+
+fn validate_dim(max_id: usize, label: &str) -> PolarsResult<()> {
+    if max_id >= MAX_DIM {
+        return Err(PolarsError::ComputeError(
+            format!("{} too large: {} (max {}). Check for corrupted IDs.", label, max_id, MAX_DIM).into()
+        ));
+    }
+    Ok(())
+}
+
 /// normalize_cpm: Counts Per Million (CP10k) normalization.
 ///
 /// Inputs:
@@ -32,6 +46,7 @@ fn normalize_cpm(inputs: &[Series]) -> PolarsResult<Series> {
         .into_no_null_iter()
         .max()
         .unwrap_or(0) as usize;
+    validate_dim(max_cell, "max cell_id in normalize_cpm")?;
 
     // Pass 1: accumulate per-cell sums
     let mut cell_sums = vec![0.0f64; max_cell + 1];
@@ -91,6 +106,7 @@ fn qc_total_counts(inputs: &[Series]) -> PolarsResult<Series> {
     }
 
     let max_cell = cell_ids.into_no_null_iter().max().unwrap_or(0) as usize;
+    validate_dim(max_cell, "max cell_id in qc_total_counts")?;
 
     // Accumulate per-cell total counts
     let mut cell_sums = vec![0.0f32; max_cell + 1];
@@ -133,6 +149,7 @@ fn qc_n_genes(inputs: &[Series]) -> PolarsResult<Series> {
     }
 
     let max_cell = cell_ids.into_no_null_iter().max().unwrap_or(0) as usize;
+    validate_dim(max_cell, "max cell_id in qc_n_genes")?;
 
     let mut n_genes = vec![0u32; max_cell + 1];
     for (opt_count, opt_cell) in counts.into_iter().zip(cell_ids.into_iter()) {
@@ -179,6 +196,7 @@ fn filter_cells(inputs: &[Series]) -> PolarsResult<Series> {
     }
 
     let max_cell = cell_ids.into_no_null_iter().max().unwrap_or(0) as usize;
+    validate_dim(max_cell, "max cell_id in filter_cells")?;
 
     let mut cell_sums = vec![0.0f32; max_cell + 1];
     let mut cell_n_genes = vec![0u32; max_cell + 1];
@@ -234,6 +252,7 @@ fn scale(inputs: &[Series]) -> PolarsResult<Series> {
     }
 
     let max_gene = gene_ids.into_no_null_iter().max().unwrap_or(0) as usize;
+    validate_dim(max_gene, "max gene_id in scale")?;
 
     // Pass 1: accumulate per-gene sum and sum-of-squares (for observed nonzeros)
     let mut gene_sum = vec![0.0f64; max_gene + 1];
@@ -327,6 +346,7 @@ fn score_genes(inputs: &[Series]) -> PolarsResult<Series> {
     }
 
     let max_cell = cell_ids.into_no_null_iter().max().unwrap_or(0) as usize;
+    validate_dim(max_cell, "max cell_id in score_genes")?;
 
     // Accumulate per-cell sums for gene_set and background
     let mut set_sum = vec![0.0f64; max_cell + 1];

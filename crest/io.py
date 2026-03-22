@@ -34,6 +34,26 @@ def convert_h5_to_parquet_stream(file_path: Union[str, Path], output_path: Union
         data = matrix['data']
         indices = matrix['indices']
 
+        # Validate HDF5 array consistency
+        if len(data) != len(indices):
+            raise ValueError(
+                f"HDF5 data/indices length mismatch: data has {len(data)} elements "
+                f"but indices has {len(indices)} elements"
+            )
+
+        if len(indptr) < 2:
+            raise ValueError(f"HDF5 indptr too short: {len(indptr)} (need at least 2)")
+
+        # Validate indptr monotonicity and bounds via spot checks
+        first_ptr = int(indptr[0])
+        last_ptr = int(indptr[-1])
+        if first_ptr != 0:
+            raise ValueError(f"HDF5 indptr[0] should be 0, got {first_ptr}")
+        if last_ptr > len(data):
+            raise ValueError(
+                f"HDF5 indptr[-1] ({last_ptr}) exceeds data length ({len(data)})"
+            )
+
         num_cells = len(indptr) - 1
         writer = None
 

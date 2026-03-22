@@ -16,7 +16,14 @@ fn louvain_clustering(inputs: &[Series]) -> PolarsResult<Series> {
 
     let pca_coords = &inputs[0].list()?;
     let k_neighbors = inputs[1].u32()?.get(0).unwrap_or(15) as usize;
-    
+
+    // Validate parameter bounds
+    if k_neighbors == 0 || k_neighbors > 1000 {
+        return Err(PolarsError::ComputeError(
+            format!("n_neighbors must be 1-1000, got {}", k_neighbors).into()
+        ));
+    }
+
     let n_cells = pca_coords.len();
     if n_cells == 0 {
         return Err(PolarsError::ComputeError("Cannot perform clustering on empty DataFrame".into()));

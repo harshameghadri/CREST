@@ -54,7 +54,14 @@ fn sparse_randomized_svd(inputs: &[Series]) -> PolarsResult<Series> {
             
             for ((cell_idx, gene_idx), val) in cells_ca.into_iter().zip(genes_ca.into_iter()).zip(vals_ca.into_iter()) {
                 if let (Some(row), Some(col), Some(count)) = (cell_idx, gene_idx, val) {
-                    coo.push(row as usize, col as usize, count as f64);
+                    let r = row as usize;
+                    let c = col as usize;
+                    if r >= n_cells || c >= n_genes {
+                        return Err(PolarsError::ComputeError(
+                            format!("COO index out of bounds: ({}, {}) for matrix {}x{}", r, c, n_cells, n_genes).into()
+                        ));
+                    }
+                    coo.push(r, c, count as f64);
                 }
             }
         }

@@ -21,11 +21,15 @@ pub fn build_fuzzy_simplicial_set(
     n_neighbors: usize,
 ) -> UmapGraph {
     let n = data.len();
-    if n == 0 {
+    if n <= 1 {
+        // Cannot build a neighbor graph with 0 or 1 points
         return UmapGraph { edges: vec![] };
     }
-    
+
     let k = n_neighbors.min(n - 1);
+    if k == 0 {
+        return UmapGraph { edges: vec![] };
+    }
     let target_sum = (k as f32).log2();
 
     // 1. Find k nearest neighbors for each point (Exact via brute-force + Rayon for now)

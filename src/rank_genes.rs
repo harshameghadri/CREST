@@ -45,6 +45,19 @@ fn rank_genes_groups(inputs: &[Series]) -> PolarsResult<Series> {
     let max_cell = cell_ids.into_no_null_iter().max().unwrap_or(0) as usize;
     let max_gene = gene_ids.into_no_null_iter().max().unwrap_or(0) as usize;
 
+    // Guard against OOM from corrupted IDs
+    const MAX_DIM: usize = 10_000_000;
+    if max_cell >= MAX_DIM {
+        return Err(PolarsError::ComputeError(
+            format!("max cell_id too large: {} (max {}). Check for corrupted IDs.", max_cell, MAX_DIM).into()
+        ));
+    }
+    if max_gene >= MAX_DIM {
+        return Err(PolarsError::ComputeError(
+            format!("max gene_id too large: {} (max {}). Check for corrupted IDs.", max_gene, MAX_DIM).into()
+        ));
+    }
+
     let mut cell_group = vec![u32::MAX; max_cell + 1];
     for (opt_cell, opt_group) in cell_ids.into_iter().zip(group_labels.into_iter()) {
         if let (Some(cell), Some(group)) = (opt_cell, opt_group) {
