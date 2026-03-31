@@ -3,7 +3,7 @@ use pyo3_polars::derive::polars_expr;
 use petgraph::graph::UnGraph;
 use petgraph::graph::NodeIndex;
 use instant_distance::{Builder, Hnsw, Point};
-use rand::Rng;
+use rand::{Rng, SeedableRng};
 
 // ----- HNSW Point implementation for PCA vectors -----
 
@@ -32,7 +32,7 @@ impl Point for PcaPoint {
 ///   k_i     = total weighted degree of node i
 ///   sigma_c = total weighted degree of community c
 ///   m       = total edge weight in graph
-fn modularity_gain(
+fn _modularity_gain(
     node_weights_to_community: f64,
     node_degree: f64,
     community_degree: f64,
@@ -203,7 +203,14 @@ fn leiden_partition(
 
 // ----- Polars plugin entry point -----
 
-#[polars_expr(output_type=UInt32)]
+fn leiden_output(_: &[Field]) -> PolarsResult<Field> {
+    Ok(Field::new(
+        "leiden".into(),
+        DataType::List(Box::new(DataType::UInt32)),
+    ))
+}
+
+#[polars_expr(output_type_func=leiden_output)]
 fn leiden_clustering(inputs: &[Series]) -> PolarsResult<Series> {
     if inputs.len() < 2 {
         return Err(PolarsError::ComputeError(
@@ -299,9 +306,11 @@ fn leiden_clustering(inputs: &[Series]) -> PolarsResult<Series> {
     // 4. Run Leiden community detection
     let communities = leiden_partition(&graph, resolution, 10, 42);
 
-    // 5. Return cluster labels
+    // 5. Return cluster labels wrapped as List(UInt32) for aggregate context
     let labels: Vec<u32> = communities.into_iter().map(|c| c as u32).collect();
-    Ok(Series::new("leiden".into(), labels))
+    let inner = Series::new("leiden".into(), labels);
+    let wrapped = Series::new("leiden".into(), &[AnyValue::List(inner)]);
+    Ok(wrapped)
 }
 
 // Need this import for HNSW search
