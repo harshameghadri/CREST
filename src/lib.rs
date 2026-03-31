@@ -1,4 +1,3 @@
-use pyo3::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use polars::prelude::*;
 use statrs::distribution::{ContinuousCDF, Normal};
@@ -9,14 +8,16 @@ struct RankItem {
     value: f32,
     group: u8,
 }
-use polars::prelude::*;
 
 mod deseq2;
-// mod expressions;
+mod leiden;
+mod neighbors;
+mod preprocessing;
+mod rank_genes;
+mod stats;
 mod svd;
 mod umap;
 mod umap_binding;
-mod leiden;
 
 #[polars_expr(output_type=Float32)]
 fn log1p(inputs: &[Series]) -> PolarsResult<Series> {

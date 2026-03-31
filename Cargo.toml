@@ -1,23 +1,26 @@
 [package]
-name = "biopolars"
+name = "crest"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "CREST — Columnar Rust Engine for Single-cell Transcriptomics"
+repository = "https://github.com/crest-bio/crest"
 
 [lib]
-name = "biopolars"
+name = "crest"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.21.2", features = ["extension-module", "abi3-py38"] }
+pyo3 = { version = "0.21.2", features = ["extension-module", "abi3-py310"] }
 pyo3-polars = { version = "0.15.0", features = ["derive"] }
 polars = { version = "0.41.3", default-features = false, features = ["lazy"] }
 serde = { version = "1", features = ["derive"] }
 statrs = "0.16.1"
 nalgebra = "0.32.3"
 nalgebra-sparse = "0.11.0"
-single-svdlib = "1.0.9"
+faer = "0.24.0"
+instant-distance = "0.6.1"
 petgraph = "0.8.3"
-graphrs = "0.11.16"
-kiddo = "5.2.4"
 rand = "0.8.5"
+rand_distr = "0.4.3"
 rayon = "1.11.0"

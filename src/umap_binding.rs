@@ -32,6 +32,33 @@ fn native_umap(inputs: &[Series]) -> PolarsResult<Series> {
     let n_epochs = if inputs.len() > 5 { inputs[5].u32()?.get(0).unwrap_or(200) as usize } else { 200 };
     let spectral_n_iter = if inputs.len() > 6 { inputs[6].u32()?.get(0).unwrap_or(50) as usize } else { 50 };
     
+    // Validate parameter bounds
+    if n_components == 0 || n_components > 100 {
+        return Err(PolarsError::ComputeError(
+            format!("n_components must be 1-100, got {}", n_components).into()
+        ));
+    }
+    if n_neighbors == 0 || n_neighbors > 1000 {
+        return Err(PolarsError::ComputeError(
+            format!("n_neighbors must be 1-1000, got {}", n_neighbors).into()
+        ));
+    }
+    if n_epochs == 0 || n_epochs > 10_000 {
+        return Err(PolarsError::ComputeError(
+            format!("n_epochs must be 1-10000, got {}", n_epochs).into()
+        ));
+    }
+    if min_dist < 0.0 || !min_dist.is_finite() {
+        return Err(PolarsError::ComputeError(
+            format!("min_dist must be non-negative and finite, got {}", min_dist).into()
+        ));
+    }
+    if spread <= 0.0 || !spread.is_finite() {
+        return Err(PolarsError::ComputeError(
+            format!("spread must be positive and finite, got {}", spread).into()
+        ));
+    }
+
     let n_cells = pca_coords.len();
     if n_cells == 0 {
         return Err(PolarsError::ComputeError("Cannot perform UMAP on empty DataFrame".into()));
@@ -45,7 +72,10 @@ fn native_umap(inputs: &[Series]) -> PolarsResult<Series> {
     if let Some(first_row) = pca_coords.get_as_series(0).map(|s| s.list().is_ok()) {
         if first_row {
             // Unpack the doubly nested list
-            let inner_series = pca_coords.get_as_series(0).unwrap();
+            let inner_series = match pca_coords.get_as_series(0) {
+                Some(s) => s,
+                None => return Err(PolarsError::ComputeError("UMAP input list is empty".into())),
+            };
             let inner_list = inner_series.list()?;
             for opt_row in inner_list.into_iter() {
                 if let Some(row_series) = opt_row {
@@ -67,7 +97,39 @@ fn native_umap(inputs: &[Series]) -> PolarsResult<Series> {
             }
         }
     }
-    
+
+    // Validate unpacked data
+    if data.is_empty() {
+        return Err(PolarsError::ComputeError("No PCA data could be extracted from input".into()));
+    }
+    let pca_dims = data[0].len();
+    if pca_dims == 0 {
+        return Err(PolarsError::ComputeError("PCA vectors have zero dimensions".into()));
+    }
+    // Warn if dimensions vary (shouldn't happen with valid SVD output)
+    if data.iter().any(|row| row.len() != pca_dims) {
+        return Err(PolarsError::ComputeError(
+            "PCA vectors have inconsistent dimensions. Check SVD output.".into()
+        ));
+    }
+    if n_components > pca_dims {
+        return Err(PolarsError::ComputeError(
+            format!(
+                "n_components ({}) exceeds PCA dimensionality ({}). \
+                 Reduce n_components or increase SVD n_comps.",
+                n_components, pca_dims
+            ).into()
+        ));
+    }
+    if n_neighbors >= data.len() {
+        return Err(PolarsError::ComputeError(
+            format!(
+                "n_neighbors ({}) must be less than n_cells ({})",
+                n_neighbors, data.len()
+            ).into()
+        ));
+    }
+
     // Execute our custom Native Rust UMAP core
     let embeddings = crate::umap::core::run_umap(
         &data,
