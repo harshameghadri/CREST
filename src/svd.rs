@@ -44,8 +44,9 @@ fn randomized_svd(
 
     // 1. Compute column means for implicit centering (one pass over sparse data)
     let mut col_sums = vec![0.0f64; n_cols];
-    for (&_row, &col, &val) in coo.triplet_iter().map(|(r, c, v)| (r, c, v)) {
-        col_sums[col] += val;
+    for (row, col, val) in coo.triplet_iter() {
+        let _ = row;
+        col_sums[col] += *val;
     }
     let col_means: Vec<f64> = col_sums.iter().map(|s| s / n_rows as f64).collect();
 
@@ -65,9 +66,9 @@ fn randomized_svd(
     let mut y = Mat::<f64>::zeros(n_rows, sketch_dim);
 
     // Sparse X @ Ω: for each non-zero (row, col, val), add val * Ω[col, :]
-    for (&row, &col, &val) in coo.triplet_iter().map(|(r, c, v)| (r, c, v)) {
+    for (row, col, val) in coo.triplet_iter() {
         for s in 0..sketch_dim {
-            y[(row, s)] += val * omega[(col, s)];
+            y[(row, s)] += *val * omega[(col, s)];
         }
     }
 
@@ -90,9 +91,9 @@ fn randomized_svd(
         let mut xty = Mat::<f64>::zeros(n_cols, sketch_dim);
 
         // Sparse X^T @ Y
-        for (&row, &col, &val) in coo.triplet_iter().map(|(r, c, v)| (r, c, v)) {
+        for (row, col, val) in coo.triplet_iter() {
             for s in 0..sketch_dim {
-                xty[(col, s)] += val * y[(row, s)];
+                xty[(col, s)] += *val * y[(row, s)];
             }
         }
 
@@ -111,9 +112,9 @@ fn randomized_svd(
 
         // Y = X_centered @ (X_centered^T @ Y)
         y = Mat::<f64>::zeros(n_rows, sketch_dim);
-        for (&row, &col, &val) in coo.triplet_iter().map(|(r, c, v)| (r, c, v)) {
+        for (row, col, val) in coo.triplet_iter() {
             for s in 0..sketch_dim {
-                y[(row, s)] += val * xty[(col, s)];
+                y[(row, s)] += *val * xty[(col, s)];
             }
         }
         // Mean correction
@@ -132,15 +133,15 @@ fn randomized_svd(
 
     // 5. QR decomposition of Y → Q (thin QR: Q is n_rows × sketch_dim)
     let qr = y.qr();
-    let q = qr.compute_thin_q();
+    let q = qr.compute_thin_Q();
 
     // 6. B = Q^T @ X_centered → (sketch_dim × n_cols)
     let mut b = Mat::<f64>::zeros(sketch_dim, n_cols);
 
     // B = Q^T @ X (sparse multiply)
-    for (&row, &col, &val) in coo.triplet_iter().map(|(r, c, v)| (r, c, v)) {
+    for (row, col, val) in coo.triplet_iter() {
         for s in 0..sketch_dim {
-            b[(s, col)] += q[(row, s)] * val;
+            b[(s, col)] += q[(row, s)] * *val;
         }
     }
 
@@ -158,12 +159,12 @@ fn randomized_svd(
     }
 
     // 7. SVD of small matrix B → thin SVD
-    let b_svd = b.thin_svd();
-    let u_b = b_svd.u();
-    let s_diag = b_svd.s_diagonal();
+    let b_svd = b.thin_svd().map_err(|e| format!("SVD failed: {:?}", e))?;
+    let u_b = b_svd.U();
+    let s_col = b_svd.S().column_vector();
 
     // 8. U = Q @ U_B, PCA coords = U * S
-    let actual_k = k.min(s_diag.nrows());
+    let actual_k = k.min(s_col.nrows());
     let mut pca_coords: Vec<Vec<f32>> = Vec::with_capacity(n_rows);
 
     for i in 0..n_rows {
@@ -175,7 +176,7 @@ fn randomized_svd(
                 u_ic += q[(i, s)] * u_b[(s, c)];
             }
             // PCA coordinate = U[i,c] * S[c]
-            row.push((u_ic * s_diag[(c, 0)]) as f32);
+            row.push((u_ic * s_col[c]) as f32);
         }
         pca_coords.push(row);
     }

@@ -109,3 +109,4 @@ research/
 # Misc
 .ruff_cache/
 .claude/
+CLAUDE.md

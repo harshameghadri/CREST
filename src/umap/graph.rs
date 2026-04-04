@@ -1,4 +1,4 @@
-use instant_distance::{Builder, Hnsw, Point, Search};
+use instant_distance::{Builder, Point, Search};
 use rayon::prelude::*;
 use std::collections::HashMap;
 
@@ -47,9 +47,9 @@ pub fn build_fuzzy_simplicial_set(
 
     // 1. Build HNSW index for O(n log n) approximate KNN
     let points: Vec<PcaPoint> = data.iter().map(|v| PcaPoint(v.clone())).collect();
-    let hnsw: Hnsw<PcaPoint> = Builder::default()
+    let (hnsw, _ids) = Builder::default()
         .ef_construction(200)
-        .build(points.iter().cloned(), points.len());
+        .build_hnsw(points.clone());
 
     // 2. Find k nearest neighbors for each point using HNSW
     // Note: instant-distance's search is NOT thread-safe with shared Search state,
@@ -58,11 +58,11 @@ pub fn build_fuzzy_simplicial_set(
     let mut search = Search::default();
 
     for (cell_idx, point) in points.iter().enumerate() {
-        search = hnsw.search(point, &mut search);
+        let results = hnsw.search(point, &mut search);
         let mut indices = Vec::with_capacity(k);
         let mut distances = Vec::with_capacity(k);
-        for item in search.iter().take(k + 1) {
-            let idx = item.pid.into_inner();
+        for item in results.take(k + 1) {
+            let idx = item.pid.into_inner() as usize;
             if idx != cell_idx {
                 indices.push(idx);
                 distances.push(item.distance);

@@ -2,7 +2,7 @@ use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use petgraph::graph::UnGraph;
 use petgraph::graph::NodeIndex;
-use instant_distance::{Builder, Hnsw, Point};
+use instant_distance::{Builder, Point, Search};
 use rand::{Rng, SeedableRng};
 
 // ----- HNSW Point implementation for PCA vectors -----
@@ -279,9 +279,9 @@ fn leiden_clustering(inputs: &[Series]) -> PolarsResult<Series> {
     let k = k_neighbors.min(n - 1);
 
     // 2. Build HNSW index for approximate KNN
-    let hnsw: Hnsw<PcaPoint> = Builder::default()
+    let (hnsw, _ids) = Builder::default()
         .ef_construction(200)  // Higher = better recall, slower build
-        .build(data.iter().cloned(), data.len());
+        .build_hnsw(data.clone());
 
     // 3. Query KNN and build petgraph undirected weighted graph
     let mut graph = UnGraph::<(), f64>::new_undirected();
@@ -291,9 +291,9 @@ fn leiden_clustering(inputs: &[Series]) -> PolarsResult<Series> {
 
     let mut search = Search::default();
     for (i, point) in data.iter().enumerate() {
-        search = hnsw.search(point, &mut search);
-        for item in search.iter().take(k) {
-            let j = item.pid.into_inner();
+        let results = hnsw.search(point, &mut search);
+        for item in results.take(k) {
+            let j = item.pid.into_inner() as usize;
             if i < j {
                 let dist = item.distance;
                 // Gaussian kernel weight
@@ -312,9 +312,6 @@ fn leiden_clustering(inputs: &[Series]) -> PolarsResult<Series> {
     let wrapped = Series::new("leiden".into(), &[AnyValue::List(inner)]);
     Ok(wrapped)
 }
-
-// Need this import for HNSW search
-use instant_distance::Search;
 
 #[cfg(test)]
 mod tests {
