@@ -1,4 +1,4 @@
-use instant_distance::{Builder, Point, Search};
+use crate::knn::hnsw_knn;
 use rayon::prelude::*;
 use std::collections::HashMap;
 
@@ -11,23 +11,6 @@ pub struct Edge {
 
 pub struct UmapGraph {
     pub edges: Vec<Edge>,
-}
-
-/// PCA point for HNSW distance computation
-#[derive(Clone, Debug)]
-struct PcaPoint(Vec<f32>);
-
-impl Point for PcaPoint {
-    fn distance(&self, other: &Self) -> f32 {
-        self.0.iter().zip(other.0.iter())
-            .map(|(a, b)| (a - b).powi(2))
-            .sum::<f32>()
-            .sqrt()
-    }
-}
-
-pub fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| (x - y).powi(2)).sum::<f32>().sqrt()
 }
 
 pub fn build_fuzzy_simplicial_set(
@@ -45,34 +28,8 @@ pub fn build_fuzzy_simplicial_set(
     }
     let target_sum = (k as f32).log2();
 
-    // 1. Build HNSW index for O(n log n) approximate KNN
-    let points: Vec<PcaPoint> = data.iter().map(|v| PcaPoint(v.clone())).collect();
-    let (hnsw, _ids) = Builder::default()
-        .ef_construction(200)
-        .build_hnsw(points.clone());
-
-    // 2. Find k nearest neighbors for each point using HNSW
-    // Note: instant-distance's search is NOT thread-safe with shared Search state,
-    // so we build results sequentially (HNSW query is already fast: O(log n) per query)
-    let mut knn_results: Vec<(Vec<usize>, Vec<f32>)> = Vec::with_capacity(n);
-    let mut search = Search::default();
-
-    for (cell_idx, point) in points.iter().enumerate() {
-        let results = hnsw.search(point, &mut search);
-        let mut indices = Vec::with_capacity(k);
-        let mut distances = Vec::with_capacity(k);
-        for item in results.take(k + 1) {
-            let idx = item.pid.into_inner() as usize;
-            if idx != cell_idx {
-                indices.push(idx);
-                distances.push(item.distance);
-            }
-            if indices.len() >= k {
-                break;
-            }
-        }
-        knn_results.push((indices, distances));
-    }
+    // 1-2. Approximate KNN via HNSW (true row indices, self excluded)
+    let knn_results = hnsw_knn(data, k);
 
     // 3. Compute rho, sigma, and asymmetric weights (UMAP membership strengths)
     let asymmetric_edges: Vec<Vec<(usize, f32)>> = knn_results.into_par_iter().map(|(indices, dists)| {

@@ -26,15 +26,14 @@ class CrestExpr:
         self._expr = expr
 
     def normalize_cpm(self, cell_id_col: pl.Expr, target_sum: float = 10_000.0) -> pl.Expr:
-        """
-        Normalize counts to a target sum per cell (default 10,000 / CP10k).
-        Utilizes Polars native `.over()` syntax for maximum parallel performance.
-        """
+        """Normalize counts to a target sum per cell (default 10,000 / CP10k)."""
         return register_plugin_function(
-            args=[self._expr, cell_id_col],
+            args=[self._expr, cell_id_col, pl.lit(target_sum).cast(pl.Float64)],
             plugin_path=lib,
             function_name="normalize_cpm",
-            is_elementwise=True,
+            # Aggregates over all rows of a cell/gene: must see the whole column,
+            # so Polars may not split it into batches.
+            is_elementwise=False,
         )
 
     def log1p(self) -> pl.Expr:
@@ -115,17 +114,21 @@ class CrestExpr:
             is_elementwise=False
         )
 
-    def leiden(self, n_neighbors: int = 15, resolution: float = 1.0) -> pl.Expr:
+    def leiden(self, n_neighbors: int = 15, resolution: float = 1.0, n_iterations: int = 2, seed: int = 0) -> pl.Expr:
         """
         Leiden community detection from PCA coordinates (Traag et al. 2019).
-        Unlike Louvain, Leiden guarantees well-connected communities.
-        Returns UInt32 cluster IDs.
+
+        Builds the UMAP fuzzy-simplicial-set KNN graph (as scanpy's ``pp.neighbors``)
+        and optimises modularity with the given resolution. Unlike Louvain, Leiden
+        guarantees well-connected communities. Returns UInt32 cluster IDs.
         """
         return register_plugin_function(
             args=[
                 self._expr, # PCA coords `List(Float32)`
                 pl.lit(n_neighbors).cast(pl.UInt32),
                 pl.lit(resolution).cast(pl.Float32),
+                pl.lit(n_iterations).cast(pl.UInt32),
+                pl.lit(seed).cast(pl.UInt64),
             ],
             plugin_path=lib,
             function_name="leiden_clustering",
@@ -144,7 +147,9 @@ class CrestExpr:
             args=[self._expr, cell_id_col],
             plugin_path=lib,
             function_name="qc_total_counts",
-            is_elementwise=True,
+            # Aggregates over all rows of a cell/gene: must see the whole column,
+            # so Polars may not split it into batches.
+            is_elementwise=False,
         )
 
     def qc_n_genes(self, cell_id_col: pl.Expr) -> pl.Expr:
@@ -153,7 +158,9 @@ class CrestExpr:
             args=[self._expr, cell_id_col],
             plugin_path=lib,
             function_name="qc_n_genes",
-            is_elementwise=True,
+            # Aggregates over all rows of a cell/gene: must see the whole column,
+            # so Polars may not split it into batches.
+            is_elementwise=False,
         )
 
     def filter_cells(self, cell_id_col: pl.Expr, min_genes: int = 200, min_counts: float = 0.0) -> pl.Expr:
@@ -167,7 +174,9 @@ class CrestExpr:
             ],
             plugin_path=lib,
             function_name="filter_cells",
-            is_elementwise=True,
+            # Aggregates over all rows of a cell/gene: must see the whole column,
+            # so Polars may not split it into batches.
+            is_elementwise=False,
         )
 
     def scale(self, gene_id_col: pl.Expr, n_obs: int, max_value: float = 10.0) -> pl.Expr:
@@ -181,7 +190,9 @@ class CrestExpr:
             ],
             plugin_path=lib,
             function_name="scale",
-            is_elementwise=True,
+            # Aggregates over all rows of a cell/gene: must see the whole column,
+            # so Polars may not split it into batches.
+            is_elementwise=False,
         )
 
     def score_genes(self, cell_id_col: pl.Expr, gene_id_col: pl.Expr, gene_set: list) -> pl.Expr:
@@ -195,7 +206,9 @@ class CrestExpr:
             ],
             plugin_path=lib,
             function_name="score_genes",
-            is_elementwise=True,
+            # Aggregates over all rows of a cell/gene: must see the whole column,
+            # so Polars may not split it into batches.
+            is_elementwise=False,
         )
 
     def rank_genes_groups(self, cell_id_col: pl.Expr, gene_id_col: pl.Expr, group_col: pl.Expr, target_group: int = 1) -> pl.Expr:

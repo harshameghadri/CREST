@@ -10,6 +10,7 @@ struct RankItem {
 }
 
 mod deseq2;
+mod knn;
 mod leiden;
 mod neighbors;
 mod preprocessing;
@@ -121,7 +122,8 @@ fn wilcoxon_rank_sum(inputs: &[Series]) -> PolarsResult<Series> {
             z = (limit - 0.5) / std_u;
         }
         
-        let p_val: f64 = 2.0 * (1.0 - normal_dist.cdf(z));
+        // sf() avoids the 1 - cdf cancellation that rounds small p-values to 0
+        let p_val: f64 = (2.0 * normal_dist.sf(z)).min(1.0);
         pvalues.push(Some(p_val));
     }
     

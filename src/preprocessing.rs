@@ -22,7 +22,7 @@ fn validate_dim(max_id: usize, label: &str) -> PolarsResult<()> {
 /// 1: cell_id column (UInt32) - cell identifiers
 ///
 /// For each cell, computes: count / sum(counts_in_cell) * target_sum
-/// Target sum defaults to 10,000 (CP10k), matching scanpy's normalize_total.
+/// 2: target_sum (Float64, optional) - defaults to 10,000 (CP10k), matching scanpy's normalize_total.
 ///
 /// This is an elementwise operation that uses the cell_id to group.
 #[polars_expr(output_type=Float32)]
@@ -57,7 +57,11 @@ fn normalize_cpm(inputs: &[Series]) -> PolarsResult<Series> {
     }
 
     // Pass 2: normalize each count by its cell's total
-    let target_sum = 10_000.0f64;
+    let target_sum = if inputs.len() > 2 {
+        inputs[2].f64()?.get(0).unwrap_or(10_000.0)
+    } else {
+        10_000.0
+    };
     let normalized: Float32Chunked = counts
         .into_iter()
         .zip(cell_ids.into_iter())

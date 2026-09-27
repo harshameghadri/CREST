@@ -1,5 +1,6 @@
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
+use statrs::distribution::{ContinuousCDF, StudentsT};
 
 /// Output type: List(List(Float32)) — each inner list is [gene_id, t_stat, p_value, adj_p_value, log2_fc]
 fn rank_genes_output(_: &[Field]) -> PolarsResult<Field> {
@@ -9,7 +10,8 @@ fn rank_genes_output(_: &[Field]) -> PolarsResult<Field> {
     ))
 }
 
-/// rank_genes_groups: Welch's t-test for differential expression between two groups.
+/// rank_genes_groups: Welch's t-test for differential expression between two groups
+/// (target group vs all other labelled cells), matching scanpy's `method="t-test"`.
 ///
 /// Inputs:
 /// 0: count/expression column (Float32) - log-normalized values
@@ -65,14 +67,25 @@ fn rank_genes_groups(inputs: &[Series]) -> PolarsResult<Series> {
         }
     }
 
-    // Per-gene, per-group accumulators
+    // Group sizes in CELLS. Sparse input omits zeros, so means and variances
+    // must divide by the number of cells in each group, not by the number of
+    // non-zero entries observed for a gene.
+    let mut n_tgt_cells = 0u64;
+    let mut n_ref_cells = 0u64;
+    for &grp in &cell_group {
+        if grp == target_group {
+            n_tgt_cells += 1;
+        } else if grp != u32::MAX {
+            n_ref_cells += 1;
+        }
+    }
+
+    // Per-gene, per-group accumulators (over non-zero entries; zeros add nothing)
     let n_genes = max_gene + 1;
     let mut sum_tgt = vec![0.0f64; n_genes];
     let mut sum_sq_tgt = vec![0.0f64; n_genes];
-    let mut count_tgt = vec![0u32; n_genes];
     let mut sum_ref = vec![0.0f64; n_genes];
     let mut sum_sq_ref = vec![0.0f64; n_genes];
-    let mut count_ref = vec![0u32; n_genes];
 
     for ((opt_val, opt_cell), opt_gene) in values.into_iter().zip(cell_ids.into_iter()).zip(gene_ids.into_iter()) {
         if let (Some(v), Some(cell), Some(gene)) = (opt_val, opt_cell, opt_gene) {
@@ -82,22 +95,19 @@ fn rank_genes_groups(inputs: &[Series]) -> PolarsResult<Series> {
             if cell_grp == target_group {
                 sum_tgt[g_idx] += vf;
                 sum_sq_tgt[g_idx] += vf * vf;
-                count_tgt[g_idx] += 1;
             } else if cell_grp != u32::MAX {
                 sum_ref[g_idx] += vf;
                 sum_sq_ref[g_idx] += vf * vf;
-                count_ref[g_idx] += 1;
             }
         }
     }
 
-    // Compute per-gene t-statistics and p-values
+    // Compute per-gene Welch t-statistics and p-values
     let mut results: Vec<GeneResult> = Vec::with_capacity(n_genes);
+    let n1 = n_tgt_cells as f64;
+    let n2 = n_ref_cells as f64;
 
     for g in 0..n_genes {
-        let n1 = count_tgt[g] as f64;
-        let n2 = count_ref[g] as f64;
-
         if n1 < 2.0 || n2 < 2.0 {
             results.push(GeneResult {
                 gene_id: g as u32,
@@ -114,39 +124,21 @@ fn rank_genes_groups(inputs: &[Series]) -> PolarsResult<Series> {
         let var1 = ((sum_sq_tgt[g] - n1 * mean1 * mean1) / (n1 - 1.0)).max(0.0);
         let var2 = ((sum_sq_ref[g] - n2 * mean2 * mean2) / (n2 - 1.0)).max(0.0);
 
-        let se = (var1 / n1 + var2 / n2).sqrt();
-
-        let t_stat = if se > 1e-12 {
-            (mean1 - mean2) / se
-        } else {
-            0.0
-        };
-
-        // Welch-Satterthwaite degrees of freedom
         let s1n = var1 / n1;
         let s2n = var2 / n2;
-        let num = (s1n + s2n) * (s1n + s2n);
-        let den = if n1 > 1.0 && n2 > 1.0 {
-            s1n * s1n / (n1 - 1.0) + s2n * s2n / (n2 - 1.0)
-        } else {
-            1.0
-        };
-        let df = if den > 1e-12 { (num / den).max(2.0) } else { 2.0 };
+        let se = (s1n + s2n).sqrt();
 
-        // P-value: normal approx for large df, corrected for small df
-        let p_value = if df > 30.0 {
-            two_sided_normal_p(t_stat)
+        let (t_stat, p_value) = if se > 1e-12 {
+            let t = (mean1 - mean2) / se;
+            // Welch-Satterthwaite degrees of freedom
+            let df = (s1n + s2n).powi(2) / (s1n * s1n / (n1 - 1.0) + s2n * s2n / (n2 - 1.0));
+            (t, two_sided_t_p(t, df))
         } else {
-            two_sided_t_approx(t_stat, df)
+            (0.0, 1.0)
         };
 
-        let log2_fc = if mean2.abs() > 1e-12 {
-            ((mean1 + 1e-9) / (mean2 + 1e-9)).log2()
-        } else if mean1 > 0.0 {
-            10.0
-        } else {
-            0.0
-        };
+        // Fold change on the linear scale of log1p data, as scanpy does.
+        let log2_fc = ((mean1.exp_m1() + 1e-9) / (mean2.exp_m1() + 1e-9)).log2();
 
         results.push(GeneResult {
             gene_id: g as u32,
@@ -211,28 +203,15 @@ fn benjamini_hochberg(results: &mut [GeneResult]) {
     }
 }
 
-/// Two-sided p-value from normal approximation
-fn two_sided_normal_p(z: f64) -> f64 {
-    let abs_z = z.abs();
-    let p = erfc_approx(abs_z / std::f64::consts::SQRT_2);
-    p.max(1e-300)
-}
-
-/// Approximate two-sided t-test p-value for moderate df
-fn two_sided_t_approx(t: f64, df: f64) -> f64 {
-    let correction = ((df - 2.0) / df).sqrt().max(0.5);
-    two_sided_normal_p(t * correction)
-}
-
-/// Complementary error function approximation (Abramowitz & Stegun)
-fn erfc_approx(x: f64) -> f64 {
-    if x < 0.0 {
-        return 2.0 - erfc_approx(-x);
+/// Exact two-sided p-value of Student's t distribution.
+fn two_sided_t_p(t: f64, df: f64) -> f64 {
+    if !t.is_finite() || !df.is_finite() || df <= 0.0 {
+        return 1.0;
     }
-    let t = 1.0 / (1.0 + 0.3275911 * x);
-    let poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
-    let result = poly * (-x * x).exp();
-    result.max(0.0).min(2.0)
+    match StudentsT::new(0.0, 1.0, df) {
+        Ok(dist) => (2.0 * dist.sf(t.abs())).min(1.0),
+        Err(_) => 1.0,
+    }
 }
 
 #[cfg(test)]
@@ -257,18 +236,11 @@ mod tests {
     }
 
     #[test]
-    fn test_erfc_approx() {
-        assert!((erfc_approx(0.0) - 1.0).abs() < 0.01);
-        assert!(erfc_approx(5.0) < 0.001);
-        assert!((erfc_approx(-5.0) - 2.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_two_sided_normal_p() {
-        let p0 = two_sided_normal_p(0.0);
-        assert!((p0 - 1.0).abs() < 0.01);
-
-        let p196 = two_sided_normal_p(1.96);
-        assert!((p196 - 0.05).abs() < 0.01);
+    fn test_two_sided_t_p() {
+        // Reference values from scipy.stats.t.sf
+        assert!((two_sided_t_p(0.0, 10.0) - 1.0).abs() < 1e-12);
+        assert!((two_sided_t_p(2.228138851986273, 10.0) - 0.05).abs() < 1e-9);
+        assert!((two_sided_t_p(-1.959963984540054, 1e9) - 0.05).abs() < 1e-6);
+        assert!(two_sided_t_p(40.0, 1000.0) > 0.0);
     }
 }
