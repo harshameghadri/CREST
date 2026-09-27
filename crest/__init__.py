@@ -72,22 +72,27 @@ class CrestExpr:
             is_elementwise=True
         )
 
-    def svd(self, gene_id_col: pl.Expr, count_col: pl.Expr, n_cells: int, n_genes: int, n_comps: int = 50) -> pl.Expr:
+    def svd(self, gene_id_col: pl.Expr, count_col: pl.Expr, n_cells: int, n_genes: int, n_comps: int = 50,
+            n_iter: int = 7, seed: int = 42) -> pl.Expr:
         """
-        Computes Truncated Randomized SVD directly in Rust natively over Sparse Arrow Matrices,
-        bypassing Scipy and Python's GIL completely.
-        Expected usage: df.group_by("cell_id").agg(pl.col("cell_id").bio.svd(pl.col("gene_id"), pl.col("count"), n_cells=..., n_genes=...))
+        Mean-centred PCA via randomized subspace iteration (Halko et al. 2011, Alg. 4.4),
+        computed natively in Rust over sparse COO triplets without densifying.
+
+        Accuracy matches ``sklearn.utils.extmath.randomized_svd`` at the same ``n_iter``;
+        raise ``n_iter`` (e.g. 15) to converge trailing PCs towards the exact (ARPACK) solution.
+        Expected usage: df.select(pl.all().implode()).select(
+            pl.col("cell_id").bio.svd(pl.col("gene_id"), pl.col("count"), n_cells=..., n_genes=...))
         """
-        # Plugin path is resolved globally at module level
-            
         return register_plugin_function(
             args=[
-                self._expr.cast(pl.List(pl.UInt32)),   # cell_ids 
+                self._expr.cast(pl.List(pl.UInt32)),   # cell_ids
                 gene_id_col.cast(pl.List(pl.UInt32)),  # gene_ids
                 count_col.cast(pl.List(pl.Float32)),   # counts
                 pl.lit(n_cells).cast(pl.UInt32), # metadata needed to construct the CSR shape internally
                 pl.lit(n_genes).cast(pl.UInt32),
-                pl.lit(n_comps).cast(pl.UInt32)
+                pl.lit(n_comps).cast(pl.UInt32),
+                pl.lit(n_iter).cast(pl.UInt32),
+                pl.lit(seed).cast(pl.UInt64),
             ],
             plugin_path=lib,
             function_name="sparse_randomized_svd",

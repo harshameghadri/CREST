@@ -17,7 +17,6 @@ polars = { version = "0.41.3", default-features = false, features = ["lazy"] }
 serde = { version = "1", features = ["derive"] }
 statrs = "0.16.1"
 nalgebra = "0.32.3"
-nalgebra-sparse = "0.11.0"
 faer = "0.24.0"
 instant-distance = "0.6.1"
 rand = "0.8.5"
