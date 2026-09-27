@@ -10,6 +10,7 @@ struct RankItem {
 }
 
 mod deseq2;
+mod kernels;
 mod knn;
 mod leiden;
 mod neighbors;

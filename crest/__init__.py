@@ -1,24 +1,35 @@
-"""CREST — Columnar Rust Engine for Single-cell Transcriptomics."""
+"""CREST — Columnar Rust Engine for Single-cell Transcriptomics.
+
+Scanpy-style API (``crest.pp`` / ``crest.tl``) over :class:`BioFrame`, backed by
+native Rust kernels, plus a ``.bio`` Polars expression namespace.
+"""
 
 __version__ = "0.2.0"
 
+from pathlib import Path
+
 import polars as pl
 from polars.plugins import register_plugin_function
-from pathlib import Path
-from .core import BioFrame
+
+from .core import BioFrame, CSRStore, FrameStore, ParquetStore, read_parquet
+from . import pp, tl, io
+from .io import read_10x_h5, read_10x_mtx, read_h5ad
+
+__all__ = ["BioFrame", "CSRStore", "FrameStore", "ParquetStore", "pp", "tl", "io",
+           "read_10x_h5", "read_10x_mtx", "read_h5ad", "read_parquet", "__version__"]
+
 
 def _get_lib_path() -> Path:
-    """Finds the compiled shared library (.so, .pyd, .dylib) dynamically"""
+    """Locate the compiled extension (.so / .pyd / .dylib)."""
     parent = Path(__file__).parent
-    
     for file in parent.iterdir():
         if file.name.startswith("crest") and file.suffix in [".so", ".pyd", ".dylib"]:
             return file
-            
-    # Fallback to standard name
     return parent / "crest.abi3.so"
 
+
 lib = _get_lib_path()
+
 
 @pl.api.register_expr_namespace("bio")
 class CrestExpr:
@@ -54,10 +65,14 @@ class CrestExpr:
             is_elementwise=True
         )
 
-    def deseq2(self, size_factors: pl.Expr, design_matrix: pl.Expr, num_covariates: pl.Expr, dispersion: pl.Expr) -> pl.Expr:
+    def nb_glm(self, size_factors: pl.Expr, design_matrix: pl.Expr, num_covariates: pl.Expr, dispersion: pl.Expr) -> pl.Expr:
         """
-        Fit a Negative Binomial GLM using an Iteratively Reweighted Least Squares (IRLS) solver natively in Rust.
-        Outputs a List of Beta coefficients for each gene.
+        Negative-binomial GLM fit (log link) by IRLS with a *given* dispersion per gene.
+
+        Each row is one gene: counts and size factors are lists over samples, the
+        design matrix is flattened row-major. Returns the coefficients, or null when
+        IRLS does not converge. This is the GLM core of DESeq2-style pseudobulk
+        tests; size factors and dispersions must be estimated separately.
         """
         return register_plugin_function(
             args=[
@@ -71,6 +86,13 @@ class CrestExpr:
             function_name="deseq2_irls",
             is_elementwise=True
         )
+
+    def deseq2(self, size_factors: pl.Expr, design_matrix: pl.Expr, num_covariates: pl.Expr, dispersion: pl.Expr) -> pl.Expr:
+        """Deprecated alias of :meth:`nb_glm` (this is not a full DESeq2 implementation)."""
+        import warnings
+        warnings.warn("bio.deseq2() is renamed bio.nb_glm(); it fits an NB GLM with given dispersions, "
+                      "not the full DESeq2 procedure", DeprecationWarning, stacklevel=2)
+        return self.nb_glm(size_factors, design_matrix, num_covariates, dispersion)
 
     def svd(self, gene_id_col: pl.Expr, count_col: pl.Expr, n_cells: int, n_genes: int, n_comps: int = 50,
             n_iter: int = 7, seed: int = 42) -> pl.Expr:
@@ -123,9 +145,9 @@ class CrestExpr:
         """
         Leiden community detection from PCA coordinates (Traag et al. 2019).
 
-        Builds the UMAP fuzzy-simplicial-set KNN graph (as scanpy's ``pp.neighbors``)
-        and optimises modularity with the given resolution. Unlike Louvain, Leiden
-        guarantees well-connected communities. Returns UInt32 cluster IDs.
+        Builds the UMAP fuzzy-simplicial-set kNN graph (as scanpy's ``pp.neighbors``;
+        ``n_neighbors`` counts the cell itself) and optimises modularity with the
+        given resolution. Returns UInt32 cluster IDs.
         """
         return register_plugin_function(
             args=[
@@ -141,7 +163,7 @@ class CrestExpr:
         )
 
     def louvain(self, n_neighbors: int = 15) -> pl.Expr:
-        """Deprecated: use .bio.leiden() instead. This calls leiden for backward compatibility."""
+        """Deprecated: use .bio.leiden() (Leiden refines Louvain partitions)."""
         import warnings
         warnings.warn("louvain() is deprecated, use leiden() instead", DeprecationWarning, stacklevel=2)
         return self.leiden(n_neighbors=n_neighbors, resolution=1.0)
@@ -185,7 +207,12 @@ class CrestExpr:
         )
 
     def scale(self, gene_id_col: pl.Expr, n_obs: int, max_value: float = 10.0) -> pl.Expr:
-        """Zero-center and scale to unit variance per gene, with clipping."""
+        """Scale the *stored* (non-zero) entries per gene: (x - mean) / std, clipped.
+
+        Means/stds count implicit zeros (``n_obs`` cells), but implicit zeros are
+        not materialised, so the output is not the dense scaled matrix. For PCA on
+        scaled data use ``crest.pp.scale`` + ``crest.tl.pca``, which is exact.
+        """
         return register_plugin_function(
             args=[
                 self._expr,
@@ -201,7 +228,11 @@ class CrestExpr:
         )
 
     def score_genes(self, cell_id_col: pl.Expr, gene_id_col: pl.Expr, gene_set: list) -> pl.Expr:
-        """Score a gene set per cell (mean_set - mean_background), like scanpy.tl.score_genes."""
+        """Per-cell mean of stored values in ``gene_set`` minus mean of the other stored values.
+
+        A quick signature score. For the scanpy algorithm (expression-matched
+        control genes, zeros included) use ``crest.tl.score_genes``.
+        """
         return register_plugin_function(
             args=[
                 self._expr,
@@ -218,7 +249,9 @@ class CrestExpr:
 
     def rank_genes_groups(self, cell_id_col: pl.Expr, gene_id_col: pl.Expr, group_col: pl.Expr, target_group: int = 1) -> pl.Expr:
         """
-        Differential expression via Welch's t-test with Benjamini-Hochberg FDR correction.
+        Differential expression (target group vs all other labelled cells) via Welch's
+        t-test with Benjamini-Hochberg FDR, matching scanpy ``method="t-test"`` statistics.
+        For all groups at once and Wilcoxon, use ``crest.tl.rank_genes_groups``.
         Returns List(List(Float32)): each inner list = [gene_id, t_stat, p_value, adj_p_value, log2_fc].
         Sorted by adjusted p-value (most significant first).
         """
