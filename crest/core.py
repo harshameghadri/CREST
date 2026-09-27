@@ -110,7 +110,7 @@ class ParquetStore:
 
     def chunks(self, chunk_nnz: int = DEFAULT_CHUNK_NNZ) -> Iterator[RawChunk]:
         for p in self.parts:
-            df = pl.read_parquet(p, columns=["cell_id", "gene_id", "count"], rechunk=True)
+            df = pl.read_parquet(p, columns=["cell_id", "gene_id", "count"]).rechunk()
             cols = [df[c].cast(t).to_numpy() for c, t in (("gene_id", pl.UInt32), ("count", pl.Float32), ("cell_id", pl.UInt32))]
             del df
             yield cols[0], cols[1], cols[2], None, 0

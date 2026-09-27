@@ -51,12 +51,16 @@ def accuracy(d: Path, data_stem: str):
     return out
 
 
-def table(runs):
+def table(runs, failed):
     lines = []
     for data, tools in runs.items():
         n = next(iter(tools.values()))["n_cells"]
         lines.append(f"\n### {data} ({n:,} cells after QC)\n")
-        hdr = "| step | " + " | ".join(NAME[t] for t in TOOLS if t in tools) + " | speed-up (in-memory) |"
+        for (fd, ft), why in failed.items():
+            if fd == data:
+                lines.append(f"**{NAME[ft]}: {why}.**\n")
+        both = "scanpy" in tools and "crest" in tools
+        hdr = "| step | " + " | ".join(NAME[t] for t in TOOLS if t in tools) + (" | speed-up (in-memory) |" if both else " |")
         lines += [hdr, "|" + "---|" * (hdr.count("|") - 1)]
         for s in STEPS + ["total"]:
             row = [f"**{LABEL.get(s, s)}**" if s == "total" else LABEL[s]]
@@ -78,7 +82,8 @@ def table(runs):
     return "\n".join(lines)
 
 
-def figures(runs, out: Path):
+def figures(runs, out: Path, failed=None):
+    failed = failed or {}
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -93,17 +98,24 @@ def figures(runs, out: Path):
         y = np.arange(len(STEPS))
         h = 0.8 / len(tools)
         for k, t in enumerate(tools):
-            v = [max(runs[data][t]["steps"].get(s, {}).get("seconds", np.nan), 0.005) for s in STEPS]
-            ax.barh(y + (k - (len(tools) - 1) / 2) * h, v, height=h * 0.85, color=COLOR[t], label=NAME[t])
+            v = np.array([runs[data][t]["steps"].get(s, {}).get("seconds", np.nan) for s in STEPS])
+            yy = y + (k - (len(tools) - 1) / 2) * h
+            lazy = v < 0.005
+            ax.barh(yy[~lazy], v[~lazy], height=h * 0.85, color=COLOR[t], label=NAME[t])
+            for yl in yy[lazy]:  # deferred into later passes: annotate instead of a fake bar
+                ax.text(0.006, yl, "lazy", va="center", ha="left", fontsize=7, color=INK2)
+        note = "".join(f"\n{NAME[ft]}: {why}" for (fd, ft), why in failed.items() if fd == data)
         ax.set_xscale("log")
         ax.set_yticks(y, [LABEL[s] for s in STEPS])
         ax.invert_yaxis()
         ax.grid(axis="x", color=GRID, lw=0.6)
         ax.set_axisbelow(True)
         ax.set_xlabel("seconds (log scale)")
-        ax.set_title(f"{data.replace('.h5', '')}  ({runs[data][tools[0]]['n_cells']:,} cells)", color=INK, fontsize=10)
-    axes[0][0].legend(frameon=False, loc="lower right")
-    fig.tight_layout()
+        ax.set_title(f"{data.replace('.h5', '')}  ({runs[data][tools[0]]['n_cells']:,} cells){note}", color=INK, fontsize=10)
+        ax.set_xlim(0.004, 400)
+    handles, labels = axes[0][0].get_legend_handles_labels()
+    fig.legend(handles, labels, frameon=False, loc="upper center", ncol=len(labels), bbox_to_anchor=(0.5, 1.0))
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
     fig.savefig(out / "fig_step_times.png", dpi=200)
     fig.savefig(out / "fig_step_times.svg")
 
@@ -117,15 +129,25 @@ def figures(runs, out: Path):
         for ax, v in ((a1, sec), (a2, mem)):
             ax.plot(n, v, color=COLOR[t], lw=2, marker="o", ms=5, label=NAME[t])
             ax.annotate(f"{v[-1]:.1f}", (n[-1], v[-1]), textcoords="offset points", xytext=(6, 0), va="center", color=INK2, fontsize=8)
+    for (fd, ft), why in failed.items():  # mark runs that did not finish
+        if fd in runs:
+            n = next(iter(runs[fd].values()))["n_cells"]
+            for ax in (a1, a2):
+                ax.plot([n], [ax.get_ylim()[1] * 0.97], marker="x", ms=8, mew=2, color=COLOR[ft], ls="none")
+                ax.annotate(f"{NAME[ft]}: out of memory", (n, ax.get_ylim()[1] * 0.97), textcoords="offset points",
+                            xytext=(-6, 0), ha="right", va="center", fontsize=8, color=INK2)
     a1.set_ylabel("end-to-end time (s)")
     a2.set_ylabel("peak memory (GB)")
     for ax in (a1, a2):
         ax.set_xlabel("cells")
+        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x / 1000:.0f}k"))
         ax.grid(color=GRID, lw=0.6)
         ax.set_axisbelow(True)
         ax.set_ylim(bottom=0)
-    a1.legend(frameon=False)
+    h, l = a1.get_legend_handles_labels()
+    fig.legend(h, l, frameon=False, loc="upper center", ncol=len(l), bbox_to_anchor=(0.5, 1.0))
     fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 0.9))
     fig.savefig(out / "fig_scaling.png", dpi=200)
     fig.savefig(out / "fig_scaling.svg")
 
@@ -134,12 +156,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("results")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--failed", action="append", default=[],
+                    help='runs that did not finish, "data.h5:tool:reason", e.g. "pbmc_200k.h5:scanpy:out of memory"')
     a = ap.parse_args()
+    failed = {(f.split(":")[0], f.split(":")[1]): f.split(":", 2)[2] for f in a.failed}
     d = Path(a.results)
     out = Path(a.out or d / "report")
     out.mkdir(parents=True, exist_ok=True)
     runs = load(d)
-    md = ["# CREST vs scanpy benchmark", table(runs), "\n## Agreement with scanpy\n"]
+    md = ["# CREST vs scanpy benchmark", table(runs, failed), "\n## Agreement with scanpy\n"]
     for data in runs:
         acc = accuracy(d, Path(data).stem)
         for t, v in acc.items():
@@ -148,7 +173,7 @@ def main():
     m = next(iter(next(iter(runs.values())).values()))["machine"]
     md.append(f"\nMachine: {m['cores']} cores, {m['ram_gb']:.0f} GB RAM, Python {m['python']}.")
     (out / "report.md").write_text("\n".join(md) + "\n")
-    figures(runs, out)
+    figures(runs, out, failed)
     print((out / "report.md").read_text())
 
 

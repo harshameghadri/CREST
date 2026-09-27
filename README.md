@@ -53,7 +53,29 @@ Every step is checked against scanpy 1.11 (`tests/test_crest.py`, and
 
 ## Performance
 
-<!-- BENCHMARK -->
+Standard scanpy tutorial pipeline, each tool in its own process on the same
+4-core / 16.9 GB machine (scanpy 1.11 with igraph Leiden, numba JIT warmed up
+beforehand; CREST in-memory and streamed from Parquet). Full tables:
+[`bench/whitepaper/results/report.md`](bench/whitepaper/results/report.md).
+
+| dataset | scanpy | CREST in-memory | CREST out-of-core |
+|---|---|---|---|
+| 68k PBMC (real, 10x) | 134 s · 5.2 GB | **19 s · 1.2 GB** (7.1× faster) | 24 s · **1.0 GB** |
+| 100k PBMC v3 | 346 s · 10.3 GB | **57 s · 2.5 GB** (6.1× faster) | 109 s · **1.1 GB** |
+| 200k PBMC v3 | *out of memory* | **120 s · 4.1 GB** | 283 s · **1.0 GB** |
+
+Per step at 100k cells (speed-up of CREST in-memory over scanpy): QC 17×,
+HVG 7.6×, scale + PCA 15×, neighbours 3.4×, Leiden 3.5×, UMAP 4.9×,
+t-test 9.3×, Wilcoxon 7.8×, reading the 10x .h5 1.9× (gzip-bound). Out-of-core
+memory stays ~1 GB regardless of dataset size. Leiden clusterings agree with
+scanpy (ARI 0.87–0.89, same number of clusters).
+
+![time and memory vs cells](bench/whitepaper/results/fig_scaling.png)
+![per-step time](bench/whitepaper/results/fig_step_times.png)
+
+The 100k/200k datasets are generated from the real 10k PBMC v3 matrix by
+`make_dataset.py` (each cell mixes a real cell with a nearest neighbour after
+binomial thinning), so sparsity, library size and cluster structure are realistic.
 
 Run it yourself: `bench/whitepaper/run_pipeline.py` (one tool per process,
 per-step wall time and peak RSS, JIT warm-up excluded for scanpy),
