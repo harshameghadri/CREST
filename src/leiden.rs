@@ -23,7 +23,7 @@ use std::collections::VecDeque;
 /// `node_w` carries each node's weighted degree, including edges that became
 /// internal (self-loops) during aggregation, so it is kept separately.
 #[derive(Clone)]
-struct Graph {
+pub(crate) struct Graph {
     offsets: Vec<usize>,
     nbrs: Vec<usize>,
     wts: Vec<f64>,
@@ -37,7 +37,7 @@ impl Graph {
     }
 
     /// Build from undirected edges (i, j, w) with i != j, each pair listed once.
-    fn from_edges(n: usize, edges: &[(usize, usize, f64)]) -> Self {
+    pub(crate) fn from_edges(n: usize, edges: &[(usize, usize, f64)]) -> Self {
         let mut node_w = vec![0.0f64; n];
         let mut deg = vec![0usize; n];
         for &(i, j, w) in edges {
@@ -307,7 +307,7 @@ fn aggregate(g: &Graph, by: &[usize], k: usize) -> Graph {
 }
 
 /// Leiden community detection. Returns a community id per node (0..k).
-fn leiden_partition(
+pub(crate) fn leiden_partition(
     graph: &Graph,
     resolution: f64,
     n_iterations: usize,
@@ -468,12 +468,10 @@ fn leiden_clustering(inputs: &[Series]) -> PolarsResult<Series> {
         return Err(PolarsError::ComputeError("No valid PCA data".into()));
     }
 
-    let k = k_neighbors.min(n - 1);
-
     // 2. Build the UMAP fuzzy-simplicial-set connectivity graph (the graph
     // scanpy's `pp.neighbors` feeds to Leiden). It is symmetric and lists both
     // (i, j) and (j, i); keep one undirected edge per pair.
-    let fuzzy = crate::umap::graph::build_fuzzy_simplicial_set(&data, k);
+    let fuzzy = crate::umap::graph::build_fuzzy_simplicial_set(&data, k_neighbors.min(n));
     let edges: Vec<(usize, usize, f64)> = fuzzy.edges.iter()
         .filter(|e| e.source < e.target)
         .map(|e| (e.source, e.target, e.weight as f64))

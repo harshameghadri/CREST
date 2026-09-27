@@ -14,6 +14,7 @@ mod knn;
 mod leiden;
 mod neighbors;
 mod preprocessing;
+mod py;
 mod rank_genes;
 mod stats;
 mod svd;
