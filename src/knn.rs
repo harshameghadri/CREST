@@ -350,6 +350,7 @@ pub fn knn(pts: Points, k: usize, exact: Option<bool>, seed: u64) -> KnnGraph {
     } else {
         knn_ivf(pts, &norms, k, 20, seed)
     };
+    crate::simd::clean_simd_state(); // after faer GEMM tiles
 
     // exact distances, re-sorted
     let mut topd = vec![0.0f32; n * k];

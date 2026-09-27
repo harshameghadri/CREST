@@ -17,6 +17,7 @@ mod neighbors;
 mod preprocessing;
 mod py;
 mod rank_genes;
+mod simd;
 mod stats;
 mod svd;
 mod umap;

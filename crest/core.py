@@ -23,7 +23,9 @@ import polars as pl
 
 from . import crest as _native  # compiled extension
 
-Chunk = Tuple[np.ndarray, np.ndarray, np.ndarray]  # (cell ids, gene ids, values)
+Chunk = Tuple[np.ndarray, np.ndarray, np.ndarray]  # (row, var index, value)
+# Raw chunk: (genes, values, cells or None, indptr or None, first_cell)
+RawChunk = Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[np.ndarray], int]
 
 DEFAULT_CHUNK_NNZ = 1 << 24  # ~16.8M non-zeros (~200 MB of working buffers)
 
@@ -43,7 +45,7 @@ class CSRStore:
     def nnz(self) -> int:
         return int(self.indptr[-1])
 
-    def chunks(self, chunk_nnz: int = DEFAULT_CHUNK_NNZ) -> Iterator[Chunk]:
+    def chunks(self, chunk_nnz: int = DEFAULT_CHUNK_NNZ) -> Iterator[RawChunk]:
         n = self.n_cells
         start = 0
         while start < n:
@@ -51,8 +53,7 @@ class CSRStore:
             end = int(np.searchsorted(self.indptr, target, side="right")) - 1
             end = min(max(end, start + 1), n)
             lo, hi = int(self.indptr[start]), int(self.indptr[end])
-            cells = np.repeat(np.arange(start, end, dtype=np.uint32), np.diff(self.indptr[start:end + 1]))
-            yield cells, self.indices[lo:hi], self.data[lo:hi]
+            yield self.indices[lo:hi], self.data[lo:hi], None, self.indptr[start:end + 1], start
             start = end
 
     def nbytes(self) -> int:
@@ -82,14 +83,14 @@ class FrameStore:
     def nnz(self) -> int:
         return self.df.height
 
-    def chunks(self, chunk_nnz: int = DEFAULT_CHUNK_NNZ) -> Iterator[Chunk]:
+    def chunks(self, chunk_nnz: int = DEFAULT_CHUNK_NNZ) -> Iterator[RawChunk]:
         n = len(self._cells)
         lo = 0
         while lo < n:
             hi = min(lo + chunk_nnz, n)
             if hi < n:  # extend to the end of the current cell
                 hi = int(np.searchsorted(self._cells, self._cells[hi - 1], side="right"))
-            yield self._cells[lo:hi], self._genes[lo:hi], self._vals[lo:hi]
+            yield self._genes[lo:hi], self._vals[lo:hi], self._cells[lo:hi], None, 0
             lo = hi
 
 
@@ -107,12 +108,11 @@ class ParquetStore:
     def nnz(self) -> int:
         return int(sum(pl.scan_parquet(p).select(pl.len()).collect().item() for p in self.parts))
 
-    def chunks(self, chunk_nnz: int = DEFAULT_CHUNK_NNZ) -> Iterator[Chunk]:
+    def chunks(self, chunk_nnz: int = DEFAULT_CHUNK_NNZ) -> Iterator[RawChunk]:
         for p in self.parts:
             df = pl.read_parquet(p, columns=["cell_id", "gene_id", "count"])
-            yield (df["cell_id"].cast(pl.UInt32).to_numpy(),
-                   df["gene_id"].cast(pl.UInt32).to_numpy(),
-                   df["count"].cast(pl.Float32).to_numpy())
+            yield (df["gene_id"].cast(pl.UInt32).to_numpy(), df["count"].cast(pl.Float32).to_numpy(),
+                   df["cell_id"].cast(pl.UInt32).to_numpy(), None, 0)
 
 
 Store = Union[CSRStore, FrameStore, ParquetStore]
@@ -236,21 +236,25 @@ class BioFrame:
                 log = True
         return target, log
 
-    def iter_chunks(self, transform: bool = True) -> Iterator[Chunk]:
-        """Yield (row, var index, value) chunks for kept cells/genes.
+    def iter_ctx(self, transform: bool = True) -> Iterator[tuple]:
+        """Yield argument tuples for the fused native kernels:
+        ``(genes, values, cell_map, gene_map, target_sum, log1p, cells, indptr, first_cell)``.
 
-        With ``transform=True`` values are normalised/log-transformed per ``ops``;
-        otherwise raw counts are returned.
+        Kernels apply the cell/gene filters and (if ``transform``) the recorded
+        normalize_total/log1p on the fly; raw data is never copied.
         """
         cmap, gmap = self._cell_map(), self._gene_map()
         target, log = self._transform() if transform else (0.0, False)
-        for cells, genes, values in self.store.chunks(self.chunk_nnz):
-            yield _native.preprocess_chunk(
-                np.ascontiguousarray(cells, dtype=np.uint32),
-                np.ascontiguousarray(genes, dtype=np.uint32),
-                np.ascontiguousarray(values, dtype=np.float32),
-                cmap, gmap, target, log,
-            )
+        for genes, values, cells, indptr, first in self.store.chunks(self.chunk_nnz):
+            yield (np.ascontiguousarray(genes, dtype=np.uint32), np.ascontiguousarray(values, dtype=np.float32),
+                   cmap, gmap, target, log,
+                   None if cells is None else np.ascontiguousarray(cells, dtype=np.uint32),
+                   None if indptr is None else np.ascontiguousarray(indptr, dtype=np.int64), int(first))
+
+    def iter_chunks(self, transform: bool = True) -> Iterator[Chunk]:
+        """Yield materialised (row, var index, value) chunks of kept cells/genes."""
+        for ctx in self.iter_ctx(transform):
+            yield _native.materialize(*ctx)
 
     # ---- subsetting
     def _subset(self, obs_mask=None, var_mask=None) -> "BioFrame":

@@ -4,7 +4,7 @@ use numpy::{PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray2, PyUntypedArray
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
-use crate::kernels::{self, Transform};
+use crate::kernels::{self, Cells, ChunkView, Transform};
 use crate::knn::{knn, KnnGraph, Points};
 use numpy::{PyReadwriteArrayDyn, PyReadonlyArrayDyn};
 
@@ -17,15 +17,6 @@ fn sl_mut<'a, T: numpy::Element>(a: &'a mut PyReadwriteArrayDyn<'_, T>, name: &s
 fn check_len(names: &str, lens: &[usize]) -> PyResult<()> {
     if lens.windows(2).any(|w| w[0] != w[1]) {
         return Err(pyo3::exceptions::PyValueError::new_err(format!("{} must have equal length", names)));
-    }
-    Ok(())
-}
-fn check_rows(rows: &[u32], n: usize, what: &str) -> PyResult<()> {
-    if rows.windows(2).any(|w| w[0] > w[1]) {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!("{} must be sorted (non-decreasing)", what)));
-    }
-    if rows.last().map_or(false, |&r| r as usize >= n) {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!("{} index out of range", what)));
     }
     Ok(())
 }
@@ -164,83 +155,209 @@ fn umap<'py>(
     Ok(PyArray1::from_vec_bound(py, emb).reshape([n, n_components])?)
 }
 
-/// Filter/remap cells and genes, normalise to target_sum (<= 0: skip) and log1p.
-#[pyfunction]
-fn preprocess_chunk<'py>(
-    py: Python<'py>,
-    cells: PyReadonlyArrayDyn<'py, u32>,
-    genes: PyReadonlyArrayDyn<'py, u32>,
-    values: PyReadonlyArrayDyn<'py, f32>,
-    cell_map: PyReadonlyArrayDyn<'py, i64>,
-    gene_map: PyReadonlyArrayDyn<'py, i32>,
-    target_sum: f64,
-    log1p: bool,
-) -> PyResult<(Bound<'py, PyArray1<u32>>, Bound<'py, PyArray1<u32>>, Bound<'py, PyArray1<f32>>)> {
-    let (c, g, v) = (sl(&cells, "cells")?, sl(&genes, "genes")?, sl(&values, "values")?);
-    check_len("cells, genes, values", &[c.len(), g.len(), v.len()])?;
-    if c.windows(2).any(|w| w[0] > w[1]) {
-        return Err(pyo3::exceptions::PyValueError::new_err("chunk must be sorted by cell"));
-    }
-    let (cm, gm) = (sl(&cell_map, "cell_map")?, sl(&gene_map, "gene_map")?);
-    let (r, g, v) = py.allow_threads(|| kernels::preprocess_chunk(c, g, v, cm, gm, target_sum, log1p));
-    Ok((PyArray1::from_vec_bound(py, r), PyArray1::from_vec_bound(py, g), PyArray1::from_vec_bound(py, v)))
-}
+type Arr<'py, T> = PyReadonlyArrayDyn<'py, T>;
 
-/// Accumulate per-gene [sum x, sum x^2, sum expm1 x, sum expm1(x)^2, nnz] into out (n_genes, 5).
-#[pyfunction]
-fn gene_stats<'py>(py: Python<'py>, genes: PyReadonlyArrayDyn<'py, u32>, values: PyReadonlyArrayDyn<'py, f32>, mut out: PyReadwriteArrayDyn<'py, f64>) -> PyResult<()> {
-    let (g, v) = (sl(&genes, "genes")?, sl(&values, "values")?);
+/// Common chunk arguments: raw genes/values, filters, transform, and either
+/// per-entry `cells` or a CSR `indptr` for cells `first_cell ..`.
+fn view<'a>(
+    genes: &'a Arr<'_, u32>, values: &'a Arr<'_, f32>, cell_map: &'a Arr<'_, i64>, gene_map: &'a Arr<'_, i32>,
+    target_sum: f64, log1p: bool, cells: &'a Option<Arr<'_, u32>>, indptr: &'a Option<Arr<'_, i64>>, first_cell: u32,
+) -> PyResult<(ChunkView<'a>, usize)> {
+    let (g, v) = (sl(genes, "genes")?, sl(values, "values")?);
     check_len("genes, values", &[g.len(), v.len()])?;
-    let o = sl_mut(&mut out, "out")?;
-    let n_genes = o.len() / 5;
-    check_ids(g, n_genes, "gene")?;
-    py.allow_threads(|| kernels::gene_stats(g, v, n_genes, o));
-    Ok(())
+    let (cm, gm) = (sl(cell_map, "cell_map")?, sl(gene_map, "gene_map")?);
+    let cells = match (cells, indptr) {
+        (Some(c), None) => {
+            let c = sl(c, "cells")?;
+            check_len("cells, genes", &[c.len(), g.len()])?;
+            if c.windows(2).any(|w| w[0] > w[1]) {
+                return Err(pyo3::exceptions::PyValueError::new_err("chunk must be sorted by cell"));
+            }
+            Cells::Ids(c)
+        }
+        (None, Some(p)) => {
+            let p = sl(p, "indptr")?;
+            if p.is_empty() || p.windows(2).any(|w| w[0] > w[1]) || (p[p.len() - 1] - p[0]) as usize != g.len() {
+                return Err(pyo3::exceptions::PyValueError::new_err("indptr must be non-decreasing and span the chunk"));
+            }
+            Cells::Ptr { indptr: p, first: first_cell }
+        }
+        _ => return Err(pyo3::exceptions::PyValueError::new_err("pass exactly one of cells / indptr")),
+    };
+    let n_rows = cm.iter().copied().max().map_or(0, |m| (m + 1).max(0) as usize);
+    Ok((ChunkView { cells, genes: g, values: v, cell_map: cm, gene_map: gm, target_sum, log1p }, n_rows))
 }
 
-/// Accumulate the Gram matrix (upper triangle) and column sums of the (optionally scaled) matrix.
-#[pyfunction]
-#[pyo3(signature = (rows, genes, values, gene_map, gram, colsum, scale=false, mean=None, std=None, max_value=0.0))]
-fn gram_accumulate<'py>(
-    py: Python<'py>,
-    rows: PyReadonlyArrayDyn<'py, u32>,
-    genes: PyReadonlyArrayDyn<'py, u32>,
-    values: PyReadonlyArrayDyn<'py, f32>,
-    gene_map: PyReadonlyArrayDyn<'py, i32>,
-    mut gram: PyReadwriteArrayDyn<'py, f64>,
-    mut colsum: PyReadwriteArrayDyn<'py, f64>,
-    scale: bool,
-    mean: Option<PyReadonlyArrayDyn<'py, f64>>,
-    std: Option<PyReadonlyArrayDyn<'py, f64>>,
-    max_value: f64,
-) -> PyResult<()> {
-    let (r, g, v, gm) = (sl(&rows, "rows")?, sl(&genes, "genes")?, sl(&values, "values")?, sl(&gene_map, "gene_map")?);
-    check_len("rows, genes, values", &[r.len(), g.len(), v.len()])?;
-    check_rows(r, u32::MAX as usize, "rows")?;
-    let cs = sl_mut(&mut colsum, "colsum")?;
-    let d = cs.len();
-    let gr = sl_mut(&mut gram, "gram")?;
-    if gr.len() != d * d || gm.iter().any(|&m| m >= d as i32) {
-        return Err(pyo3::exceptions::PyValueError::new_err("gram must be (d, d) and gene_map values < d"));
+fn n_var(gene_map: &[i32]) -> usize {
+    gene_map.iter().copied().max().map_or(0, |m| (m + 1).max(0) as usize)
+}
+
+macro_rules! chunk_fn {
+    ($(#[$m:meta])* fn $name:ident<$py:lifetime>($pyv:ident, $v:ident, $nrows:ident, $nvar:ident $(, $a:ident : $t:ty)*) -> $ret:ty $body:block) => {
+        $(#[$m])*
+        #[pyfunction]
+        #[pyo3(signature = (genes, values, cell_map, gene_map, target_sum, log1p, cells, indptr, first_cell $(, $a)*))]
+        #[allow(clippy::too_many_arguments)]
+        fn $name<$py>(
+            $pyv: Python<$py>, genes: Arr<$py, u32>, values: Arr<$py, f32>, cell_map: Arr<$py, i64>, gene_map: Arr<$py, i32>,
+            target_sum: f64, log1p: bool, cells: Option<Arr<$py, u32>>, indptr: Option<Arr<$py, i64>>, first_cell: u32
+            $(, $a: $t)*
+        ) -> $ret {
+            let ($v, $nrows) = view(&genes, &values, &cell_map, &gene_map, target_sum, log1p, &cells, &indptr, first_cell)?;
+            let $nvar = n_var(sl(&gene_map, "gene_map")?);
+            $body
+        }
+    };
+}
+
+chunk_fn! {
+    /// Materialise the filtered/transformed chunk as (row, var index, value).
+    fn materialize<'py>(py, v, _nr, _nv) -> PyResult<(Bound<'py, PyArray1<u32>>, Bound<'py, PyArray1<u32>>, Bound<'py, PyArray1<f32>>)> {
+        let (r, g, x) = py.allow_threads(|| kernels::materialize(v));
+        Ok((PyArray1::from_vec_bound(py, r), PyArray1::from_vec_bound(py, g), PyArray1::from_vec_bound(py, x)))
     }
-    let empty: Vec<f64> = vec![];
-    let (mu, sd) = match (&mean, &std) {
+}
+
+chunk_fn! {
+    /// Accumulate per-gene [Σx, Σx², Σexpm1 x, Σexpm1(x)², nnz] into out (n_vars, 5).
+    fn gene_stats<'py>(py, v, _nr, nv, out: PyReadwriteArrayDyn<'py, f64>) -> PyResult<()> {
+        let mut out = out;
+        let o = sl_mut(&mut out, "out")?;
+        if o.len() != nv * 5 {
+            return Err(pyo3::exceptions::PyValueError::new_err("out must be (n_vars, 5)"));
+        }
+        py.allow_threads(|| kernels::gene_stats(v, o));
+        Ok(())
+    }
+}
+
+chunk_fn! {
+    /// QC accumulation on raw counts (pass target_sum=0, log1p=False).
+    fn qc<'py>(py, v, nr, nv, flag: Arr<'py, bool>, cell_total: PyReadwriteArrayDyn<'py, f64>, cell_ngenes: PyReadwriteArrayDyn<'py, u32>,
+               cell_flag: PyReadwriteArrayDyn<'py, f64>, gene_ncells: PyReadwriteArrayDyn<'py, u32>, gene_total: PyReadwriteArrayDyn<'py, f64>) -> PyResult<()> {
+        let (mut ct, mut cn, mut cf, mut gn, mut gt) = (cell_total, cell_ngenes, cell_flag, gene_ncells, gene_total);
+        let f = sl(&flag, "flag")?;
+        let (ct, cn, cf) = (sl_mut(&mut ct, "cell_total")?, sl_mut(&mut cn, "cell_ngenes")?, sl_mut(&mut cf, "cell_flag")?);
+        let (gn, gt) = (sl_mut(&mut gn, "gene_ncells")?, sl_mut(&mut gt, "gene_total")?);
+        if ct.len() < nr || cn.len() < nr || cf.len() < nr || gn.len() != nv || gt.len() != nv || f.len() != nv {
+            return Err(pyo3::exceptions::PyValueError::new_err("output sizes do not match the maps"));
+        }
+        py.allow_threads(|| kernels::qc(v, f, ct, cn, cf, gn, gt));
+        Ok(())
+    }
+}
+
+fn transform<'a>(scale: bool, mean: &'a Option<Arr<'_, f64>>, std: &'a Option<Arr<'_, f64>>, max_value: f64, d: usize) -> PyResult<Transform<'a>> {
+    static EMPTY: [f64; 0] = [];
+    let (mu, sd): (&[f64], &[f64]) = match (mean, std) {
         (Some(m), Some(s)) => (sl(m, "mean")?, sl(s, "std")?),
         _ if scale => return Err(pyo3::exceptions::PyValueError::new_err("scale=True needs mean and std")),
-        _ => (&empty[..], &empty[..]),
+        _ => (&EMPTY, &EMPTY),
     };
     if scale && (mu.len() != d || sd.len() != d) {
         return Err(pyo3::exceptions::PyValueError::new_err("mean/std must have length d"));
     }
-    let t = Transform { scale, mean: mu, std: sd, max_value };
-    py.allow_threads(|| kernels::gram_accumulate(r, g, v, gm, t, gr, cs));
+    Ok(Transform { scale, mean: mu, std: sd, max_value })
+}
+
+fn check_sub(sub: &[i32], nv: usize, d: usize) -> PyResult<()> {
+    if sub.len() != nv || sub.iter().any(|&m| m >= d as i32) {
+        return Err(pyo3::exceptions::PyValueError::new_err("sub_map must have length n_vars and values < d"));
+    }
     Ok(())
+}
+
+chunk_fn! {
+    /// Accumulate the Gram matrix (upper triangle) and column sums of the (optionally scaled) submatrix.
+    fn gram_accumulate<'py>(py, v, _nr, nv, sub_map: Arr<'py, i32>, gram: PyReadwriteArrayDyn<'py, f64>, colsum: PyReadwriteArrayDyn<'py, f64>,
+                            scale: bool, mean: Option<Arr<'py, f64>>, std: Option<Arr<'py, f64>>, max_value: f64) -> PyResult<()> {
+        let (mut gram, mut colsum) = (gram, colsum);
+        let sm = sl(&sub_map, "sub_map")?;
+        let cs = sl_mut(&mut colsum, "colsum")?;
+        let d = cs.len();
+        let gr = sl_mut(&mut gram, "gram")?;
+        if gr.len() != d * d {
+            return Err(pyo3::exceptions::PyValueError::new_err("gram must be (d, d)"));
+        }
+        check_sub(sm, nv, d)?;
+        let t = transform(scale, &mean, &std, max_value, d)?;
+        py.allow_threads(|| kernels::gram_accumulate(v, sm, t, gr, cs));
+        Ok(())
+    }
+}
+
+chunk_fn! {
+    /// out[row] += (scaled) row · loadings for one chunk (out: (n_rows, k) float32).
+    fn project<'py>(py, v, nr, nv, sub_map: Arr<'py, i32>, loadings: Arr<'py, f64>, out: PyReadwriteArrayDyn<'py, f32>,
+                    scale: bool, mean: Option<Arr<'py, f64>>, std: Option<Arr<'py, f64>>, max_value: f64) -> PyResult<()> {
+        let mut out = out;
+        let shape = loadings.shape().to_vec();
+        if shape.len() != 2 {
+            return Err(pyo3::exceptions::PyValueError::new_err("loadings must be (d, k)"));
+        }
+        let (d, k) = (shape[0], shape[1]);
+        let (sm, l) = (sl(&sub_map, "sub_map")?, sl(&loadings, "loadings")?);
+        check_sub(sm, nv, d)?;
+        let o = sl_mut(&mut out, "out")?;
+        if o.len() < nr * k {
+            return Err(pyo3::exceptions::PyValueError::new_err("out must be (n_rows, k)"));
+        }
+        let t = transform(scale, &mean, &std, max_value, d)?;
+        py.allow_threads(|| kernels::project(v, sm, t, l, k, o));
+        Ok(())
+    }
+}
+
+chunk_fn! {
+    /// Accumulate per (group, var) sums, sums of squares and nnz (each (n_groups, n_vars)).
+    fn group_gene_sums<'py>(py, v, nr, nv, group_of_row: Arr<'py, u32>, sum: PyReadwriteArrayDyn<'py, f64>,
+                            sumsq: PyReadwriteArrayDyn<'py, f64>, nnz: PyReadwriteArrayDyn<'py, f64>) -> PyResult<()> {
+        let (mut sum, mut sumsq, mut nnz) = (sum, sumsq, nnz);
+        let gr = sl(&group_of_row, "group_of_row")?;
+        let shape = sum.shape().to_vec();
+        if shape.len() != 2 || shape[1] != nv || sumsq.shape() != shape.as_slice() || nnz.shape() != shape.as_slice() || gr.len() < nr {
+            return Err(pyo3::exceptions::PyValueError::new_err("sum, sumsq, nnz must be (n_groups, n_vars); group_of_row (n_rows,)"));
+        }
+        if gr.iter().any(|&x| x != u32::MAX && x as usize >= shape[0]) {
+            return Err(pyo3::exceptions::PyValueError::new_err("group id out of range"));
+        }
+        let (s, q, z) = (sl_mut(&mut sum, "sum")?, sl_mut(&mut sumsq, "sumsq")?, sl_mut(&mut nnz, "nnz")?);
+        py.allow_threads(|| kernels::group_gene_sums(v, gr, nv, s, q, z));
+        Ok(())
+    }
+}
+
+chunk_fn! {
+    /// Non-zero entries of vars in [lo, hi) as (var - lo, value, group) for cells with a group.
+    fn collect_gene_block<'py>(py, v, nr, _nv, group_of_row: Arr<'py, u32>, lo: u32, hi: u32)
+        -> PyResult<(Bound<'py, PyArray1<u32>>, Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<u32>>)> {
+        let gr = sl(&group_of_row, "group_of_row")?;
+        if gr.len() < nr {
+            return Err(pyo3::exceptions::PyValueError::new_err("group_of_row too short"));
+        }
+        let (a, b, c) = py.allow_threads(|| kernels::collect_gene_block(v, gr, lo, hi));
+        Ok((PyArray1::from_vec_bound(py, a), PyArray1::from_vec_bound(py, b), PyArray1::from_vec_bound(py, c)))
+    }
+}
+
+chunk_fn! {
+    /// out[row] += Σ_var w[var] * value.
+    fn weighted_row_sums<'py>(py, v, nr, nv, w: Arr<'py, f64>, out: PyReadwriteArrayDyn<'py, f64>) -> PyResult<()> {
+        let mut out = out;
+        let wv = sl(&w, "w")?;
+        let o = sl_mut(&mut out, "out")?;
+        if wv.len() != nv || o.len() < nr {
+            return Err(pyo3::exceptions::PyValueError::new_err("w must be (n_vars,), out (n_rows,)"));
+        }
+        py.allow_threads(|| kernels::weighted_row_sums(v, wv, o));
+        Ok(())
+    }
 }
 
 /// Top-k eigenpairs of the covariance implied by (gram, colsum, n).
 /// Returns (variance (k,), loadings (d, k), total_variance).
 #[pyfunction]
-fn pca_from_gram<'py>(py: Python<'py>, gram: PyReadonlyArrayDyn<'py, f64>, colsum: PyReadonlyArrayDyn<'py, f64>, n: usize, k: usize)
+fn pca_from_gram<'py>(py: Python<'py>, gram: Arr<'py, f64>, colsum: Arr<'py, f64>, n: usize, k: usize)
     -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray2<f64>>, f64)> {
     let (g, c) = (sl(&gram, "gram")?, sl(&colsum, "colsum")?);
     let d = c.len();
@@ -252,126 +369,16 @@ fn pca_from_gram<'py>(py: Python<'py>, gram: PyReadonlyArrayDyn<'py, f64>, colsu
     Ok((PyArray1::from_vec_bound(py, vals), PyArray1::from_vec_bound(py, vecs).reshape([d, kk])?, total))
 }
 
-/// out[row] += scaled row · loadings for one chunk (out: (n_rows, k) float32).
-#[pyfunction]
-#[pyo3(signature = (rows, genes, values, gene_map, loadings, out, scale=false, mean=None, std=None, max_value=0.0))]
-fn project<'py>(
-    py: Python<'py>,
-    rows: PyReadonlyArrayDyn<'py, u32>,
-    genes: PyReadonlyArrayDyn<'py, u32>,
-    values: PyReadonlyArrayDyn<'py, f32>,
-    gene_map: PyReadonlyArrayDyn<'py, i32>,
-    loadings: PyReadonlyArrayDyn<'py, f64>,
-    mut out: PyReadwriteArrayDyn<'py, f32>,
-    scale: bool,
-    mean: Option<PyReadonlyArrayDyn<'py, f64>>,
-    std: Option<PyReadonlyArrayDyn<'py, f64>>,
-    max_value: f64,
-) -> PyResult<()> {
-    let (r, g, v, gm, l) = (sl(&rows, "rows")?, sl(&genes, "genes")?, sl(&values, "values")?, sl(&gene_map, "gene_map")?, sl(&loadings, "loadings")?);
-    check_len("rows, genes, values", &[r.len(), g.len(), v.len()])?;
-    let shape = loadings.shape().to_vec();
-    if shape.len() != 2 {
-        return Err(pyo3::exceptions::PyValueError::new_err("loadings must be (d, k)"));
-    }
-    let (d, k) = (shape[0], shape[1]);
-    let o = sl_mut(&mut out, "out")?;
-    check_rows(r, o.len() / k.max(1), "rows")?;
-    if gm.iter().any(|&m| m >= d as i32) {
-        return Err(pyo3::exceptions::PyValueError::new_err("gene_map values must be < d"));
-    }
-    let empty: Vec<f64> = vec![];
-    let (mu, sd) = match (&mean, &std) {
-        (Some(m), Some(s)) => (sl(m, "mean")?, sl(s, "std")?),
-        _ if scale => return Err(pyo3::exceptions::PyValueError::new_err("scale=True needs mean and std")),
-        _ => (&empty[..], &empty[..]),
-    };
-    let t = Transform { scale, mean: mu, std: sd, max_value };
-    py.allow_threads(|| kernels::project(r, g, v, gm, t, l, k, o));
-    Ok(())
-}
-
-/// Accumulate per (group, gene) sums, sums of squares and nnz (each (n_groups, n_genes)).
-#[pyfunction]
-fn group_gene_sums<'py>(
-    py: Python<'py>,
-    rows: PyReadonlyArrayDyn<'py, u32>,
-    genes: PyReadonlyArrayDyn<'py, u32>,
-    values: PyReadonlyArrayDyn<'py, f32>,
-    group_of_row: PyReadonlyArrayDyn<'py, u32>,
-    mut sum: PyReadwriteArrayDyn<'py, f64>,
-    mut sumsq: PyReadwriteArrayDyn<'py, f64>,
-    mut nnz: PyReadwriteArrayDyn<'py, f64>,
-) -> PyResult<()> {
-    let (r, g, v, gr) = (sl(&rows, "rows")?, sl(&genes, "genes")?, sl(&values, "values")?, sl(&group_of_row, "group_of_row")?);
-    check_len("rows, genes, values", &[r.len(), g.len(), v.len()])?;
-    let shape = sum.shape().to_vec();
-    if shape.len() != 2 || sumsq.shape() != shape.as_slice() || nnz.shape() != shape.as_slice() {
-        return Err(pyo3::exceptions::PyValueError::new_err("sum, sumsq, nnz must be (n_groups, n_genes)"));
-    }
-    let (n_groups, n_genes) = (shape[0], shape[1]);
-    check_ids(r, gr.len(), "row")?;
-    check_ids(g, n_genes, "gene")?;
-    if gr.iter().any(|&x| x != u32::MAX && x as usize >= n_groups) {
-        return Err(pyo3::exceptions::PyValueError::new_err("group id out of range"));
-    }
-    let (s, q, z) = (sl_mut(&mut sum, "sum")?, sl_mut(&mut sumsq, "sumsq")?, sl_mut(&mut nnz, "nnz")?);
-    py.allow_threads(|| kernels::group_gene_sums(r, g, v, gr, n_genes, s, q, z));
-    Ok(())
-}
-
 /// Wilcoxon rank sums per (group, gene) and tie terms per gene (see kernels::wilcoxon_rank_sums).
 #[pyfunction]
-fn wilcoxon_rank_sums<'py>(
-    py: Python<'py>,
-    genes: PyReadonlyArrayDyn<'py, u32>,
-    values: PyReadonlyArrayDyn<'py, f32>,
-    groups: PyReadonlyArrayDyn<'py, u32>,
-    n_genes: usize,
-    group_sizes: PyReadonlyArrayDyn<'py, u64>,
-) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray1<f64>>)> {
+fn wilcoxon_rank_sums<'py>(py: Python<'py>, genes: Arr<'py, u32>, values: Arr<'py, f32>, groups: Arr<'py, u32>, n_genes: usize,
+                           group_sizes: Arr<'py, u64>) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray1<f64>>)> {
     let (g, v, gr, gs) = (sl(&genes, "genes")?, sl(&values, "values")?, sl(&groups, "groups")?, sl(&group_sizes, "group_sizes")?);
     check_len("genes, values, groups", &[g.len(), v.len(), gr.len()])?;
     check_ids(g, n_genes, "gene")?;
     check_ids(gr, gs.len(), "group")?;
     let (rs, ties) = py.allow_threads(|| kernels::wilcoxon_rank_sums(g, v, gr, n_genes, gs));
     Ok((PyArray1::from_vec_bound(py, rs).reshape([gs.len(), n_genes])?, PyArray1::from_vec_bound(py, ties)))
-}
-
-/// out[row] += sum_gene w[gene] * value.
-#[pyfunction]
-fn weighted_row_sums<'py>(py: Python<'py>, rows: PyReadonlyArrayDyn<'py, u32>, genes: PyReadonlyArrayDyn<'py, u32>, values: PyReadonlyArrayDyn<'py, f32>, w: PyReadonlyArrayDyn<'py, f64>, mut out: PyReadwriteArrayDyn<'py, f64>) -> PyResult<()> {
-    let (r, g, v, wv) = (sl(&rows, "rows")?, sl(&genes, "genes")?, sl(&values, "values")?, sl(&w, "w")?);
-    check_len("rows, genes, values", &[r.len(), g.len(), v.len()])?;
-    let o = sl_mut(&mut out, "out")?;
-    check_ids(r, o.len(), "row")?;
-    check_ids(g, wv.len(), "gene")?;
-    py.allow_threads(|| kernels::weighted_row_sums(r, g, v, wv, o));
-    Ok(())
-}
-
-/// QC accumulation on raw counts (all outputs indexed by original cell / gene id).
-#[pyfunction]
-fn qc_chunk<'py>(
-    py: Python<'py>,
-    cells: PyReadonlyArrayDyn<'py, u32>,
-    genes: PyReadonlyArrayDyn<'py, u32>,
-    values: PyReadonlyArrayDyn<'py, f32>,
-    flag: PyReadonlyArrayDyn<'py, bool>,
-    mut cell_total: PyReadwriteArrayDyn<'py, f64>,
-    mut cell_ngenes: PyReadwriteArrayDyn<'py, u32>,
-    mut cell_flag: PyReadwriteArrayDyn<'py, f64>,
-    mut gene_ncells: PyReadwriteArrayDyn<'py, u32>,
-    mut gene_total: PyReadwriteArrayDyn<'py, f64>,
-) -> PyResult<()> {
-    let (c, g, v, f) = (sl(&cells, "cells")?, sl(&genes, "genes")?, sl(&values, "values")?, sl(&flag, "flag")?);
-    check_len("cells, genes, values", &[c.len(), g.len(), v.len()])?;
-    let (ct, cn, cf) = (sl_mut(&mut cell_total, "cell_total")?, sl_mut(&mut cell_ngenes, "cell_ngenes")?, sl_mut(&mut cell_flag, "cell_flag")?);
-    let (gn, gt) = (sl_mut(&mut gene_ncells, "gene_ncells")?, sl_mut(&mut gene_total, "gene_total")?);
-    check_ids(c, ct.len().min(cn.len()).min(cf.len()), "cell")?;
-    check_ids(g, f.len().min(gn.len()).min(gt.len()), "gene")?;
-    py.allow_threads(|| kernels::qc_chunk(c, g, v, f, ct, cn, cf, gn, gt));
-    Ok(())
 }
 
 /// Two-sided p-values of Student's t (NaN/invalid df -> NaN), as scipy's 2 * t.sf(|t|, df).
@@ -405,15 +412,16 @@ fn crest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(connectivities, m)?)?;
     m.add_function(wrap_pyfunction!(leiden, m)?)?;
     m.add_function(wrap_pyfunction!(umap, m)?)?;
-    m.add_function(wrap_pyfunction!(preprocess_chunk, m)?)?;
+    m.add_function(wrap_pyfunction!(materialize, m)?)?;
     m.add_function(wrap_pyfunction!(gene_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(qc, m)?)?;
+    m.add_function(wrap_pyfunction!(collect_gene_block, m)?)?;
     m.add_function(wrap_pyfunction!(gram_accumulate, m)?)?;
     m.add_function(wrap_pyfunction!(pca_from_gram, m)?)?;
     m.add_function(wrap_pyfunction!(project, m)?)?;
     m.add_function(wrap_pyfunction!(group_gene_sums, m)?)?;
     m.add_function(wrap_pyfunction!(wilcoxon_rank_sums, m)?)?;
     m.add_function(wrap_pyfunction!(weighted_row_sums, m)?)?;
-    m.add_function(wrap_pyfunction!(qc_chunk, m)?)?;
     m.add_function(wrap_pyfunction!(t_pvalues, m)?)?;
     m.add_function(wrap_pyfunction!(normal_pvalues, m)?)?;
     Ok(())

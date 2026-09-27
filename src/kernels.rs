@@ -1,128 +1,197 @@
-//! Streaming kernels over cell-sorted COO chunks.
+//! Fused streaming kernels over cell-sorted chunks of the raw count matrix.
 //!
-//! Every function takes a chunk of (row, gene, value) triplets whose rows are
-//! non-decreasing, and either returns a transformed chunk or accumulates into
-//! caller-owned buffers. A dataset of any size is processed by feeding its
-//! chunks in turn, so peak memory is one chunk plus the (small) accumulators.
+//! A chunk is read-only raw data (CSR via `indptr`, or COO via per-entry cell
+//! ids) plus the current cell/gene filters and the lazy `normalize_total` /
+//! `log1p` transform. Every kernel applies filters and transform inline, one
+//! cell at a time into a small per-thread buffer, so no filtered or normalised
+//! copy of the chunk is ever materialised. Feeding the chunks of a dataset in
+//! turn processes any size with memory = one raw chunk + small accumulators.
 
 use faer::{Mat, Side};
 use rayon::prelude::*;
 
-/// Split `rows` (non-decreasing) into ~`parts` segments that never split a row.
-fn row_segments(rows: &[u32], parts: usize) -> Vec<(usize, usize)> {
-    let n = rows.len();
-    if n == 0 {
-        return vec![];
-    }
-    let parts = parts.max(1).min(n);
-    let mut cuts = vec![0usize];
-    for p in 1..parts {
-        let mut c = n * p / parts;
-        while c < n && c > 0 && rows[c] == rows[c - 1] {
-            c += 1;
-        }
-        if c > *cuts.last().unwrap() && c < n {
-            cuts.push(c);
-        }
-    }
-    cuts.push(n);
-    cuts.windows(2).map(|w| (w[0], w[1])).collect()
+/// How entries map to cells.
+#[derive(Clone, Copy)]
+pub enum Cells<'a> {
+    /// per-entry cell id (non-decreasing)
+    Ids(&'a [u32]),
+    /// CSR row pointer for cells `first .. first + indptr.len() - 1`; offsets
+    /// are absolute, `indptr[0]` is the offset of `genes[0]`.
+    Ptr { indptr: &'a [i64], first: u32 },
 }
 
-fn n_parts(len: usize) -> usize {
-    (rayon::current_num_threads() * 4).min(len / 16_384 + 1).max(1)
+#[derive(Clone, Copy)]
+pub struct ChunkView<'a> {
+    pub cells: Cells<'a>,
+    pub genes: &'a [u32],
+    pub values: &'a [f32],
+    pub cell_map: &'a [i64],
+    pub gene_map: &'a [i32],
+    pub target_sum: f64,
+    pub log1p: bool,
 }
 
-/// Filter + remap + normalise + log1p one chunk.
-///
-/// * `cells` are original cell ids (non-decreasing); `cell_map[id]` is the output
-///   row or -1 to drop the cell.
-/// * `gene_map[g]` is the output gene index or -1 to drop the gene.
-/// * `target_sum > 0` scales each cell to that total (over kept genes), as
-///   scanpy `normalize_total`; `log1p` then applies ln(1 + x).
-pub fn preprocess_chunk(
-    cells: &[u32],
-    genes: &[u32],
-    values: &[f32],
-    cell_map: &[i64],
-    gene_map: &[i32],
-    target_sum: f64,
-    log1p: bool,
-) -> (Vec<u32>, Vec<u32>, Vec<f32>) {
-    let segs = row_segments(cells, n_parts(cells.len()));
-    let parts: Vec<(Vec<u32>, Vec<u32>, Vec<f32>)> = segs
-        .par_iter()
-        .map(|&(lo, hi)| {
-            let (mut r, mut g, mut v) = (Vec::with_capacity(hi - lo), Vec::with_capacity(hi - lo), Vec::with_capacity(hi - lo));
-            let mut p = lo;
-            while p < hi {
-                let c = cells[p];
-                let mut q = p;
-                while q < hi && cells[q] == c {
-                    q += 1;
-                }
-                let row = cell_map.get(c as usize).copied().unwrap_or(-1);
-                if row >= 0 {
-                    let start = v.len();
-                    let mut total = 0.0f64;
-                    for e in p..q {
-                        let gm = gene_map.get(genes[e] as usize).copied().unwrap_or(-1);
-                        if gm >= 0 {
-                            r.push(row as u32);
-                            g.push(gm as u32);
-                            v.push(values[e]);
-                            total += values[e] as f64;
-                        }
-                    }
-                    let scale = if target_sum > 0.0 && total > 0.0 { target_sum / total } else { 1.0 };
-                    for x in &mut v[start..] {
-                        let y = if target_sum > 0.0 { (*x as f64 * scale) as f32 } else { *x };
-                        *x = if log1p { y.ln_1p() } else { y };
-                    }
-                }
-                p = q;
+impl<'a> ChunkView<'a> {
+    /// (cell id, entry lo, entry hi) for each cell present in the chunk.
+    fn cell_spans(&self) -> Vec<(u32, usize, usize)> {
+        match self.cells {
+            Cells::Ptr { indptr, first } => {
+                let base = indptr.first().copied().unwrap_or(0);
+                (0..indptr.len().saturating_sub(1))
+                    .map(|i| (first + i as u32, (indptr[i] - base) as usize, (indptr[i + 1] - base) as usize))
+                    .collect()
             }
-            (r, g, v)
-        })
-        .collect();
+            Cells::Ids(ids) => {
+                let mut out = Vec::new();
+                let mut p = 0;
+                while p < ids.len() {
+                    let c = ids[p];
+                    let mut q = p + 1;
+                    while q < ids.len() && ids[q] == c {
+                        q += 1;
+                    }
+                    out.push((c, p, q));
+                    p = q;
+                }
+                out
+            }
+        }
+    }
+
+    /// Filtered + transformed entries of one cell into `buf`; returns its row.
+    #[inline]
+    fn cell(&self, c: u32, lo: usize, hi: usize, buf: &mut Vec<(u32, f32)>) -> Option<u32> {
+        buf.clear();
+        let row = *self.cell_map.get(c as usize)?;
+        if row < 0 {
+            return None;
+        }
+        let mut total = 0.0f64;
+        for e in lo..hi {
+            let m = self.gene_map.get(self.genes[e] as usize).copied().unwrap_or(-1);
+            if m >= 0 {
+                buf.push((m as u32, self.values[e]));
+                total += self.values[e] as f64;
+            }
+        }
+        if self.target_sum > 0.0 || self.log1p {
+            let scale = if self.target_sum > 0.0 && total > 0.0 { self.target_sum / total } else { 1.0 };
+            for x in buf.iter_mut() {
+                let y = if self.target_sum > 0.0 { (x.1 as f64 * scale) as f32 } else { x.1 };
+                x.1 = if self.log1p { y.ln_1p() } else { y };
+            }
+        }
+        Some(row as u32)
+    }
+
+    /// Group cell spans into ~4 × threads parts of similar entry counts.
+    fn parts(&self) -> Vec<Vec<(u32, usize, usize)>> {
+        let spans = self.cell_spans();
+        let total = self.genes.len().max(1);
+        let n_parts = (rayon::current_num_threads() * 4).min(total / 8192 + 1).max(1);
+        let mut parts: Vec<Vec<(u32, usize, usize)>> = vec![Vec::new()];
+        let mut acc = 0usize;
+        for s in spans {
+            if acc * n_parts >= total * parts.len() && !parts.last().unwrap().is_empty() {
+                parts.push(Vec::new());
+            }
+            acc += s.2 - s.1;
+            parts.last_mut().unwrap().push(s);
+        }
+        parts
+    }
+
+    /// Run `f(row, entries)` over every kept cell in parallel, folding per part.
+    fn fold_cells<T: Send, I: Fn() -> T + Sync, F: Fn(&mut T, u32, &[(u32, f32)]) + Sync>(&self, init: I, f: F) -> Vec<T> {
+        self.parts()
+            .into_par_iter()
+            .map(|part| {
+                let mut acc = init();
+                let mut buf = Vec::new();
+                for (c, lo, hi) in part {
+                    if let Some(row) = self.cell(c, lo, hi, &mut buf) {
+                        f(&mut acc, row, &buf);
+                    }
+                }
+                acc
+            })
+            .collect()
+    }
+}
+
+/// Materialise the filtered + transformed chunk as (row, gene, value) triplets.
+pub fn materialize(v: ChunkView) -> (Vec<u32>, Vec<u32>, Vec<f32>) {
+    let parts = v.fold_cells(|| (Vec::new(), Vec::new(), Vec::new()), |acc, row, e| {
+        for &(g, x) in e {
+            acc.0.push(row);
+            acc.1.push(g);
+            acc.2.push(x);
+        }
+    });
     let total: usize = parts.iter().map(|p| p.0.len()).sum();
-    let (mut r, mut g, mut v) = (Vec::with_capacity(total), Vec::with_capacity(total), Vec::with_capacity(total));
+    let (mut r, mut g, mut x) = (Vec::with_capacity(total), Vec::with_capacity(total), Vec::with_capacity(total));
     for (a, b, c) in parts {
         r.extend(a);
         g.extend(b);
-        v.extend(c);
+        x.extend(c);
     }
-    (r, g, v)
+    (r, g, x)
 }
 
-/// Per-gene sums for mean/variance on two scales: the values as given (log
-/// domain) and expm1(values) (normalised-count domain, used by seurat HVG).
-/// `out` is n_genes × 5: [Σx, Σx², Σexpm1(x), Σexpm1(x)², nnz].
-pub fn gene_stats(genes: &[u32], values: &[f32], n_genes: usize, out: &mut [f64]) {
-    let chunk = 1 << 16;
-    let partial = genes
-        .par_chunks(chunk)
-        .zip(values.par_chunks(chunk))
-        .fold(
-            || vec![0.0f64; n_genes * 5],
-            |mut acc, (gs, vs)| {
-                for (&g, &x) in gs.iter().zip(vs) {
-                    let (x, e) = (x as f64, (x as f64).exp_m1());
-                    let o = &mut acc[g as usize * 5..g as usize * 5 + 5];
-                    o[0] += x;
-                    o[1] += x * x;
-                    o[2] += e;
-                    o[3] += e * e;
-                    o[4] += 1.0;
+/// Per-gene sums on two scales: the values as given (log domain) and expm1
+/// (normalised-count domain, used by seurat HVG). `out` is n_genes × 5:
+/// [Σx, Σx², Σexpm1(x), Σexpm1(x)², nnz].
+pub fn gene_stats(v: ChunkView, out: &mut [f64]) {
+    let n = out.len();
+    let parts = v.fold_cells(|| vec![0.0f64; n], |acc, _row, e| {
+        for &(g, x) in e {
+            let (x, ex) = (x as f64, (x as f64).exp_m1());
+            let o = &mut acc[g as usize * 5..g as usize * 5 + 5];
+            o[0] += x;
+            o[1] += x * x;
+            o[2] += ex;
+            o[3] += ex * ex;
+            o[4] += 1.0;
+        }
+    });
+    for p in parts {
+        out.iter_mut().zip(p).for_each(|(o, x)| *o += x);
+    }
+}
+
+/// QC on raw counts (call with an un-transformed view). Per-row: total counts,
+/// genes detected, counts in `flag` genes. Per gene: cells detected, total.
+pub fn qc(v: ChunkView, flag: &[bool], cell_total: &mut [f64], cell_ngenes: &mut [u32], cell_flag: &mut [f64],
+          gene_ncells: &mut [u32], gene_total: &mut [f64]) {
+    let ng = gene_total.len();
+    let parts = v.fold_cells(
+        || (Vec::new(), vec![0u32; ng], vec![0.0f64; ng]),
+        |acc, row, e| {
+            let (mut t, mut n, mut f) = (0.0f64, 0u32, 0.0f64);
+            for &(g, x) in e {
+                if x == 0.0 {
+                    continue;
                 }
-                acc
-            },
-        )
-        .reduce(|| vec![0.0f64; n_genes * 5], |mut a, b| {
-            a.iter_mut().zip(b).for_each(|(x, y)| *x += y);
-            a
-        });
-    out.iter_mut().zip(partial).for_each(|(o, p)| *o += p);
+                t += x as f64;
+                n += 1;
+                if flag[g as usize] {
+                    f += x as f64;
+                }
+                acc.1[g as usize] += 1;
+                acc.2[g as usize] += x as f64;
+            }
+            acc.0.push((row, t, n, f));
+        },
+    );
+    for (cells, gn, gt) in parts {
+        for (row, t, n, f) in cells {
+            cell_total[row as usize] += t;
+            cell_ngenes[row as usize] += n;
+            cell_flag[row as usize] += f;
+        }
+        gene_ncells.iter_mut().zip(gn).for_each(|(a, b)| *a += b);
+        gene_total.iter_mut().zip(gt).for_each(|(a, b)| *a += b);
+    }
 }
 
 /// Value transform used by PCA. With `scale`, reproduces scanpy
@@ -150,51 +219,44 @@ impl<'a> Transform<'a> {
 }
 
 /// Accumulate G += S^T S and colsum += S^T 1 over one chunk. Only genes with
-/// `gene_map[g] >= 0` take part (mapped to 0..d). `gram` is d × d row-major
-/// (upper triangle filled; call `finish_gram` to symmetrise).
+/// `sub_map[var] >= 0` take part (mapped to 0..d). `gram` is d × d row-major
+/// (upper triangle filled; `pca_from_gram` reads only that).
 ///
 /// Threads own disjoint row blocks of G (balanced by work), so there is no
 /// reduction step and memory stays at one d × d matrix.
-pub fn gram_accumulate(
-    rows: &[u32],
-    genes: &[u32],
-    values: &[f32],
-    gene_map: &[i32],
-    t: Transform,
-    gram: &mut [f64],
-    colsum: &mut [f64],
-) {
+pub fn gram_accumulate(v: ChunkView, sub_map: &[i32], t: Transform, gram: &mut [f64], colsum: &mut [f64]) {
     let d = colsum.len();
-    // compact to (row-start, mapped gene, transformed value), sorted by gene within row
-    let mut starts = vec![0usize];
-    let mut eg: Vec<u32> = Vec::with_capacity(values.len());
-    let mut ev: Vec<f64> = Vec::with_capacity(values.len());
-    let mut p = 0;
-    while p < rows.len() {
-        let r = rows[p];
-        let s = eg.len();
-        while p < rows.len() && rows[p] == r {
-            let m = gene_map.get(genes[p] as usize).copied().unwrap_or(-1);
+    // compact to rows of (mapped gene, transformed value), sorted by gene within row
+    let parts = v.fold_cells(|| (Vec::<usize>::new(), Vec::<u32>::new(), Vec::<f64>::new()), |acc, _row, e| {
+        let s = acc.1.len();
+        for &(g, x) in e {
+            let m = sub_map[g as usize];
             if m >= 0 {
-                eg.push(m as u32);
-                ev.push(t.apply(m as usize, values[p]));
+                acc.1.push(m as u32);
+                acc.2.push(t.apply(m as usize, x));
             }
-            p += 1;
         }
-        if eg.len() > s {
-            // sort this row by gene if needed
-            if eg[s..].windows(2).any(|w| w[0] > w[1]) {
-                let mut idx: Vec<usize> = (s..eg.len()).collect();
-                idx.sort_by_key(|&i| eg[i]);
-                let (g2, v2): (Vec<u32>, Vec<f64>) = idx.iter().map(|&i| (eg[i], ev[i])).unzip();
-                eg[s..].copy_from_slice(&g2);
-                ev[s..].copy_from_slice(&v2);
+        if acc.1.len() > s {
+            if acc.1[s..].windows(2).any(|w| w[0] > w[1]) {
+                let mut idx: Vec<usize> = (s..acc.1.len()).collect();
+                idx.sort_by_key(|&i| acc.1[i]);
+                let (g2, v2): (Vec<u32>, Vec<f64>) = idx.iter().map(|&i| (acc.1[i], acc.2[i])).unzip();
+                acc.1[s..].copy_from_slice(&g2);
+                acc.2[s..].copy_from_slice(&v2);
             }
-            starts.push(eg.len());
+            acc.0.push(acc.1.len());
         }
+    });
+    let mut starts = vec![0usize];
+    let (mut eg, mut ev) = (Vec::new(), Vec::new());
+    for (ends, g, x) in parts {
+        let off = eg.len();
+        starts.extend(ends.into_iter().map(|e| e + off));
+        eg.extend(g);
+        ev.extend(x);
     }
-    for (&g, &v) in eg.iter().zip(&ev) {
-        colsum[g as usize] += v;
+    for (&g, &x) in eg.iter().zip(&ev) {
+        colsum[g as usize] += x;
     }
 
     // work per gene a: number of entries at or after it in its row (upper triangle)
@@ -259,7 +321,9 @@ pub fn pca_from_gram(gram: &[f64], colsum: &[f64], n: usize, k: usize) -> Result
         (gram[a * d + b] - colsum[a] * colsum[b] / nf) / (nf - 1.0)
     });
     let total: f64 = (0..d).map(|i| cov[(i, i)]).sum();
-    let eig = cov.self_adjoint_eigen(Side::Upper).map_err(|e| format!("{:?}", e))?;
+    let eig = cov.self_adjoint_eigen(Side::Upper).map_err(|e| format!("{:?}", e));
+    crate::simd::clean_simd_state();
+    let eig = eig?;
     let (u, s) = (eig.U(), eig.S().column_vector());
     let k = k.min(d);
     let mut vals = Vec::with_capacity(k);
@@ -285,95 +349,78 @@ pub fn pca_from_gram(gram: &[f64], colsum: &[f64], n: usize, k: usize) -> Result
 
 /// out[row] += Σ_j s_j V[j, :] for one chunk (caller pre-fills out with the
 /// centring shift -mean(S)·V). `v` is d × k row-major.
-pub fn project(
-    rows: &[u32],
-    genes: &[u32],
-    values: &[f32],
-    gene_map: &[i32],
-    t: Transform,
-    v: &[f64],
-    k: usize,
-    out: &mut [f32],
-) {
-    let segs = row_segments(rows, n_parts(rows.len()));
-    let results: Vec<Vec<(u32, Vec<f64>)>> = segs
-        .par_iter()
-        .map(|&(lo, hi)| {
-            let mut res = Vec::new();
-            let mut p = lo;
-            while p < hi {
-                let r = rows[p];
-                let mut acc = vec![0.0f64; k];
-                while p < hi && rows[p] == r {
-                    let m = gene_map.get(genes[p] as usize).copied().unwrap_or(-1);
-                    if m >= 0 {
-                        let s = t.apply(m as usize, values[p]);
-                        let vr = &v[m as usize * k..(m as usize + 1) * k];
-                        acc.iter_mut().zip(vr).for_each(|(a, &x)| *a += s * x);
-                    }
-                    p += 1;
-                }
-                res.push((r, acc));
+pub fn project(view: ChunkView, sub_map: &[i32], t: Transform, v: &[f64], k: usize, out: &mut [f32]) {
+    let parts = view.fold_cells(Vec::new, |acc: &mut Vec<(u32, Vec<f64>)>, row, e| {
+        let mut a = vec![0.0f64; k];
+        for &(g, x) in e {
+            let m = sub_map[g as usize];
+            if m >= 0 {
+                let s = t.apply(m as usize, x);
+                let vr = &v[m as usize * k..(m as usize + 1) * k];
+                a.iter_mut().zip(vr).for_each(|(o, &y)| *o += s * y);
             }
-            res
-        })
-        .collect();
-    for seg in results {
-        for (r, acc) in seg {
+        }
+        acc.push((row, a));
+    });
+    for part in parts {
+        for (r, a) in part {
             let o = &mut out[r as usize * k..(r as usize + 1) * k];
-            o.iter_mut().zip(acc).for_each(|(a, b)| *a += b as f32);
+            o.iter_mut().zip(a).for_each(|(x, y)| *x += y as f32);
         }
     }
 }
 
 /// Per (group, gene) Σx, Σx², nnz for one chunk; `group_of_row[row]` < n_groups
 /// or u32::MAX to ignore the cell. Buffers are n_groups × n_genes.
-pub fn group_gene_sums(
-    rows: &[u32],
-    genes: &[u32],
-    values: &[f32],
-    group_of_row: &[u32],
-    n_genes: usize,
-    sum: &mut [f64],
-    sumsq: &mut [f64],
-    nnz: &mut [f64],
-) {
-    let n_groups = sum.len() / n_genes.max(1);
-    let chunk = 1 << 16;
-    let size = n_groups * n_genes;
-    let (s, q, z) = rows
-        .par_chunks(chunk)
-        .zip(genes.par_chunks(chunk))
-        .zip(values.par_chunks(chunk))
-        .fold(
-            || (vec![0.0f64; size], vec![0.0f64; size], vec![0.0f64; size]),
-            |(mut s, mut q, mut z), ((rs, gs), vs)| {
-                for ((&r, &g), &x) in rs.iter().zip(gs).zip(vs) {
-                    let grp = group_of_row[r as usize];
-                    if grp == u32::MAX {
-                        continue;
-                    }
-                    let i = grp as usize * n_genes + g as usize;
-                    let x = x as f64;
-                    s[i] += x;
-                    q[i] += x * x;
-                    z[i] += 1.0;
-                }
-                (s, q, z)
-            },
-        )
-        .reduce(
-            || (vec![0.0f64; size], vec![0.0f64; size], vec![0.0f64; size]),
-            |mut a, b| {
-                a.0.iter_mut().zip(b.0).for_each(|(x, y)| *x += y);
-                a.1.iter_mut().zip(b.1).for_each(|(x, y)| *x += y);
-                a.2.iter_mut().zip(b.2).for_each(|(x, y)| *x += y);
-                a
-            },
-        );
-    sum.iter_mut().zip(s).for_each(|(a, b)| *a += b);
-    sumsq.iter_mut().zip(q).for_each(|(a, b)| *a += b);
-    nnz.iter_mut().zip(z).for_each(|(a, b)| *a += b);
+pub fn group_gene_sums(v: ChunkView, group_of_row: &[u32], n_genes: usize, sum: &mut [f64], sumsq: &mut [f64], nnz: &mut [f64]) {
+    let size = sum.len();
+    let parts = v.fold_cells(
+        || (vec![0.0f64; size], vec![0.0f64; size], vec![0.0f64; size]),
+        |acc, row, e| {
+            let grp = group_of_row[row as usize];
+            if grp == u32::MAX {
+                return;
+            }
+            let base = grp as usize * n_genes;
+            for &(g, x) in e {
+                let i = base + g as usize;
+                let x = x as f64;
+                acc.0[i] += x;
+                acc.1[i] += x * x;
+                acc.2[i] += 1.0;
+            }
+        },
+    );
+    for (s, q, z) in parts {
+        sum.iter_mut().zip(s).for_each(|(a, b)| *a += b);
+        sumsq.iter_mut().zip(q).for_each(|(a, b)| *a += b);
+        nnz.iter_mut().zip(z).for_each(|(a, b)| *a += b);
+    }
+}
+
+/// Entries of genes in [lo, hi) as (gene - lo, value, group) for cells with a group.
+pub fn collect_gene_block(v: ChunkView, group_of_row: &[u32], lo: u32, hi: u32) -> (Vec<u32>, Vec<f32>, Vec<u32>) {
+    let parts = v.fold_cells(|| (Vec::new(), Vec::new(), Vec::new()), |acc, row, e| {
+        let grp = group_of_row[row as usize];
+        if grp == u32::MAX {
+            return;
+        }
+        for &(g, x) in e {
+            if g >= lo && g < hi && x != 0.0 {
+                acc.0.push(g - lo);
+                acc.1.push(x);
+                acc.2.push(grp);
+            }
+        }
+    });
+    let total: usize = parts.iter().map(|p| p.0.len()).sum();
+    let (mut a, mut b, mut c) = (Vec::with_capacity(total), Vec::with_capacity(total), Vec::with_capacity(total));
+    for (x, y, z) in parts {
+        a.extend(x);
+        b.extend(y);
+        c.extend(z);
+    }
+    (a, b, c)
 }
 
 /// Wilcoxon rank sums of every group vs the rest, per gene, exploiting sparsity:
@@ -454,42 +501,16 @@ pub fn wilcoxon_rank_sums(
     (rank_sum, ties)
 }
 
-/// out[row] += Σ_gene w[gene] * value (used for gene-set scores); w indexed by gene.
-pub fn weighted_row_sums(rows: &[u32], genes: &[u32], values: &[f32], w: &[f64], out: &mut [f64]) {
-    for ((&r, &g), &x) in rows.iter().zip(genes).zip(values) {
-        let wg = w[g as usize];
-        if wg != 0.0 {
-            out[r as usize] += wg * x as f64;
+/// out[row] += Σ_gene w[gene] * value (used for gene-set scores).
+pub fn weighted_row_sums(v: ChunkView, w: &[f64], out: &mut [f64]) {
+    let parts = v.fold_cells(Vec::new, |acc: &mut Vec<(u32, f64)>, row, e| {
+        let s: f64 = e.iter().map(|&(g, x)| w[g as usize] * x as f64).sum();
+        acc.push((row, s));
+    });
+    for part in parts {
+        for (r, s) in part {
+            out[r as usize] += s;
         }
-    }
-}
-
-/// QC per chunk on raw counts. Per-cell (indexed by original cell id): total
-/// counts, genes detected, counts in `flag` genes (e.g. mitochondrial).
-/// Per gene: cells detected, total counts.
-pub fn qc_chunk(
-    cells: &[u32],
-    genes: &[u32],
-    values: &[f32],
-    flag: &[bool],
-    cell_total: &mut [f64],
-    cell_ngenes: &mut [u32],
-    cell_flag: &mut [f64],
-    gene_ncells: &mut [u32],
-    gene_total: &mut [f64],
-) {
-    for ((&c, &g), &x) in cells.iter().zip(genes).zip(values) {
-        if x == 0.0 {
-            continue;
-        }
-        let (c, g) = (c as usize, g as usize);
-        cell_total[c] += x as f64;
-        cell_ngenes[c] += 1;
-        if flag[g] {
-            cell_flag[c] += x as f64;
-        }
-        gene_ncells[g] += 1;
-        gene_total[g] += x as f64;
     }
 }
 
@@ -498,12 +519,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_preprocess_chunk() {
+    fn test_materialize_filters_and_normalises() {
         // cell 0: genes 0,1 (2, 6); cell 1 dropped; cell 2: genes 1,2 (1, 3), gene 2 dropped
-        let (r, g, v) = preprocess_chunk(&[0, 0, 1, 2, 2], &[0, 1, 0, 1, 2], &[2.0, 6.0, 5.0, 1.0, 3.0], &[0, -1, 1], &[0, 1, -1], 100.0, false);
+        let (cells, genes, vals) = ([0u32, 0, 1, 2, 2], [0u32, 1, 0, 1, 2], [2.0f32, 6.0, 5.0, 1.0, 3.0]);
+        let (cm, gm) = ([0i64, -1, 1], [0i32, 1, -1]);
+        let v = ChunkView { cells: Cells::Ids(&cells), genes: &genes, values: &vals, cell_map: &cm, gene_map: &gm, target_sum: 100.0, log1p: false };
+        let (r, g, x) = materialize(v);
         assert_eq!(r, vec![0, 0, 1]);
         assert_eq!(g, vec![0, 1, 1]);
-        assert!((v[0] - 25.0).abs() < 1e-5 && (v[1] - 75.0).abs() < 1e-5 && (v[2] - 100.0).abs() < 1e-5);
+        assert!((x[0] - 25.0).abs() < 1e-5 && (x[1] - 75.0).abs() < 1e-5 && (x[2] - 100.0).abs() < 1e-5);
+        // same data as CSR
+        let indptr = [0i64, 2, 3, 5];
+        let v2 = ChunkView { cells: Cells::Ptr { indptr: &indptr, first: 0 }, ..v };
+        assert_eq!(materialize(v2), (r, g, x));
     }
 
     /// Gram-based scaled PCA must equal PCA of the dense, scaled, clipped matrix.
@@ -533,12 +561,16 @@ mod tests {
         let mv = 2.0;
         let t = Transform { scale: true, mean: &mean, std: &std, max_value: mv };
         let gmap: Vec<i32> = (0..d as i32).collect();
+        let cmap: Vec<i64> = (0..n as i64).collect();
         let mut gram = vec![0.0f64; d * d];
         let mut colsum = vec![0.0f64; d];
         // feed in two chunks
         let cut = rows.iter().position(|&r| r >= 100).unwrap();
-        gram_accumulate(&rows[..cut], &genes[..cut], &vals[..cut], &gmap, t, &mut gram, &mut colsum);
-        gram_accumulate(&rows[cut..], &genes[cut..], &vals[cut..], &gmap, t, &mut gram, &mut colsum);
+        for (lo, hi) in [(0, cut), (cut, rows.len())] {
+            let v = ChunkView { cells: Cells::Ids(&rows[lo..hi]), genes: &genes[lo..hi], values: &vals[lo..hi],
+                                cell_map: &cmap, gene_map: &gmap, target_sum: 0.0, log1p: false };
+            gram_accumulate(v, &gmap, t, &mut gram, &mut colsum);
+        }
         let (ev, _, _) = pca_from_gram(&gram, &colsum, n, 5).unwrap();
 
         // dense reference: scale, clip, centre, covariance eigenvalues
@@ -584,3 +616,4 @@ mod tests {
         assert_eq!(tie[0], 24.0 + 24.0 + 6.0);
     }
 }
+

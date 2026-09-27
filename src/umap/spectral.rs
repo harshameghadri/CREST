@@ -98,7 +98,9 @@ pub fn spectral_layout(
     });
     let hs = Mat::<f64>::from_fn(m, m, |a, b| 0.5 * (h[(a, b)] + h[(b, a)]));
     let mut emb = vec![0.0f32; n * n_components];
-    match hs.self_adjoint_eigen(faer::Side::Lower) {
+    let eig = hs.self_adjoint_eigen(faer::Side::Lower);
+    crate::simd::clean_simd_state();
+    match eig {
         Ok(eig) => {
             let u = eig.U();
             // eigenvalues ascending: take the largest n_components

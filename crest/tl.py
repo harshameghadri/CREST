@@ -62,8 +62,8 @@ def pca(bf: BioFrame, n_comps: int = 50, use_highly_variable: Optional[bool] = N
     n = bf.n_obs
     gram = np.zeros((d, d), np.float64)
     colsum = np.zeros(d, np.float64)
-    for r, g, v in bf.iter_chunks():
-        _native.gram_accumulate(r, g, v, gmap, gram, colsum, scale, mean, std, float(max_value or 0.0))
+    for ctx in bf.iter_ctx():
+        _native.gram_accumulate(*ctx, gmap, gram, colsum, scale, mean, std, float(max_value or 0.0))
     k = min(n_comps, d, n - 1)
     variance, loadings, total = _native.pca_from_gram(gram, colsum, n, k)
     del gram
@@ -71,8 +71,8 @@ def pca(bf: BioFrame, n_comps: int = 50, use_highly_variable: Optional[bool] = N
     shift = (colsum / n) @ loadings
     X = np.empty((n, k), np.float32)
     X[:] = -shift.astype(np.float32)
-    for r, g, v in bf.iter_chunks():
-        _native.project(r, g, v, gmap, loadings, X, scale, mean, std, float(max_value or 0.0))
+    for ctx in bf.iter_ctx():
+        _native.project(*ctx, gmap, loadings, X, scale, mean, std, float(max_value or 0.0))
 
     pcs = np.zeros((bf.n_vars, k), np.float32)
     pcs[mask] = loadings
@@ -131,7 +131,7 @@ def _bh(p: np.ndarray) -> np.ndarray:
 
 def rank_genes_groups(bf: BioFrame, groupby: str, method: str = "t-test", groups: Union[str, Sequence[str]] = "all",
                       n_genes: Optional[int] = 100, tie_correct: bool = False,
-                      memory_budget_gb: float = 2.0) -> pl.DataFrame:
+                      memory_budget_gb: float = 0.25) -> pl.DataFrame:
     """Each group vs the rest, as ``sc.tl.rank_genes_groups(reference="rest")``.
 
     ``method="t-test"`` (Welch) or ``"wilcoxon"`` (Mann-Whitney U, normal
@@ -153,8 +153,8 @@ def rank_genes_groups(bf: BioFrame, groupby: str, method: str = "t-test", groups
     N = sizes.sum()
 
     s = np.zeros((G, V)); q = np.zeros((G, V)); z = np.zeros((G, V))
-    for r, g, v in bf.iter_chunks():
-        _native.group_gene_sums(r, g, v, grp, s, q, z)
+    for ctx in bf.iter_ctx():
+        _native.group_gene_sums(*ctx, grp, s, q, z)
     rest_n = N - sizes
     mean_g = s / sizes[:, None]
     mean_r = (s.sum(0)[None, :] - s) / rest_n[:, None]
@@ -180,14 +180,11 @@ def rank_genes_groups(bf: BioFrame, groupby: str, method: str = "t-test", groups
             while hi < V and (acc + nnz_gene[hi] <= budget or hi == lo):
                 acc += nnz_gene[hi]
                 hi += 1
-            gs, vs, cs = [], [], []
-            for r, g, v in bf.iter_chunks():
-                keep = (g >= lo) & (g < hi)
-                gr = grp[r[keep]]
-                ok = gr != np.iinfo(np.uint32).max
-                gs.append((g[keep][ok] - lo).astype(np.uint32)); vs.append(v[keep][ok]); cs.append(gr[ok])
-            rs, ties = _native.wilcoxon_rank_sums(np.concatenate(gs), np.concatenate(vs), np.concatenate(cs),
-                                                  hi - lo, sizes.astype(np.uint64))
+            parts = [_native.collect_gene_block(*ctx, grp, lo, hi) for ctx in bf.iter_ctx()]
+            cat = [np.concatenate([p[i] for p in parts]) if len(parts) > 1 else parts[0][i] for i in range(3)]
+            del parts
+            rs, ties = _native.wilcoxon_rank_sums(cat[0], cat[1], cat[2], hi - lo, sizes.astype(np.uint64))
+            del cat
             T = 1.0 - ties / (N ** 3 - N) if tie_correct else np.ones(hi - lo)
             std = np.sqrt(T[None, :] * sizes[:, None] * rest_n[:, None] * (N + 1) / 12.0)
             with np.errstate(divide="ignore", invalid="ignore"):
@@ -253,7 +250,7 @@ def score_genes(bf: BioFrame, gene_list: Sequence[str], ctrl_size: int = 50, n_b
     w[[pos[g] for g in glist]] += 1.0 / len(glist)
     w[sorted(ctrl)] -= 1.0 / len(ctrl)
     score = np.zeros(n, np.float64)
-    for r, g, v in bf.iter_chunks():
-        _native.weighted_row_sums(r, g, v, w, score)
+    for ctx in bf.iter_ctx():
+        _native.weighted_row_sums(*ctx, w, score)
     bf.obs = bf.obs.with_columns(pl.Series(score_name, score))
     return bf

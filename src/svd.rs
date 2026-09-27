@@ -117,6 +117,7 @@ fn centered_tmul(x: &SparseMatrix, mu: &[f64], m: &[f64], l: usize) -> Vec<f64> 
 fn orthonormalize(y: &[f64], rows: usize, l: usize) -> Vec<f64> {
     let mat = Mat::<f64>::from_fn(rows, l, |i, j| y[i * l + j]);
     let q = mat.qr().compute_thin_Q();
+    crate::simd::clean_simd_state();
     let mut out = vec![0.0f64; rows * l];
     out.par_chunks_mut(l).enumerate().for_each(|(i, row)| {
         for j in 0..l {
@@ -162,7 +163,9 @@ pub(crate) fn randomized_svd(
     // B^T = X_c^T Q (n_cols × l);  B = U_B S V^T  with  B^T = V S U_B^T
     let bt = centered_tmul(x, &mu, &q, l);
     let bt_mat = Mat::<f64>::from_fn(n_cols, l, |i, j| bt[i * l + j]);
-    let svd = bt_mat.thin_svd().map_err(|e| format!("SVD failed: {:?}", e))?;
+    let svd = bt_mat.thin_svd().map_err(|e| format!("SVD failed: {:?}", e));
+    crate::simd::clean_simd_state();
+    let svd = svd?;
     let u_b = svd.V(); // l × l  (left singular vectors of B)
     let s_col = svd.S().column_vector();
     let k = k.min(s_col.nrows());

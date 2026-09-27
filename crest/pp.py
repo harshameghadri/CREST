@@ -32,8 +32,8 @@ def calculate_qc_metrics(bf: BioFrame, mito_prefix: Optional[str] = "MT-", inpla
     cf = np.zeros(bf.n_obs, np.float64)
     gn = np.zeros(bf.n_vars, np.uint32)
     gt = np.zeros(bf.n_vars, np.float64)
-    for r, g, v in bf.iter_chunks(transform=False):
-        _native.qc_chunk(r, g, v, flag, ct, cn, cf, gn, gt)
+    for ctx in bf.iter_ctx(transform=False):
+        _native.qc(*ctx, flag, ct, cn, cf, gn, gt)
     pct = np.divide(cf, ct, out=np.zeros_like(ct), where=ct > 0) * 100.0
     obs_cols = [pl.Series("n_genes_by_counts", cn.astype(np.int64)), pl.Series("total_counts", ct),
                 pl.Series("pct_counts_mt", pct)]
@@ -115,8 +115,8 @@ def scale(bf: BioFrame, max_value: Optional[float] = 10.0) -> BioFrame:
 def gene_stats(bf: BioFrame) -> np.ndarray:
     """(n_vars, 5) array: Σx, Σx², Σexpm1(x), Σexpm1(x)², nnz of the transformed matrix."""
     out = np.zeros((bf.n_vars, 5), np.float64)
-    for r, g, v in bf.iter_chunks():
-        _native.gene_stats(g, v, out)
+    for ctx in bf.iter_ctx():
+        _native.gene_stats(*ctx, out)
     return out
 
 
