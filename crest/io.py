@@ -51,7 +51,7 @@ def _open_10x(f):
 
 
 def read_10x_h5(path: Union[str, Path], gex_only: bool = True, backed: Optional[Union[str, Path]] = None,
-                cells_per_part: int = 100_000) -> BioFrame:
+                nnz_per_part: int = 1 << 23) -> BioFrame:
     """Read a Cell Ranger ``filtered_feature_bc_matrix.h5``.
 
     With ``backed=<dir>`` the matrix is streamed to a Parquet dataset in that
@@ -75,8 +75,11 @@ def read_10x_h5(path: Union[str, Path], gex_only: bool = True, backed: Optional[
                 old.unlink()
             indptr = m["indptr"][:].astype(np.int64)
             n = len(indptr) - 1
-            for part, lo in enumerate(range(0, n, cells_per_part)):
-                hi = min(lo + cells_per_part, n)
+            lo, part = 0, 0
+            while lo < n:
+                # whole cells, ~nnz_per_part non-zeros per part (bounded memory for any cell depth)
+                hi = int(np.searchsorted(indptr, indptr[lo] + nnz_per_part, side="right")) - 1
+                hi = min(max(hi, lo + 1), n)
                 a, b = int(indptr[lo]), int(indptr[hi])
                 cells = np.repeat(np.arange(lo, hi, dtype=np.uint32), np.diff(indptr[lo:hi + 1]))
                 pl.DataFrame({
@@ -84,6 +87,7 @@ def read_10x_h5(path: Union[str, Path], gex_only: bool = True, backed: Optional[
                     "gene_id": m["indices"][a:b].astype(np.uint32),
                     "count": m["data"][a:b].astype(np.float32),
                 }).write_parquet(out / f"part-{part:05d}.parquet", compression="zstd")
+                lo, part = hi, part + 1
             obs.with_columns(pl.Series("cell_id", np.arange(obs.height, dtype=np.uint32))).write_parquet(out / "obs.parquet")
             var.with_columns(pl.Series("gene_id", np.arange(n_genes, dtype=np.uint32))).write_parquet(out / "var.parquet")
             bf = read_parquet(out)
@@ -176,7 +180,6 @@ def read_10x_mtx(path: Union[str, Path], gex_only: bool = True) -> BioFrame:
     return bf
 
 
-def convert_h5_to_parquet_stream(file_path: Union[str, Path], output_path: Union[str, Path],
-                                 chunk_size: int = 100_000) -> BioFrame:
+def convert_h5_to_parquet_stream(file_path: Union[str, Path], output_path: Union[str, Path]) -> BioFrame:
     """Stream a 10x HDF5 into a Parquet dataset directory (kept for backward compatibility)."""
-    return read_10x_h5(file_path, gex_only=False, backed=output_path, cells_per_part=chunk_size)
+    return read_10x_h5(file_path, gex_only=False, backed=output_path)

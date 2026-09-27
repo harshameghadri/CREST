@@ -370,32 +370,59 @@ pub fn project(view: ChunkView, sub_map: &[i32], t: Transform, v: &[f64], k: usi
     }
 }
 
+/// Raw pointer that may be shared across threads when writes are disjoint.
+#[derive(Clone, Copy)]
+struct SyncPtr(*mut f64);
+unsafe impl Send for SyncPtr {}
+unsafe impl Sync for SyncPtr {}
+
 /// Per (group, gene) Σx, Σx², nnz for one chunk; `group_of_row[row]` < n_groups
 /// or u32::MAX to ignore the cell. Buffers are n_groups × n_genes.
+///
+/// The chunk is transformed once, then each thread owns a contiguous block of
+/// genes and accumulates directly into the shared outputs (disjoint columns),
+/// so memory does not grow with the number of groups × threads.
 pub fn group_gene_sums(v: ChunkView, group_of_row: &[u32], n_genes: usize, sum: &mut [f64], sumsq: &mut [f64], nnz: &mut [f64]) {
-    let size = sum.len();
-    let parts = v.fold_cells(
-        || (vec![0.0f64; size], vec![0.0f64; size], vec![0.0f64; size]),
-        |acc, row, e| {
-            let grp = group_of_row[row as usize];
-            if grp == u32::MAX {
-                return;
-            }
-            let base = grp as usize * n_genes;
-            for &(g, x) in e {
-                let i = base + g as usize;
-                let x = x as f64;
-                acc.0[i] += x;
-                acc.1[i] += x * x;
-                acc.2[i] += 1.0;
-            }
-        },
-    );
-    for (s, q, z) in parts {
-        sum.iter_mut().zip(s).for_each(|(a, b)| *a += b);
-        sumsq.iter_mut().zip(q).for_each(|(a, b)| *a += b);
-        nnz.iter_mut().zip(z).for_each(|(a, b)| *a += b);
+    let (rows, genes, vals) = materialize(v);
+    // entries per gene -> balanced gene blocks
+    let mut per_gene = vec![0usize; n_genes];
+    for &g in &genes {
+        per_gene[g as usize] += 1;
     }
+    let total = genes.len().max(1);
+    let parts = rayon::current_num_threads().max(1);
+    let mut bounds = vec![0u32];
+    let mut acc = 0usize;
+    for (g, &c) in per_gene.iter().enumerate() {
+        acc += c;
+        if acc * parts >= total * bounds.len() && bounds.len() < parts && g + 1 < n_genes {
+            bounds.push(g as u32 + 1);
+        }
+    }
+    bounds.push(n_genes as u32);
+    bounds.dedup();
+    let (ps, pq, pz) = (SyncPtr(sum.as_mut_ptr()), SyncPtr(sumsq.as_mut_ptr()), SyncPtr(nnz.as_mut_ptr()));
+    bounds.par_windows(2).for_each(|w| {
+        let (lo, hi) = (w[0], w[1]);
+        let (ps, pq, pz) = (ps, pq, pz);
+        for ((&r, &g), &x) in rows.iter().zip(&genes).zip(&vals) {
+            if g < lo || g >= hi {
+                continue;
+            }
+            let grp = group_of_row[r as usize];
+            if grp == u32::MAX {
+                continue;
+            }
+            let i = grp as usize * n_genes + g as usize;
+            let x = x as f64;
+            // SAFETY: gene blocks are disjoint, so index i is written by one thread only.
+            unsafe {
+                *ps.0.add(i) += x;
+                *pq.0.add(i) += x * x;
+                *pz.0.add(i) += 1.0;
+            }
+        }
+    });
 }
 
 /// Entries of genes in [lo, hi) as (gene - lo, value, group) for cells with a group.

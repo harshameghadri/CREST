@@ -1,0 +1,43 @@
+# Changelog
+
+## 0.2.0
+
+A correctness and performance release. Every step of the standard scanpy
+workflow has been re-implemented and validated against scanpy.
+
+### Fixed (results from 0.1.0 should not be used)
+- **kNN / Leiden / UMAP**: the HNSW index shuffled points and its id map was
+  ignored, so neighbour indices pointed at random cells (recall@15 = 0.005).
+- **Leiden** was a single-level local-move heuristic (thousands of singleton
+  clusters) with a modularity gain off by a factor of 2; now Traag et al. 2019
+  Leiden (local moving, refinement, aggregation). Modularity equals or exceeds
+  `leidenalg`.
+- **normalize_cpm / qc / filter_cells / scale / score_genes** Polars plugins
+  were declared elementwise, so Polars computed per-cell sums on partial
+  batches; `normalize_cpm` ignored `target_sum`.
+- **rank_genes_groups** divided by non-zero counts instead of group sizes.
+- **Randomized PCA** lost trailing components (no re-orthonormalisation).
+- **HVG** "seurat" flavour was raw variance/mean (883/2000 overlap with scanpy).
+- **Wilcoxon** p-values underflowed to 0.
+
+### New
+- `crest.pp` / `crest.tl` scanpy-style API on `BioFrame`, with raw counts held
+  in compact CSR, a Polars triplet frame, or a Parquet dataset streamed from disk.
+  Filters and `normalize_total` / `log1p` / `scale` are applied lazily inside
+  fused native kernels: no normalised, scaled or dense copy is ever made.
+- Exact PCA from a streamed Gram matrix with `sc.pp.scale(max_value)` applied
+  implicitly (0.000 deg from scanpy's ARPACK result).
+- kNN: tiled GEMM brute force (small n) and IVF + NN-descent (large n).
+- UMAP: umap-learn semantics, parallelised by domain decomposition.
+- Sparse Wilcoxon ranking only non-zeros; all-groups Welch t-test.
+- `score_genes` reproducing scanpy's control-gene sampling.
+- Readers: `read_10x_h5` (optionally streamed to Parquet), `read_h5ad`,
+  `read_10x_mtx`; `write_parquet` / `read_parquet`; AnnData conversion.
+- `bench/whitepaper/` benchmark harness.
+
+### Changed
+- `bio.deseq2` renamed `bio.nb_glm` (it fits an NB GLM with given dispersions;
+  not the full DESeq2 procedure) and returns null when IRLS does not converge.
+- In `bio.leiden` / `bio.umap`, `n_neighbors` now counts the cell itself (scanpy convention).
+- `crest.tl.sparse_masked_pca` / `incremental_pca` removed (superseded by `crest.tl.pca`).
+- Distribution renamed `crest-sc` (the import name stays `crest`); Python >= 3.10.

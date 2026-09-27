@@ -3,8 +3,8 @@ name = "crest"
 version = "0.2.0"
 edition = "2021"
 license = "MIT"
-description = "CREST — Columnar Rust Engine for Single-cell Transcriptomics"
-repository = "https://github.com/crest-bio/crest"
+description = "CREST - Columnar Rust Engine for Single-cell Transcriptomics"
+repository = "https://github.com/harshameghadri/CREST"
 
 [lib]
 name = "crest"

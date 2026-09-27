@@ -155,24 +155,12 @@ def rank_genes_groups(bf: BioFrame, groupby: str, method: str = "t-test", groups
     s = np.zeros((G, V)); q = np.zeros((G, V)); z = np.zeros((G, V))
     for ctx in bf.iter_ctx():
         _native.group_gene_sums(*ctx, grp, s, q, z)
-    rest_n = N - sizes
-    mean_g = s / sizes[:, None]
-    mean_r = (s.sum(0)[None, :] - s) / rest_n[:, None]
-    logfc = np.log2((np.expm1(mean_g) + 1e-9) / (np.expm1(mean_r) + 1e-9))
+    S_all, Q_all = s.sum(0), q.sum(0)
+    nnz_gene = z.sum(0)  # exact non-zeros per gene (sizes Wilcoxon gene blocks)
+    del z
 
-    if method == "t-test":
-        var_g = (q - sizes[:, None] * mean_g ** 2) / (sizes[:, None] - 1)
-        var_r = ((q.sum(0)[None, :] - q) - rest_n[:, None] * mean_r ** 2) / (rest_n[:, None] - 1)
-        var_g, var_r = np.maximum(var_g, 0), np.maximum(var_r, 0)
-        a, b = var_g / sizes[:, None], var_r / rest_n[:, None]
-        with np.errstate(divide="ignore", invalid="ignore"):
-            scores = (mean_g - mean_r) / np.sqrt(a + b)
-            df = (a + b) ** 2 / (a ** 2 / (sizes[:, None] - 1) + b ** 2 / (rest_n[:, None] - 1))
-        df = np.where(np.isnan(df), 1.0, df)
-        pvals = _native.t_pvalues(np.ascontiguousarray(scores.ravel()), np.ascontiguousarray(df.ravel())).reshape(G, V)
-    elif method == "wilcoxon":
-        scores = np.zeros((G, V))
-        nnz_gene = z.sum(0)
+    if method == "wilcoxon":
+        wscores = np.zeros((G, V))
         budget = memory_budget_gb * 1e9 / 12.0
         lo = 0
         while lo < V:
@@ -186,25 +174,40 @@ def rank_genes_groups(bf: BioFrame, groupby: str, method: str = "t-test", groups
             rs, ties = _native.wilcoxon_rank_sums(cat[0], cat[1], cat[2], hi - lo, sizes.astype(np.uint64))
             del cat
             T = 1.0 - ties / (N ** 3 - N) if tie_correct else np.ones(hi - lo)
-            std = np.sqrt(T[None, :] * sizes[:, None] * rest_n[:, None] * (N + 1) / 12.0)
+            std = np.sqrt(T[None, :] * sizes[:, None] * (N - sizes)[:, None] * (N + 1) / 12.0)
             with np.errstate(divide="ignore", invalid="ignore"):
-                scores[:, lo:hi] = (rs - sizes[:, None] * (N + 1) / 2.0) / std
+                wscores[:, lo:hi] = (rs - sizes[:, None] * (N + 1) / 2.0) / std
             lo = hi
-        pvals = _native.normal_pvalues(np.ascontiguousarray(scores.ravel())).reshape(G, V)
-    else:
+    elif method != "t-test":
         raise ValueError('method must be "t-test" or "wilcoxon"')
 
-    scores = np.where(np.isnan(scores), 0.0, scores)
-    pvals = np.where(np.isnan(pvals), 1.0, pvals)
     names = np.array(bf.var_names, dtype=object)
     frames, uns = [], {"params": {"groupby": groupby, "method": method, "reference": "rest"}, "groups": cats}
     k = V if n_genes is None else min(n_genes, V)
-    for i, c in enumerate(cats):
-        padj = _bh(pvals[i])
-        top = np.argsort(-scores[i], kind="stable")[:k]
+    for i, c in enumerate(cats):  # one group at a time: O(genes) temporaries
+        n1, n2 = sizes[i], N - sizes[i]
+        m1 = s[i] / n1
+        m2 = (S_all - s[i]) / n2
+        logfc = np.log2((np.expm1(m1) + 1e-9) / (np.expm1(m2) + 1e-9))
+        if method == "t-test":
+            v1 = np.maximum((q[i] - n1 * m1 ** 2) / (n1 - 1), 0)
+            v2 = np.maximum(((Q_all - q[i]) - n2 * m2 ** 2) / (n2 - 1), 0)
+            a, b = v1 / n1, v2 / n2
+            with np.errstate(divide="ignore", invalid="ignore"):
+                sc_ = (m1 - m2) / np.sqrt(a + b)
+                df = (a + b) ** 2 / (a ** 2 / (n1 - 1) + b ** 2 / (n2 - 1))
+            df = np.where(np.isnan(df), 1.0, df)
+            pv = _native.t_pvalues(np.ascontiguousarray(sc_), np.ascontiguousarray(df))
+        else:
+            sc_ = wscores[i]
+            pv = _native.normal_pvalues(np.ascontiguousarray(sc_))
+        sc_ = np.where(np.isnan(sc_), 0.0, sc_)
+        pv = np.where(np.isnan(pv), 1.0, pv)
+        padj = _bh(pv)
+        top = np.argsort(-sc_, kind="stable")[:k]
         frames.append(pl.DataFrame({
-            "group": [c] * k, "names": names[top].astype(str), "scores": scores[i, top],
-            "logfoldchanges": logfc[i, top], "pvals": pvals[i, top], "pvals_adj": padj[top],
+            "group": [c] * k, "names": names[top].astype(str), "scores": sc_[top],
+            "logfoldchanges": logfc[top], "pvals": pv[top], "pvals_adj": padj[top],
         }))
     out = pl.concat(frames) if frames else pl.DataFrame()
     uns["table"] = out

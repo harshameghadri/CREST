@@ -1,9 +1,12 @@
-"""Build a larger benchmark dataset from a real 10x matrix by resampling cells.
+"""Build a larger benchmark dataset from a real 10x matrix.
 
-Each synthetic cell is a real cell's count vector binomially thinned with a
-random capture rate in [0.6, 1.0], so every cell is distinct while gene-gene
-structure, sparsity and library-size distributions stay realistic. Written as a
-Cell Ranger v3 .h5 so both scanpy and crest use their native 10x readers.
+Each synthetic cell mixes a real cell with one of its 10 nearest neighbours
+(in PCA space): both count vectors are binomially thinned (weights w, 1 - w with
+w ~ U(0.3, 0.7), overall capture ~ U(0.6, 1.0)) and summed. Cells are unique
+and interpolate locally, so cluster structure, sparsity and library sizes stay
+realistic without the near-duplicate cliques that plain resampling creates
+(which inflate Leiden to hundreds of tiny clusters). Written as a Cell Ranger
+v3 .h5 so both scanpy and crest use their native 10x readers.
 
     python bench/whitepaper/make_dataset.py --src pbmc68k.h5 --cells 500000 --out pbmc_500k.h5
 """
@@ -33,25 +36,42 @@ def main():
             ftype = np.array([b"Gene Expression"] * len(ids))
         n_genes = len(ids)
 
+    import crest
+    import scipy.sparse as sp
+
+    src = sp.csr_matrix((data.astype(np.float32), indices, indptr), shape=(len(indptr) - 1, n_genes))
+    bf = crest.BioFrame.from_scipy(src)
+    crest.pp.normalize_total(bf, 1e4)
+    crest.pp.log1p(bf)
+    crest.pp.highly_variable_genes(bf, n_top_genes=2000)
+    crest.tl.pca(bf, n_comps=30)
+    nn, _ = crest.crest.knn_graph(np.ascontiguousarray(bf.obsm["X_pca"]), 10)
+
     rng = np.random.default_rng(args.seed)
-    src_n = len(indptr) - 1
-    pick = rng.integers(0, src_n, args.cells)
-    rate = rng.uniform(0.6, 1.0, args.cells)
+    src_n = src.shape[0]
+    a_idx = rng.integers(0, src_n, args.cells)
+    b_idx = nn[a_idx, rng.integers(0, nn.shape[1], args.cells)]
+    w = rng.uniform(0.3, 0.7, args.cells)
+    cap = rng.uniform(0.6, 1.0, args.cells)
 
     out_ptr = np.zeros(args.cells + 1, np.int64)
     ind_parts, dat_parts = [], []
-    block = 50_000
+    block = 5_000  # bounded memory
     for lo in range(0, args.cells, block):
         hi = min(lo + block, args.cells)
-        cells = pick[lo:hi]
-        lens = indptr[cells + 1] - indptr[cells]
-        idx = np.concatenate([np.arange(indptr[c], indptr[c + 1]) for c in cells])
-        counts = rng.binomial(data[idx].astype(np.int64), np.repeat(rate[lo:hi], lens)).astype(np.int32)
-        keep = counts > 0
-        row = np.repeat(np.arange(hi - lo), lens)[keep]
-        ind_parts.append(indices[idx][keep].astype(np.int32))
-        dat_parts.append(counts[keep])
-        out_ptr[lo + 1:hi + 1] = out_ptr[lo] + np.cumsum(np.bincount(row, minlength=hi - lo))
+        A, B = src[a_idx[lo:hi]].tocoo(), src[b_idx[lo:hi]].tocoo()
+        pa = (cap[lo:hi] * w[lo:hi])[A.row]
+        pb = (cap[lo:hi] * (1 - w[lo:hi]))[B.row]
+        ca = rng.binomial(A.data.astype(np.int64), pa)
+        cb = rng.binomial(B.data.astype(np.int64), pb)
+        M = sp.coo_matrix((np.r_[ca, cb], (np.r_[A.row, B.row], np.r_[A.col, B.col])),
+                          shape=(hi - lo, n_genes)).tocsr()
+        M.sum_duplicates()
+        M.eliminate_zeros()
+        M.sort_indices()
+        ind_parts.append(M.indices.astype(np.int32))
+        dat_parts.append(M.data.astype(np.int32))
+        out_ptr[lo + 1:hi + 1] = out_ptr[lo] + M.indptr[1:]
     ind = np.concatenate(ind_parts)
     dat = np.concatenate(dat_parts)
 

@@ -110,9 +110,10 @@ class ParquetStore:
 
     def chunks(self, chunk_nnz: int = DEFAULT_CHUNK_NNZ) -> Iterator[RawChunk]:
         for p in self.parts:
-            df = pl.read_parquet(p, columns=["cell_id", "gene_id", "count"])
-            yield (df["gene_id"].cast(pl.UInt32).to_numpy(), df["count"].cast(pl.Float32).to_numpy(),
-                   df["cell_id"].cast(pl.UInt32).to_numpy(), None, 0)
+            df = pl.read_parquet(p, columns=["cell_id", "gene_id", "count"], rechunk=True)
+            cols = [df[c].cast(t).to_numpy() for c, t in (("gene_id", pl.UInt32), ("count", pl.Float32), ("cell_id", pl.UInt32))]
+            del df
+            yield cols[0], cols[1], cols[2], None, 0
 
 
 Store = Union[CSRStore, FrameStore, ParquetStore]
@@ -325,28 +326,33 @@ class BioFrame:
             bf.obsm[k] = np.asarray(adata.obsm[k])
         return bf
 
-    def write_parquet(self, path: Union[str, Path], cells_per_part: int = 100_000) -> None:
-        """Write raw counts (kept cells/genes, current ids) as a Parquet dataset directory."""
+    def write_parquet(self, path: Union[str, Path], nnz_per_part: int = 1 << 23) -> None:
+        """Write raw counts (kept cells/genes, current ids) as a Parquet dataset
+        directory of whole-cell parts of ~``nnz_per_part`` non-zeros each."""
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
         for old in path.glob("part-*.parquet"):
             old.unlink()
-        cur, buf = None, []
+        buf, n_buf, part = [], 0, 0
 
         def flush():
+            nonlocal buf, n_buf, part
             if buf:
-                pl.concat(buf).write_parquet(path / f"part-{cur:05d}.parquet", compression="zstd")
-            buf.clear()
+                pl.concat(buf).write_parquet(path / f"part-{part:05d}.parquet", compression="zstd")
+                part += 1
+            buf, n_buf = [], 0
 
         for r, g, v in self.iter_chunks(transform=False):
-            parts = r // cells_per_part
-            cuts = np.flatnonzero(np.diff(parts)) + 1
-            for s, e in zip(np.r_[0, cuts], np.r_[cuts, len(r)]):
-                p = int(parts[s])
-                if cur is not None and p != cur:
+            lo = 0
+            while lo < len(r):
+                hi = min(lo + nnz_per_part - n_buf, len(r))
+                if hi < len(r):  # end on a cell boundary
+                    hi = int(np.searchsorted(r, r[hi - 1], side="right"))
+                buf.append(pl.DataFrame({"cell_id": r[lo:hi], "gene_id": g[lo:hi], "count": v[lo:hi]}))
+                n_buf += hi - lo
+                lo = hi
+                if n_buf >= nnz_per_part:
                     flush()
-                cur = p
-                buf.append(pl.DataFrame({"cell_id": r[s:e], "gene_id": g[s:e], "count": v[s:e]}))
         flush()
         self.obs.with_columns(pl.Series("cell_id", np.arange(self.n_obs, dtype=np.uint32))).write_parquet(path / "obs.parquet")
         self.var.with_columns(pl.Series("gene_id", np.arange(self.n_vars, dtype=np.uint32))).write_parquet(path / "var.parquet")
