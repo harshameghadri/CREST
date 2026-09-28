@@ -382,7 +382,7 @@ unsafe impl Sync for SyncPtr {}
 /// The chunk is transformed once, then each thread owns a contiguous block of
 /// genes and accumulates directly into the shared outputs (disjoint columns),
 /// so memory does not grow with the number of groups × threads.
-pub fn group_gene_sums(v: ChunkView, group_of_row: &[u32], n_genes: usize, sum: &mut [f64], sumsq: &mut [f64], nnz: &mut [f64]) {
+pub fn group_gene_sums(v: ChunkView, group_of_row: &[u32], n_genes: usize, sum: &mut [f64], sumsq: Option<&mut [f64]>, nnz: Option<&mut [f64]>) {
     let (rows, genes, vals) = materialize(v);
     // entries per gene -> balanced gene blocks
     let mut per_gene = vec![0usize; n_genes];
@@ -401,7 +401,12 @@ pub fn group_gene_sums(v: ChunkView, group_of_row: &[u32], n_genes: usize, sum: 
     }
     bounds.push(n_genes as u32);
     bounds.dedup();
-    let (ps, pq, pz) = (SyncPtr(sum.as_mut_ptr()), SyncPtr(sumsq.as_mut_ptr()), SyncPtr(nnz.as_mut_ptr()));
+    let null = std::ptr::null_mut::<f64>();
+    let (ps, pq, pz) = (
+        SyncPtr(sum.as_mut_ptr()),
+        SyncPtr(sumsq.map_or(null, |q| q.as_mut_ptr())),
+        SyncPtr(nnz.map_or(null, |z| z.as_mut_ptr())),
+    );
     bounds.par_windows(2).for_each(|w| {
         let (lo, hi) = (w[0], w[1]);
         let (ps, pq, pz) = (ps, pq, pz);
@@ -418,8 +423,12 @@ pub fn group_gene_sums(v: ChunkView, group_of_row: &[u32], n_genes: usize, sum: 
             // SAFETY: gene blocks are disjoint, so index i is written by one thread only.
             unsafe {
                 *ps.0.add(i) += x;
-                *pq.0.add(i) += x * x;
-                *pz.0.add(i) += 1.0;
+                if !pq.0.is_null() {
+                    *pq.0.add(i) += x * x;
+                }
+                if !pz.0.is_null() {
+                    *pz.0.add(i) += 1.0;
+                }
             }
         }
     });

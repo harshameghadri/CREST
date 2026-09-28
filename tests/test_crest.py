@@ -240,3 +240,80 @@ def test_bio_normalize_is_streaming_safe(tmp_path):
     out = pl.scan_parquet(path).with_columns(pl.col("count").bio.normalize_cpm(pl.col("cell_id")).alias("n")).collect()
     sums = out.group_by("cell_id").agg(pl.col("n").sum())["n"].to_numpy()
     np.testing.assert_allclose(sums, 1e4, rtol=1e-4)
+
+
+# --------------------------------------------------------------------------- DESeq2
+DATA = __import__("pathlib").Path(__file__).parent / "data"
+
+
+def _deseq_case(name):
+    import json
+    inp = pl.read_csv(DATA / f"deseq2_{name}_input.csv")
+    genes = [c for c in inp.columns if c.startswith("gene")]
+    meta = json.loads((DATA / f"deseq2_{name}_meta.json").read_text())
+    obs = inp.drop(genes)
+    ds = crest.tl.DESeq2(inp.select(genes).to_numpy().astype(float), obs, meta["design"],
+                         ref_levels={k: v[0] for k, v in meta["levels"].items()}, var_names=genes, quiet=True)
+    res = ds.results(tuple(meta["contrast"]) if meta["contrast"] else None)
+    return ds, res, pl.read_csv(DATA / f"deseq2_{name}_R.csv", null_values="NA"), meta
+
+
+@pytest.mark.parametrize("name", ["three_level_batch", "outlier_replacement"])
+def test_deseq2_matches_r(name):
+    """Reference values from R DESeq2 1.42 DESeq() + results() on the same data."""
+    ds, res, r, meta = _deseq_case(name)
+    np.testing.assert_allclose(ds.size_factors, meta["sf"], rtol=1e-10)
+    assert abs(ds.fit["dispPriorVar"] - meta["priorVar"]) < 1e-6 * meta["priorVar"]
+    for col in ["dispGeneEst", "dispFit", "dispersion"]:
+        np.testing.assert_allclose(ds.fit[col], r[col].fill_null(np.nan).to_numpy(), rtol=1e-6, equal_nan=True)
+    for col, tol in [("baseMean", 1e-10), ("log2FoldChange", 1e-5), ("lfcSE", 1e-5), ("pvalue", 1e-4), ("padj", 1e-4)]:
+        a = res[col].fill_null(np.nan).to_numpy()
+        b = r[col].fill_null(np.nan).to_numpy()
+        np.testing.assert_array_equal(np.isnan(a), np.isnan(b), err_msg=col)
+        np.testing.assert_allclose(a, b, rtol=tol, atol=1e-12, equal_nan=True, err_msg=col)
+
+
+def test_deseq2_small_df_close_to_r():
+    """2 vs 2: the prior variance is estimated by simulation in R, exactly here."""
+    ds, res, r, meta = _deseq_case("two_vs_two")
+    assert abs(ds.fit["dispPriorVar"] - meta["priorVar"]) < 0.05 * meta["priorVar"]
+    sig_c = res["padj"].fill_null(1).to_numpy() < 0.1
+    sig_r = r["padj"].fill_null(1).to_numpy() < 0.1
+    assert (sig_c != sig_r).sum() <= 2
+
+
+def test_pseudobulk_sums_and_de(tmp_path):
+    rng = np.random.default_rng(1)
+    donors, cells_per, G = 6, 60, 50
+    n = donors * cells_per * 2
+    sample = np.repeat(np.arange(donors * 2), cells_per)
+    cond = np.where(sample % 2 == 0, "ctrl", "stim")
+    ctype = rng.choice(["A", "B"], n)
+    lam = rng.gamma(2.0, 1.0, G)
+    X = rng.poisson(lam[None, :] * np.where(cond[:, None] == "stim", np.r_[np.full(5, 4.0), np.ones(G - 5)], 1.0))
+    import scipy.sparse as sp
+    obs = pl.DataFrame({"donor": (sample // 2).astype(str), "condition": cond, "ctype": ctype})
+    bf = crest.BioFrame.from_scipy(sp.csr_matrix(X.astype(np.float32)), obs=obs)
+    crest.pp.normalize_total(bf)  # recorded transforms must not affect pseudobulk sums
+    crest.pp.log1p(bf)
+    pb = crest.tl.pseudobulk(bf, ["donor", "condition"], groupby="ctype", min_cells=1)
+    for row, (d, c, t) in enumerate(pb.obs.select("donor", "condition", "ctype").iter_rows()):
+        m = (obs["donor"] == d).to_numpy() & (cond == c) & (ctype == t)
+        np.testing.assert_array_equal(pb.counts[row], X[m].sum(0))
+    bf.write_parquet(tmp_path / "pq")
+    pb2 = crest.tl.pseudobulk(crest.read_parquet(tmp_path / "pq"), ["donor", "condition"], groupby="ctype", min_cells=1)
+    np.testing.assert_array_equal(pb.counts, pb2.counts)
+    res = crest.tl.pseudobulk_de(bf, ["donor", "condition"], "~ donor + condition", ("condition", "stim", "ctrl"),
+                                 groupby="ctype", min_cells=1)
+    top = res.filter(pl.col("padj") < 0.01)
+    assert set(top["gene"].unique().to_list()) >= set(bf.var_names[:5])  # the 5 up-regulated genes
+
+
+def test_deseq2_input_validation():
+    obs = pl.DataFrame({"condition": ["a", "a", "b", "b"]})
+    with pytest.raises(ValueError, match="integers"):
+        crest.tl.DESeq2(np.full((4, 3), 1.5), obs, quiet=True)
+    with pytest.raises(ValueError, match="full rank"):
+        crest.tl.DESeq2(np.ones((4, 3)), obs.with_columns(pl.col("condition").alias("c2")), "~ condition + c2", quiet=True)
+    with pytest.raises(ValueError, match="additive"):
+        crest.tl.DESeq2(np.ones((4, 3)), obs, "~ condition:x", quiet=True)

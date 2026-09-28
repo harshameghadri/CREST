@@ -11,8 +11,10 @@ import polars as pl
 from .core import BioFrame
 from . import crest as _native
 from .pp import gene_stats, _mean_var
+from .deseq2 import DESeq2, Pseudobulk, deseq2, pseudobulk, pseudobulk_de  # noqa: F401
 
-__all__ = ["pca", "leiden", "umap", "rank_genes_groups", "score_genes"]
+__all__ = ["pca", "leiden", "umap", "rank_genes_groups", "score_genes",
+           "pseudobulk", "pseudobulk_de", "deseq2", "DESeq2", "Pseudobulk"]
 
 
 # --------------------------------------------------------------------------- PCA

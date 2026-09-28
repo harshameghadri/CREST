@@ -9,7 +9,8 @@ struct RankItem {
     group: u8,
 }
 
-mod deseq2;
+mod deseq;
+mod nb_glm;
 mod kernels;
 mod knn;
 mod leiden;

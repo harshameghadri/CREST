@@ -22,6 +22,8 @@ crest.pp.neighbors(bf, n_neighbors=15)
 crest.tl.leiden(bf, resolution=1.0)
 crest.tl.umap(bf)
 markers = crest.tl.rank_genes_groups(bf, "leiden", method="wilcoxon")   # Polars DataFrame
+de = crest.tl.pseudobulk_de(bf, ["donor", "condition"], "~ donor + condition",   # DESeq2 per cell type
+                            contrast=("condition", "stim", "ctrl"), groupby="cell_type")
 adata = bf.to_anndata()                                            # hand over to scanpy / scverse
 ```
 
@@ -50,6 +52,7 @@ Every step is checked against scanpy 1.11 (`tests/test_crest.py`, and
 | `umap` | equal kNN preservation / silhouette (stochastic layout) |
 | `rank_genes_groups` t-test, Wilcoxon | scores within 1e-4 (1e-7 on identical input), same p-values and log fold-changes |
 | `score_genes` | identical, including scanpy's control-gene sampling (within 3e-7) |
+| `DESeq2` (pseudobulk) | R DESeq2 1.42: size factors, dispersions, log2FC, p-values within ~1e-9 on simulated designs; identical calls on 5 of 8 Kang 2018 cell types, >99% on the rest ([docs/deseq2.md](docs/deseq2.md)) |
 
 ## Performance
 
@@ -109,6 +112,10 @@ per-step wall time and peak RSS, JIT warm-up excluded for scanpy),
   decomposition: each thread owns a range of cells, writes only those, and reads
   the rest from a snapshot refreshed 16× per epoch.
 * **Leiden.** Traag et al. (2019): fast local moving, refinement, aggregation.
+* **DESeq2 in Rust.** A step-by-step port of DESeq2's `DESeq()` / `results()`, one
+  parallel pass over genes per stage, with the NB likelihood evaluated without
+  the cancellation R suffers at tiny dispersions. Pseudobulk DE for 8 cell types
+  of Kang 2018 takes 7 s (R: 141 s, pydeseq2: 215 s).
 * **Sparse Wilcoxon.** All implicit zeros of a gene form one tie block with a
   closed-form rank, so only non-zero values are sorted.
 * **Polars expressions.** Column-level operations are also available as a
@@ -126,8 +133,8 @@ from_anndata`, `write_parquet` / `read_parquet`, `to_anndata`, `to_scipy`.
 
 * HVG flavours: `seurat`, `cell_ranger` (not yet `seurat_v3`).
 * No batch integration yet (Harmony is planned).
-* `bio.nb_glm` fits a negative-binomial GLM with given dispersions; it is the
-  GLM core of a DESeq2-style pseudobulk test, not the full DESeq2 procedure.
+* DESeq2: Wald test only (no LRT, `lfcShrink`, `lfcThreshold`), additive formulas
+  (pass `design_matrix=` for interactions); see [docs/deseq2.md](docs/deseq2.md).
 * UMAP layouts are deterministic for a fixed thread count, not across thread counts.
 
 ## License

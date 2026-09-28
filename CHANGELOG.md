@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### New
+- **Pseudobulk DESeq2 in Rust.** `crest.tl.DESeq2` ports DESeq2 1.42 `DESeq()` +
+  `results()`: median-of-ratios size factors, Cox-Reid gene-wise dispersions,
+  parametric trend, MAP shrinkage, NB-GLM Wald tests, Cook's filtering and
+  outlier replacement, and independent filtering. It matches R to ~1e-9 on
+  simulated designs, is ~19× faster than R and ~30× faster than pydeseq2 on
+  Kang 2018 pseudobulk. See `docs/deseq2.md`.
+- `crest.tl.pseudobulk` (streamed raw-count sums per sample × group) and
+  `crest.tl.pseudobulk_de` (per-cell-type DESeq2 in one call).
+- `bench/deseq2/`: R comparison on simulated designs and on Kang et al. 2018.
+
 ## 0.2.0
 
 A correctness and performance release. Every step of the standard scanpy

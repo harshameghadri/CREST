@@ -322,7 +322,25 @@ chunk_fn! {
             return Err(pyo3::exceptions::PyValueError::new_err("group id out of range"));
         }
         let (s, q, z) = (sl_mut(&mut sum, "sum")?, sl_mut(&mut sumsq, "sumsq")?, sl_mut(&mut nnz, "nnz")?);
-        py.allow_threads(|| kernels::group_gene_sums(v, gr, nv, s, q, z));
+        py.allow_threads(|| kernels::group_gene_sums(v, gr, nv, s, Some(q), Some(z)));
+        Ok(())
+    }
+}
+
+chunk_fn! {
+    /// Accumulate per (group, var) sums only, (n_groups, n_vars) — pseudobulk aggregation.
+    fn group_gene_totals<'py>(py, v, nr, nv, group_of_row: Arr<'py, u32>, sum: PyReadwriteArrayDyn<'py, f64>) -> PyResult<()> {
+        let mut sum = sum;
+        let gr = sl(&group_of_row, "group_of_row")?;
+        let shape = sum.shape().to_vec();
+        if shape.len() != 2 || shape[1] != nv || gr.len() < nr {
+            return Err(pyo3::exceptions::PyValueError::new_err("sum must be (n_groups, n_vars); group_of_row (n_rows,)"));
+        }
+        if gr.iter().any(|&x| x != u32::MAX && x as usize >= shape[0]) {
+            return Err(pyo3::exceptions::PyValueError::new_err("group id out of range"));
+        }
+        let s = sl_mut(&mut sum, "sum")?;
+        py.allow_threads(|| kernels::group_gene_sums(v, gr, nv, s, None, None));
         Ok(())
     }
 }
@@ -406,6 +424,96 @@ fn normal_pvalues<'py>(py: Python<'py>, z: PyReadonlyArrayDyn<'py, f64>) -> PyRe
     Ok(PyArray1::from_vec_bound(py, p))
 }
 
+/// DESeq2 on a genes × samples integer count matrix with a (samples × coefs)
+/// model matrix. Returns a dict of numpy arrays (see `crest.tl.deseq2`).
+#[pyfunction]
+#[pyo3(signature = (counts, design, size_factors=None, sf_type="ratio", fit_type="parametric",
+                    min_replicates_for_replace=7.0, min_mu=0.5))]
+#[allow(clippy::too_many_arguments)]
+fn deseq2_fit<'py>(
+    py: Python<'py>, counts: PyReadonlyArray2<'py, f64>, design: PyReadonlyArray2<'py, f64>,
+    size_factors: Option<PyReadonlyArrayDyn<'py, f64>>, sf_type: &str, fit_type: &str,
+    min_replicates_for_replace: f64, min_mu: f64,
+) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    use crate::deseq::{self, Design, FitType, Params};
+    let err = pyo3::exceptions::PyValueError::new_err;
+    let (g, m) = (counts.shape()[0], counts.shape()[1]);
+    let (m2, p) = (design.shape()[0], design.shape()[1]);
+    if m != m2 {
+        return Err(err("design must have one row per sample (column of counts)"));
+    }
+    let c = counts.as_slice().map_err(|_| err("counts must be C-contiguous"))?;
+    let x = design.as_slice().map_err(|_| err("design must be C-contiguous"))?.to_vec();
+    let sf = match &size_factors {
+        Some(s) => Some(sl(s, "size_factors")?.to_vec()),
+        None => None,
+    };
+    let poscounts = match sf_type {
+        "ratio" => false,
+        "poscounts" => true,
+        _ => return Err(err("sf_type must be \"ratio\" or \"poscounts\"")),
+    };
+    let ft = match fit_type {
+        "parametric" => FitType::Parametric,
+        "mean" => FitType::Mean,
+        _ => return Err(err("fit_type must be \"parametric\" or \"mean\"")),
+    };
+    let pa = Params { min_replicates_for_replace, min_mu, fit_type: ft, ..Params::default() };
+    let d = Design::new(x, m, p).map_err(pyo3::exceptions::PyValueError::new_err)?;
+    let fit = py.allow_threads(|| deseq::deseq(c, g, &d, sf, poscounts, &pa)).map_err(pyo3::exceptions::PyValueError::new_err)?;
+    let out = pyo3::types::PyDict::new_bound(py);
+    let v = |x: Vec<f64>| PyArray1::from_vec_bound(py, x);
+    let b = |x: Vec<bool>| PyArray1::from_vec_bound(py, x);
+    out.set_item("size_factors", v(fit.size_factors))?;
+    out.set_item("baseMean", v(fit.base_mean))?;
+    out.set_item("baseVar", v(fit.base_var))?;
+    out.set_item("allZero", b(fit.all_zero))?;
+    out.set_item("dispGeneEst", v(fit.disp_gene_est))?;
+    out.set_item("dispGeneIter", v(fit.disp_gene_iter))?;
+    out.set_item("dispFit", v(fit.disp_fit))?;
+    out.set_item("dispMAP", v(fit.disp_map))?;
+    out.set_item("dispersion", v(fit.dispersion))?;
+    out.set_item("dispOutlier", b(fit.disp_outlier))?;
+    out.set_item("beta", v(fit.beta).reshape([g, p])?)?;
+    out.set_item("beta_cov", v(fit.beta_cov).reshape([g, p, p])?)?;
+    out.set_item("betaConv", b(fit.beta_conv))?;
+    out.set_item("betaIter", v(fit.beta_iter))?;
+    out.set_item("deviance", v(fit.deviance))?;
+    out.set_item("cooks", v(fit.cooks).reshape([g, m])?)?;
+    out.set_item("maxCooks", v(fit.max_cooks))?;
+    out.set_item("replace", b(fit.replace))?;
+    if let Some(rc) = fit.replace_counts {
+        out.set_item("replaceCounts", v(rc).reshape([g, m])?)?;
+    }
+    out.set_item("fitType", match fit.fit_type { FitType::Parametric => "parametric", FitType::Mean => "mean" })?;
+    out.set_item("trend", v(fit.trend))?;
+    out.set_item("dispPriorVar", fit.disp_prior_var)?;
+    out.set_item("varLogDispEsts", fit.var_log_disp_ests)?;
+    out.set_item("messages", fit.messages)?;
+    let cutoff = if m > p {
+        use statrs::distribution::{ContinuousCDF, FisherSnedecor};
+        FisherSnedecor::new(p as f64, (m - p) as f64).map(|f| f.inverse_cdf(0.99)).unwrap_or(f64::NAN)
+    } else {
+        f64::NAN
+    };
+    out.set_item("cooksCutoff", cutoff)?;
+    Ok(out)
+}
+
+/// R's `lowess(x, y, f, iter, delta)`; `x` sorted ascending.
+#[pyfunction]
+#[pyo3(signature = (x, y, f=2.0/3.0, iter=3, delta=None))]
+fn lowess<'py>(py: Python<'py>, x: PyReadonlyArrayDyn<'py, f64>, y: PyReadonlyArrayDyn<'py, f64>, f: f64, iter: usize,
+               delta: Option<f64>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let (x, y) = (sl(&x, "x")?, sl(&y, "y")?);
+    check_len("x, y", &[x.len(), y.len()])?;
+    if x.windows(2).any(|w| w[0] > w[1]) {
+        return Err(pyo3::exceptions::PyValueError::new_err("x must be sorted"));
+    }
+    let delta = delta.unwrap_or_else(|| if x.is_empty() { 0.0 } else { 0.01 * (x[x.len() - 1] - x[0]) });
+    Ok(PyArray1::from_vec_bound(py, crate::deseq::lowess::lowess(x, y, f, iter, delta)))
+}
+
 #[pymodule]
 fn crest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(knn_graph, m)?)?;
@@ -424,5 +532,8 @@ fn crest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(weighted_row_sums, m)?)?;
     m.add_function(wrap_pyfunction!(t_pvalues, m)?)?;
     m.add_function(wrap_pyfunction!(normal_pvalues, m)?)?;
+    m.add_function(wrap_pyfunction!(group_gene_totals, m)?)?;
+    m.add_function(wrap_pyfunction!(deseq2_fit, m)?)?;
+    m.add_function(wrap_pyfunction!(lowess, m)?)?;
     Ok(())
 }
