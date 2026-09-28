@@ -77,7 +77,14 @@ The 100k/200k datasets are generated from the real 10k PBMC v3 matrix by
 `make_dataset.py` (each cell mixes a real cell with a nearest neighbour after
 binomial thinning), so sparsity, library size and cluster structure are realistic.
 
-Run it yourself: `bench/whitepaper/run_pipeline.py` (one tool per process,
+Run the whole benchmark on your own machine with one command:
+
+```bash
+bash bench/whitepaper/run_local_benchmark.sh --sizes "100000 200000" --repeats 3
+```
+
+It builds CREST, runs the test suite, downloads the data, and writes tables and
+figures to `bench_results/`. The pieces: `bench/whitepaper/run_pipeline.py` (one tool per process,
 per-step wall time and peak RSS, JIT warm-up excluded for scanpy),
 `bench/whitepaper/make_dataset.py` (scale a real 10x matrix to any size), and
 `bench/whitepaper/summarize.py` (tables + figures).
@@ -106,6 +113,8 @@ per-step wall time and peak RSS, JIT warm-up excluded for scanpy),
   closed-form rank, so only non-zero values are sorted.
 * **Polars expressions.** Column-level operations are also available as a
   `.bio` Polars expression namespace (`pl.col("count").bio.log1p()`, …).
+
+Details: [docs/memory_model.md](docs/memory_model.md).
 
 ## Data formats
 

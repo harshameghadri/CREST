@@ -132,6 +132,7 @@ def main():
     ap.add_argument("--data", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--no-warmup", action="store_true")
+    ap.add_argument("--repeat", type=int, default=0, help="repeat index, appended to output names")
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -169,10 +170,10 @@ def main():
     total = time.perf_counter() - t0
     sampler.stop()
 
-    tag = f"{args.tool}_{Path(args.data).stem}"
+    tag = f"{args.tool}_{Path(args.data).stem}" + (f"_r{args.repeat}" if args.repeat else "")
     np.savez_compressed(out / f"{tag}_outputs.npz", **res)
     report = {
-        "tool": args.tool, "data": Path(args.data).name, "n_cells": int(len(res["leiden"])),
+        "tool": args.tool, "data": Path(args.data).name, "repeat": args.repeat, "n_cells": int(len(res["leiden"])),
         "total_seconds": total, "baseline_rss_gb": baseline / 1e9,
         "peak_rss_gb": max(s["peak_rss_gb"] for s in steps.values()), "steps": steps,
         "machine": {"cpu": platform.processor() or platform.machine(), "cores": os.cpu_count(),

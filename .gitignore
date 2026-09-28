@@ -110,3 +110,8 @@ research/
 .ruff_cache/
 .claude/
 CLAUDE.md
+
+# Local benchmark runs
+.venv-bench/
+bench_data/
+bench_results/

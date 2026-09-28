@@ -21,11 +21,35 @@ INK, INK2, GRID = "#0b0b0b", "#52514e", "#e4e3df"
 
 
 def load(d: Path):
-    runs = {}
-    for f in sorted(d.glob("*.json")):
+    """All run reports under ``d`` (recursively); repeats are reduced to the
+    median per step, with the min-max of the total kept for the tables."""
+    groups = {}
+    for f in sorted(d.rglob("*.json")):
         r = json.loads(f.read_text())
-        runs.setdefault(r["data"], {})[r["tool"]] = r
+        if "tool" in r and "steps" in r:
+            groups.setdefault((r["data"], r["tool"]), []).append(r)
+    runs = {}
+    for (data, tool), reps in groups.items():
+        med = dict(reps[0])
+        med["steps"] = {s: {k: float(np.median([r["steps"][s][k] for r in reps if s in r["steps"]]))
+                            for k in ("seconds", "peak_rss_gb")}
+                        for s in reps[0]["steps"]}
+        tot = [r["total_seconds"] for r in reps]
+        med["total_seconds"] = float(np.median(tot))
+        med["total_range"] = (min(tot), max(tot))
+        med["peak_rss_gb"] = float(np.median([r["peak_rss_gb"] for r in reps]))
+        med["n_repeats"] = len(reps)
+        runs.setdefault(data, {})[tool] = med
     return runs
+
+
+def load_failed(d: Path):
+    """FAILED_*.txt markers written by run_local_benchmark.sh: 'data.h5<TAB>tool<TAB>reason'."""
+    out = {}
+    for f in d.rglob("FAILED_*.txt"):
+        data, tool, why = f.read_text().strip().split("\t", 2)
+        out[(data, tool)] = why
+    return out
 
 
 def accuracy(d: Path, data_stem: str):
@@ -34,15 +58,17 @@ def accuracy(d: Path, data_stem: str):
         from sklearn.metrics import adjusted_rand_score
     except ImportError:
         return {}
-    ref_p = d / f"scanpy_{data_stem}_outputs.npz"
-    if not ref_p.exists():
+    refs = sorted(d.rglob(f"scanpy_{data_stem}*_outputs.npz"))
+    if not refs:
         return {}
+    ref_p = refs[0]
     ref = np.load(ref_p, allow_pickle=True)
     out = {}
     for tool in ("crest", "crest-ooc"):
-        p = d / f"{tool}_{data_stem}_outputs.npz"
-        if not p.exists():
+        ps = sorted(d.rglob(f"{tool}_{data_stem}*_outputs.npz"))
+        if not ps:
             continue
+        p = ps[0]
         o = np.load(p, allow_pickle=True)
         common, i_ref, i_o = np.intersect1d(ref["barcodes"], o["barcodes"], return_indices=True)
         out[tool] = {"shared_cells": int(len(common)),
@@ -68,7 +94,9 @@ def table(runs, failed):
                 if t not in tools:
                     continue
                 if s == "total":
-                    row.append(f"{tools[t]['total_seconds']:.1f} s")
+                    lo, hi = tools[t].get("total_range", (tools[t]["total_seconds"],) * 2)
+                    rng = f" ({lo:.0f}-{hi:.0f})" if tools[t].get("n_repeats", 1) > 1 else ""
+                    row.append(f"{tools[t]['total_seconds']:.1f} s{rng}")
                 else:
                     st = tools[t]["steps"].get(s)
                     row.append(f"{st['seconds']:.2f} s" if st else "-")
@@ -160,6 +188,7 @@ def main():
                     help='runs that did not finish, "data.h5:tool:reason", e.g. "pbmc_200k.h5:scanpy:out of memory"')
     a = ap.parse_args()
     failed = {(f.split(":")[0], f.split(":")[1]): f.split(":", 2)[2] for f in a.failed}
+    failed.update(load_failed(Path(a.results)))
     d = Path(a.results)
     out = Path(a.out or d / "report")
     out.mkdir(parents=True, exist_ok=True)
@@ -171,7 +200,9 @@ def main():
             md.append(f"- {data} / {NAME[t]}: Leiden ARI vs scanpy {v['leiden_ari_vs_scanpy']:.3f} "
                       f"({v['n_clusters']} vs {v['n_clusters_scanpy']} clusters, {v['shared_cells']:,} shared cells)")
     m = next(iter(next(iter(runs.values())).values()))["machine"]
-    md.append(f"\nMachine: {m['cores']} cores, {m['ram_gb']:.0f} GB RAM, Python {m['python']}.")
+    reps = max(t.get("n_repeats", 1) for v in runs.values() for t in v.values())
+    md.append(f"\nMachine: {m['cores']} cores, {m['ram_gb']:.0f} GB RAM, Python {m['python']}. "
+              f"Times are medians of {reps} repeat(s); totals show (min-max).")
     (out / "report.md").write_text("\n".join(md) + "\n")
     figures(runs, out, failed)
     print((out / "report.md").read_text())
