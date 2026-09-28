@@ -201,7 +201,7 @@ if [[ "$OS" == "Linux" ]]; then
 else
   sysctl -a 2>/dev/null | grep -E '^(machdep\.cpu|hw\.)' > "$E/sysctl.txt" || true
 fi
-df -h "$WORKDIR" > "$E/disk_free.txt"
+{ df -h "$WORKDIR"; findmnt -T "$WORKDIR" -o SOURCE,FSTYPE,OPTIONS 2>/dev/null || true; } > "$E/disk_free.txt"
 { rustc -V; cargo -V; "$PY" -V; uv --version; } > "$E/toolchain.txt" 2>&1
 uv pip freeze --python "$PY" > "$E/pip_freeze.txt"
 echo "$COMMIT" > "$E/crest_commit.txt"
