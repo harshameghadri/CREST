@@ -228,20 +228,6 @@ def test_score_genes_matches_scanpy(both):
     np.testing.assert_allclose(b.obs["score"].to_numpy(), a.obs["score"].values, atol=1e-5)
 
 
-# --------------------------------------------------------------------------- Polars plugin
-def test_bio_normalize_is_streaming_safe(tmp_path):
-    """Per-cell sums must be right even when Polars batches the input (row groups)."""
-    rng = np.random.default_rng(0)
-    n = 200_000
-    df = pl.DataFrame({"cell_id": np.sort(rng.integers(0, 2000, n)).astype(np.uint32),
-                       "count": rng.integers(1, 20, n).astype(np.float32)})
-    path = tmp_path / "t.parquet"
-    df.write_parquet(path, row_group_size=10_000)
-    out = pl.scan_parquet(path).with_columns(pl.col("count").bio.normalize_cpm(pl.col("cell_id")).alias("n")).collect()
-    sums = out.group_by("cell_id").agg(pl.col("n").sum())["n"].to_numpy()
-    np.testing.assert_allclose(sums, 1e4, rtol=1e-4)
-
-
 # --------------------------------------------------------------------------- DESeq2
 DATA = __import__("pathlib").Path(__file__).parent / "data"
 
@@ -317,3 +303,153 @@ def test_deseq2_input_validation():
         crest.tl.DESeq2(np.ones((4, 3)), obs.with_columns(pl.col("condition").alias("c2")), "~ condition + c2", quiet=True)
     with pytest.raises(ValueError, match="additive"):
         crest.tl.DESeq2(np.ones((4, 3)), obs, "~ condition:x", quiet=True)
+
+
+@pytest.mark.parametrize("name", ["three_level_batch", "outlier_replacement"])
+def test_deseq2_lrt_matches_r(name):
+    import json
+    inp = pl.read_csv(DATA / f"deseq2_{name}_input.csv")
+    genes = [c for c in inp.columns if c.startswith("gene")]
+    meta = json.loads((DATA / f"deseq2_{name}_meta.json").read_text())
+    reduced = (DATA / f"deseq2_{name}_LRT_reduced.txt").read_text().strip()
+    ds = crest.tl.DESeq2(inp.select(genes).to_numpy().astype(float), inp.drop(genes), meta["design"],
+                         ref_levels={k: v[0] for k, v in meta["levels"].items()}, var_names=genes, quiet=True,
+                         test="LRT", reduced=reduced)
+    res = ds.results(tuple(meta["contrast"]) if meta["contrast"] else None)
+    r = pl.read_csv(DATA / f"deseq2_{name}_LRT_R.csv", null_values="NA")
+    for col in ["log2FoldChange", "stat", "pvalue", "padj"]:
+        a, b = res[col].fill_null(np.nan).to_numpy(), r[col].fill_null(np.nan).to_numpy()
+        np.testing.assert_array_equal(np.isnan(a), np.isnan(b), err_msg=col)
+        ok = ~np.isnan(a)
+        np.testing.assert_allclose(a[ok], b[ok], rtol=1e-6, atol=1e-8, err_msg=col)
+
+
+# --------------------------------------------------------------------------- downstream
+def test_hvg_seurat_v3_matches_scanpy():
+    pytest.importorskip("skmisc")
+    sc = pytest.importorskip("scanpy")
+    import anndata as ad
+    X, names, lab = make_counts(1500, 800, seed=4)
+    for batch_key in (None, "batch"):
+        a = ad.AnnData(X.copy())
+        a.var_names = names
+        a.obs["batch"] = (lab % 3).astype(str)
+        b = crest.BioFrame.from_scipy(X, obs=pl.DataFrame({"batch": (lab % 3).astype(str)}),
+                                      var=pl.DataFrame({"gene_name": names}))
+        sc.pp.highly_variable_genes(a, flavor="seurat_v3", n_top_genes=200, batch_key=batch_key)
+        crest.pp.highly_variable_genes(b, flavor="seurat_v3", n_top_genes=200, batch_key=batch_key)
+        np.testing.assert_allclose(b.var["variances_norm"].to_numpy(), a.var["variances_norm"].values, rtol=1e-10)
+        np.testing.assert_array_equal(b.var["highly_variable"].to_numpy(), a.var["highly_variable"].values)
+        np.testing.assert_array_equal(b.var["highly_variable_rank"].fill_null(np.nan).to_numpy(),
+                                      a.var["highly_variable_rank"].values.astype(np.float32))
+
+
+def test_loess_matches_skmisc():
+    loess = pytest.importorskip("skmisc.loess").loess
+    from crest._loess import loess_fit
+    rng = np.random.default_rng(0)
+    for n in (40, 900, 6000):
+        x = np.round(rng.normal(size=n), 2)  # with ties
+        y = np.sin(2 * x) + 0.3 * rng.normal(size=n)
+        m = loess(x, y, span=0.3, degree=2)
+        m.fit()
+        np.testing.assert_allclose(loess_fit(x, y, 0.3, 2), m.outputs.fitted_values, atol=1e-10)
+
+
+def _pipeline(n=3000, g=600, seed=5):
+    X, names, lab = make_counts(n, g, seed=seed)
+    bf = crest.BioFrame.from_scipy(X, obs=pl.DataFrame({"truth": lab.astype(str)}),
+                                   var=pl.DataFrame({"gene_name": names}))
+    crest.pp.normalize_total(bf, 1e4)
+    crest.pp.log1p(bf)
+    crest.pp.highly_variable_genes(bf, n_top_genes=300)
+    crest.pp.scale(bf)
+    crest.tl.pca(bf, n_comps=20)
+    return bf, lab
+
+
+def test_leiden_sweep_equals_leiden_and_ari():
+    bf, lab = _pipeline()
+    crest.pp.neighbors(bf)
+    tab = crest.tl.leiden_sweep(bf, [0.3, 1.0], n_seeds=2)
+    assert tab.columns == ["resolution", "n_clusters", "ari_prev", "ari_seeds"]
+    crest.tl.leiden(bf, resolution=1.0, key_added="single")
+    assert (bf.obs["leiden_1"] == bf.obs["single"]).all()
+    sk = pytest.importorskip("sklearn.metrics")
+    a, b = bf.obs["leiden_0.3"].to_numpy(), lab
+    assert abs(crest.tl.adjusted_rand_index(a, b) - sk.adjusted_rand_score(a, b)) < 1e-12
+
+
+def test_harmony_mixes_batches_and_keeps_types():
+    bf, lab = _pipeline(4000)
+    rng = np.random.default_rng(0)
+    batch = rng.integers(0, 2, bf.n_obs)
+    bf.obsm["X_pca"] = bf.obsm["X_pca"] + np.where(batch[:, None] == 1, 4.0, 0.0).astype(np.float32) * \
+        (np.arange(bf.obsm["X_pca"].shape[1]) == 1)[None, :]
+    bf.obs = bf.obs.with_columns(pl.Series("batch", batch.astype(str)))
+    crest.tl.harmony(bf, "batch")
+    Z = bf.obsm["X_pca_harmony"]
+    assert np.isfinite(Z).all() and Z.shape == bf.obsm["X_pca"].shape
+    # batch shift along PC2 removed within each true cell type
+    for t in np.unique(lab):
+        m = lab == t
+        gap = abs(Z[m & (batch == 1), 1].mean() - Z[m & (batch == 0), 1].mean())
+        assert gap < 1.0
+    # clusters on the corrected space still recover the types
+    crest.pp.neighbors(bf, use_rep="X_pca_harmony")
+    crest.tl.leiden(bf, resolution=0.3)
+    assert crest.tl.adjusted_rand_index(bf.obs["leiden"].to_numpy(), lab) > 0.9
+    # deterministic for a fixed seed
+    z2 = crest.harmony.run_harmony(bf.obsm["X_pca"], [batch.astype(str)])["Z_corr"]
+    np.testing.assert_array_equal(z2, Z)
+
+
+def test_ingest_transfers_labels():
+    bf, lab = _pipeline(4000, seed=6)
+    ref = bf.filter_cells(np.arange(bf.n_obs) < 3000)
+    q = bf.filter_cells(np.arange(bf.n_obs) >= 3000)
+    q.obsm.clear()
+    crest.pp.neighbors(ref)
+    crest.tl.umap(ref)
+    np.testing.assert_allclose(crest.ingest.project_pca(ref, ref, center="reference"), ref.obsm["X_pca"], atol=1e-4)
+    # own-mean centring (scanpy's ingest default) = the reference coordinates minus their mean
+    np.testing.assert_allclose(crest.ingest.project_pca(ref, ref), ref.obsm["X_pca"] - ref.obsm["X_pca"].mean(0), atol=1e-3)
+    crest.tl.ingest(q, ref, obs="truth")
+    assert (q.obs["truth"].to_numpy() == lab[3000:].astype(str)).mean() > 0.98
+    assert q.obsm["X_umap"].shape == (1000, 2) and q.obsm["X_pca"].shape == (1000, 20)
+
+
+def test_scrublet_finds_simulated_doublets():
+    pytest.importorskip("scipy")
+    X, names, lab = make_counts(3000, 600, seed=7)
+    rng = np.random.default_rng(1)
+    X = X.tocsr()
+    pairs = rng.integers(0, 3000, (150, 2))
+    pairs = pairs[lab[pairs[:, 0]] != lab[pairs[:, 1]]]
+    D = X[pairs[:, 0]] + X[pairs[:, 1]]
+    Xall = sp.vstack([X, D]).tocsr()
+    truth = np.r_[np.zeros(3000, bool), np.ones(D.shape[0], bool)]
+    bf = crest.BioFrame.from_scipy(Xall, var=pl.DataFrame({"gene_name": names}))
+    crest.pp.scrublet(bf)
+    s = bf.obs["doublet_score"].to_numpy()
+    from sklearn.metrics import roc_auc_score
+    assert roc_auc_score(truth, s) > 0.9
+    assert "threshold" in bf.uns["scrublet"]
+
+
+def test_threshold_minimum_matches_skimage():
+    ski = pytest.importorskip("skimage.filters")
+    rng = np.random.default_rng(0)
+    v = np.r_[rng.normal(0.1, 0.03, 4000), rng.normal(0.6, 0.1, 1500)]
+    from crest.doublets import threshold_minimum
+    assert threshold_minimum(v) == pytest.approx(ski.threshold_minimum(v), rel=1e-9)
+
+
+def test_knn_query_exact():
+    rng = np.random.default_rng(0)
+    R = rng.normal(size=(3000, 10)).astype(np.float32)
+    Q = rng.normal(size=(200, 10)).astype(np.float32)
+    idx, dist = crest.crest.knn_query(R, Q, 5)
+    D = ((Q[:, None, :] - R[None, :, :]) ** 2).sum(-1)
+    np.testing.assert_array_equal(idx, np.argsort(D, axis=1)[:, :5])
+    np.testing.assert_allclose(dist, np.sqrt(np.sort(D, axis=1)[:, :5]), rtol=1e-4)

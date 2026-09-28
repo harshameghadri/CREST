@@ -17,7 +17,7 @@ from . import crest as _native
 
 __all__ = [
     "calculate_qc_metrics", "filter_cells", "filter_genes", "normalize_total", "log1p", "scale",
-    "highly_variable_genes", "neighbors", "gene_stats", "connectivities_matrix",
+    "highly_variable_genes", "neighbors", "gene_stats", "connectivities_matrix", "scrublet",
 ]
 
 
@@ -136,15 +136,94 @@ def _pd_cut_codes(x: np.ndarray, n_bins: int) -> np.ndarray:
     return np.clip(np.searchsorted(edges, x, side="left") - 1, 0, n_bins - 1)
 
 
+def _hvg_seurat_v3(bf: BioFrame, n_top_genes: int, batch_key: Optional[str], span: float,
+                   flavor: str) -> pl.DataFrame:
+    """``sc.pp.highly_variable_genes(flavor="seurat_v3")`` on raw counts, two streamed passes."""
+    from ._loess import loess_fit
+
+    V = bf.n_vars
+    if batch_key is None:
+        grp = np.zeros(bf.n_obs, np.uint32)
+        G = 1
+    else:
+        labels = bf.obs[batch_key].cast(pl.Utf8).to_numpy()
+        cats = np.unique(labels.astype(str))
+        grp = np.searchsorted(cats, labels.astype(str)).astype(np.uint32)
+        G = len(cats)
+    n_g = np.bincount(grp, minlength=G).astype(np.float64)
+
+    def sums(clip=None):
+        s, q, z = np.zeros((G, V)), np.zeros((G, V)), np.zeros((G, V))
+        for ctx in bf.iter_ctx(transform=False):
+            _native.group_gene_sums(*ctx, grp, s, q, z, clip)
+        return s, q
+
+    s, q = sums()
+    N = bf.n_obs
+    means_all, vars_all = _mean_var(s.sum(0), q.sum(0), N)
+    clip = np.zeros((G, V))
+    means, reg_std = np.zeros((G, V)), np.zeros((G, V))
+    for b in range(G):
+        mean, var = _mean_var(s[b], q[b], int(n_g[b]))
+        not_const = var > 0
+        est = np.zeros(V)
+        est[not_const] = loess_fit(np.log10(mean[not_const]), np.log10(var[not_const]), span=span, degree=2)
+        reg_std[b] = np.sqrt(10 ** est)
+        means[b] = mean
+        clip[b] = reg_std[b] * np.sqrt(n_g[b]) + mean
+    cs, cq = sums(np.ascontiguousarray(clip))
+    norm = (1.0 / ((n_g[:, None] - 1) * reg_std ** 2)) * (n_g[:, None] * means ** 2 + cq - 2 * cs * means)
+
+    # same (unstable) sort as scanpy, so exact ties rank identically
+    ranked = np.argsort(np.argsort(-norm, axis=1), axis=1).astype(np.float32)
+    nbatches = (ranked < n_top_genes).sum(0)
+    ranked[ranked >= n_top_genes] = np.nan
+    with np.errstate(all="ignore"):
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            med = np.nanmedian(ranked, axis=0)
+    df = pl.DataFrame({"means": means_all, "variances": vars_all, "variances_norm": norm.mean(0),
+                       "highly_variable_rank": med, "highly_variable_nbatches": nbatches.astype(np.int64),
+                       "_i": np.arange(V)})
+    if flavor == "seurat_v3":
+        order = df.sort(["highly_variable_rank", "highly_variable_nbatches"], descending=[False, True],
+                        nulls_last=True, maintain_order=True)["_i"].to_numpy()
+    else:  # seurat_v3_paper
+        order = df.sort(["highly_variable_nbatches", "highly_variable_rank"], descending=[True, False],
+                        nulls_last=True, maintain_order=True)["_i"].to_numpy()
+    hv = np.zeros(V, bool)
+    hv[order[:int(n_top_genes)]] = True
+    return df.drop("_i").with_columns(
+        pl.Series("highly_variable_rank", med).fill_nan(None), pl.Series("highly_variable", hv))
+
+
 def highly_variable_genes(bf: BioFrame, n_top_genes: Optional[int] = None, flavor: str = "seurat",
                           n_bins: int = 20, min_mean: float = 0.0125, max_mean: float = 3.0,
-                          min_disp: float = 0.5, max_disp: float = np.inf, subset: bool = False) -> BioFrame:
+                          min_disp: float = 0.5, max_disp: float = np.inf, subset: bool = False,
+                          batch_key: Optional[str] = None, span: float = 0.3) -> BioFrame:
     """Highly variable genes, reproducing ``sc.pp.highly_variable_genes`` for
-    ``flavor="seurat"`` (expects log-normalised data) and ``"cell_ranger"``.
+    ``flavor="seurat"`` (expects log-normalised data), ``"cell_ranger"``, and
+    ``"seurat_v3"`` / ``"seurat_v3_paper"`` (variance-stabilising transform on raw
+    counts with a loess mean-variance trend; ``n_top_genes`` required,
+    ``batch_key`` optional; the recorded normalisation is ignored).
 
     Adds var columns ``means``, ``dispersions``, ``dispersions_norm``,
-    ``highly_variable`` and caches per-gene log-scale mean/std for :func:`scale`.
+    ``highly_variable`` (``seurat_v3``: ``means``, ``variances``,
+    ``variances_norm``, ``highly_variable_rank``, ``highly_variable_nbatches``) and
+    caches per-gene log-scale mean/std for :func:`scale`.
     """
+    if flavor in ("seurat_v3", "seurat_v3_paper"):
+        if n_top_genes is None:
+            raise ValueError("flavor='seurat_v3' needs n_top_genes")
+        cols = _hvg_seurat_v3(bf, n_top_genes, batch_key, span, flavor)
+        bf.var = bf.var.drop([c for c in cols.columns if c in bf.var.columns]).hstack(cols)
+        bf.uns["hvg"] = {"flavor": flavor}
+        if subset:
+            return bf._subset(var_mask=cols["highly_variable"].to_numpy())
+        return bf
+    if batch_key is not None:
+        raise NotImplementedError("batch_key is supported for flavor='seurat_v3' only")
     n = bf.n_obs
     st = gene_stats(bf)
     mean_log, var_log = _mean_var(st[:, 0], st[:, 1], n)
@@ -243,3 +322,9 @@ def connectivities_matrix(bf: BioFrame):
     n = bf.n_obs
     C = sp.coo_matrix((nb["weights"], (nb["rows"], nb["cols"])), shape=(n, n)).tocsr()
     return (C + C.T).tocsr()
+
+
+def scrublet(bf: BioFrame, **kwargs) -> BioFrame:
+    """Doublet detection; see :func:`crest.doublets.scrublet`."""
+    from .doublets import scrublet as _s
+    return _s(bf, **kwargs)

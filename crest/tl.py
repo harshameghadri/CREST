@@ -12,9 +12,12 @@ from .core import BioFrame
 from . import crest as _native
 from .pp import gene_stats, _mean_var
 from .deseq2 import DESeq2, Pseudobulk, deseq2, pseudobulk, pseudobulk_de  # noqa: F401
+from .harmony import harmony  # noqa: F401
+from .ingest import ingest  # noqa: F401
 
 __all__ = ["pca", "leiden", "umap", "rank_genes_groups", "score_genes",
-           "pseudobulk", "pseudobulk_de", "deseq2", "DESeq2", "Pseudobulk"]
+           "pseudobulk", "pseudobulk_de", "deseq2", "DESeq2", "Pseudobulk", "harmony",
+           "leiden_sweep", "adjusted_rand_index", "ingest"]
 
 
 # --------------------------------------------------------------------------- PCA
@@ -81,7 +84,10 @@ def pca(bf: BioFrame, n_comps: int = 50, use_highly_variable: Optional[bool] = N
     bf.obsm["X_pca"] = X
     bf.varm["PCs"] = pcs
     bf.uns["pca"] = {"variance": variance, "variance_ratio": variance / total,
-                     "params": {"scale": bool(scale), "max_value": max_value, "use_highly_variable": bool(use_highly_variable)}}
+                     "params": {"scale": bool(scale), "max_value": max_value, "use_highly_variable": bool(use_highly_variable)},
+                     # what crest.tl.ingest needs to project new cells onto these PCs
+                     "projection": {"genes": [g for g, m in zip(bf.var_names, mask) if m], "loadings": loadings,
+                                    "mean": mean, "std": std, "shift": shift, "ops": list(bf.ops)}}
     return bf
 
 
@@ -105,6 +111,71 @@ def leiden(bf: BioFrame, resolution: float = 1.0, n_iterations: int = 2, random_
     bf.obs = bf.obs.with_columns(pl.Series(key_added, relabel[lab].astype(str)))
     bf.uns[key_added] = {"params": {"resolution": resolution, "n_iterations": n_iterations, "random_state": random_state}}
     return bf
+
+
+def _relabel_by_size(lab: np.ndarray) -> np.ndarray:
+    sizes = np.bincount(lab)
+    order = np.argsort(-sizes, kind="stable")
+    relabel = np.empty_like(order)
+    relabel[order] = np.arange(len(order))
+    return relabel[lab]
+
+
+def adjusted_rand_index(a: np.ndarray, b: np.ndarray) -> float:
+    """Adjusted Rand index of two labelings (Hubert & Arabie 1985)."""
+    a = np.unique(np.asarray(a), return_inverse=True)[1]
+    b = np.unique(np.asarray(b), return_inverse=True)[1]
+    n = len(a)
+    if n < 2:
+        return 1.0
+    cont = np.bincount(a * (b.max() + 1) + b, minlength=(a.max() + 1) * (b.max() + 1)).astype(np.float64)
+    comb = lambda x: x * (x - 1) / 2.0  # noqa: E731
+    sum_ij = comb(cont).sum()
+    sum_a = comb(np.bincount(a).astype(np.float64)).sum()
+    sum_b = comb(np.bincount(b).astype(np.float64)).sum()
+    expected = sum_a * sum_b / comb(float(n))
+    max_idx = (sum_a + sum_b) / 2.0
+    if max_idx == expected:
+        return 1.0
+    return float((sum_ij - expected) / (max_idx - expected))
+
+
+def leiden_sweep(bf: BioFrame, resolutions: Sequence[float] = (0.1, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5, 2.0),
+                 n_seeds: int = 1, n_iterations: int = 2, random_state: int = 0,
+                 key_prefix: str = "leiden_") -> pl.DataFrame:
+    """Leiden at several resolutions (and seeds) on one neighbour graph, all runs in
+    parallel. Replaces a loop of :func:`leiden` calls, each of which rebuilds the
+    graph and runs on one core.
+
+    Adds obs columns ``{key_prefix}{resolution}`` (labels of the first seed,
+    ordered by cluster size like :func:`leiden`) and returns a table with, per
+    resolution: ``n_clusters``, ``ari_prev`` (agreement with the next lower
+    resolution; clustree-style stability) and, with ``n_seeds > 1``,
+    ``ari_seeds`` (mean pairwise ARI across seeds: how reproducible the
+    partition is). Also stored in ``uns['leiden_sweep']``.
+    """
+    rows, cols, w = _graph(bf)
+    res = [float(r) for r in resolutions]
+    jobs_r = [r for r in res for _ in range(n_seeds)]
+    jobs_s = [random_state + s for _ in res for s in range(n_seeds)]
+    labels = _native.leiden_sweep(bf.n_obs, rows, cols, w, jobs_r, jobs_s, n_iterations)
+    out, prev, new_cols = [], None, []
+    for i, r in enumerate(res):
+        runs = [labels[i * n_seeds + s].astype(np.int64) for s in range(n_seeds)]
+        lab = _relabel_by_size(runs[0])
+        new_cols.append(pl.Series(f"{key_prefix}{r:g}", lab.astype(str)))
+        row = {"resolution": r, "n_clusters": int(lab.max() + 1),
+               "ari_prev": adjusted_rand_index(prev, lab) if prev is not None else None}
+        if n_seeds > 1:
+            pairs = [adjusted_rand_index(runs[a], runs[b]) for a in range(n_seeds) for b in range(a + 1, n_seeds)]
+            row["ari_seeds"] = float(np.mean(pairs))
+        out.append(row)
+        prev = lab
+    bf.obs = bf.obs.with_columns(new_cols)
+    table = pl.DataFrame(out)
+    bf.uns["leiden_sweep"] = {"table": table, "params": {"n_seeds": n_seeds, "n_iterations": n_iterations,
+                                                         "random_state": random_state}}
+    return table
 
 
 def umap(bf: BioFrame, min_dist: float = 0.5, spread: float = 1.0, n_components: int = 2,
@@ -156,7 +227,7 @@ def rank_genes_groups(bf: BioFrame, groupby: str, method: str = "t-test", groups
 
     s = np.zeros((G, V)); q = np.zeros((G, V)); z = np.zeros((G, V))
     for ctx in bf.iter_ctx():
-        _native.group_gene_sums(*ctx, grp, s, q, z)
+        _native.group_gene_sums(*ctx, grp, s, q, z, None)
     S_all, Q_all = s.sum(0), q.sum(0)
     nnz_gene = z.sum(0)  # exact non-zeros per gene (sizes Wilcoxon gene blocks)
     del z

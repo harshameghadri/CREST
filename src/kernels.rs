@@ -382,7 +382,11 @@ unsafe impl Sync for SyncPtr {}
 /// The chunk is transformed once, then each thread owns a contiguous block of
 /// genes and accumulates directly into the shared outputs (disjoint columns),
 /// so memory does not grow with the number of groups × threads.
-pub fn group_gene_sums(v: ChunkView, group_of_row: &[u32], n_genes: usize, sum: &mut [f64], sumsq: Option<&mut [f64]>, nnz: Option<&mut [f64]>) {
+/// With `clip` ((n_groups, n_genes)), each value is first capped at its group's
+/// gene limit (seurat_v3 HVG).
+#[allow(clippy::too_many_arguments)]
+pub fn group_gene_sums(v: ChunkView, group_of_row: &[u32], n_genes: usize, sum: &mut [f64], sumsq: Option<&mut [f64]>,
+                       nnz: Option<&mut [f64]>, clip: Option<&[f64]>) {
     let (rows, genes, vals) = materialize(v);
     // entries per gene -> balanced gene blocks
     let mut per_gene = vec![0usize; n_genes];
@@ -419,7 +423,10 @@ pub fn group_gene_sums(v: ChunkView, group_of_row: &[u32], n_genes: usize, sum: 
                 continue;
             }
             let i = grp as usize * n_genes + g as usize;
-            let x = x as f64;
+            let x = match clip {
+                Some(c) => (x as f64).min(c[i]),
+                None => x as f64,
+            };
             // SAFETY: gene blocks are disjoint, so index i is written by one thread only.
             unsafe {
                 *ps.0.add(i) += x;

@@ -46,19 +46,3 @@ pub fn embed(
     sgd::optimize_layout(g, &mut emb, n_components, n_epochs, a, b, seed);
     emb
 }
-
-/// Legacy entry point used by the Polars plugin: rows in, rows out.
-/// `n_neighbors` counts the cell itself (scanpy convention).
-pub fn run_umap(
-    data: &[Vec<f32>],
-    n_components: usize,
-    n_neighbors: usize,
-    min_dist: f32,
-    spread: f32,
-    n_epochs: usize,
-    spectral_n_iter: usize,
-) -> Vec<Vec<f32>> {
-    let g = graph::build_fuzzy_simplicial_set(data, n_neighbors);
-    let flat = embed(&g, n_components, min_dist, spread, Some(n_epochs), spectral_n_iter, 0);
-    flat.chunks(n_components).map(|r| r.to_vec()).collect()
-}
