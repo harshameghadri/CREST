@@ -44,8 +44,9 @@ def fetch(d: Path):
             urllib.request.urlretrieve(url, d / name)
 
 
-def load(d: Path) -> crest.BioFrame:
-    """Cells × genes BioFrame with obs columns ind (donor), stim, cell (type)."""
+def load(d: Path, singlets_only: bool = True) -> crest.BioFrame:
+    """Cells × genes BioFrame with obs columns ind (donor), stim, cell (type),
+    multiplets (demuxlet call). ``singlets_only`` keeps annotated singlets."""
     mats, bcs = [], []
     for mtx, bc in [("GSM2560248_2.1.mtx.gz", "GSM2560248_barcodes.tsv.gz"),
                     ("GSM2560249_2.2.mtx.gz", "GSM2560249_barcodes.tsv.gz")]:
@@ -63,6 +64,8 @@ def load(d: Path) -> crest.BioFrame:
     obs = ann.select(pl.col("barcode"), pl.col("ind").cast(pl.Utf8), "stim", "cell", "multiplets")
     bf = crest.BioFrame.from_scipy(X, obs=obs, var=genes.with_columns(
         pl.col("gene_name").is_duplicated().alias("_dup")))
+    if not singlets_only:
+        return bf
     return bf.filter_cells((pl.col("multiplets") == "singlet") & pl.col("cell").is_not_null())
 
 
