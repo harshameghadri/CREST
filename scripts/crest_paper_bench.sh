@@ -2,8 +2,8 @@
 # CREST paper benchmark - the whole thing, on your own machine, in one command.
 #
 #   curl -LO https://raw.githubusercontent.com/harshameghadri/CREST/dev/scripts/crest_paper_bench.sh
-#   bash crest_paper_bench.sh                      # standard tier (~2-4 h on 8 cores)
-#   bash crest_paper_bench.sh --tier quick         # 3 small datasets, sanity check (~20 min)
+#   bash crest_paper_bench.sh                      # standard tier (several hours; scanpy dominates)
+#   bash crest_paper_bench.sh --tier quick         # 3 small datasets, 2 repeats, short thread scan (~30-60 min)
 #   bash crest_paper_bench.sh --tier full          # adds the 647k COVID atlas, 1.3M neurons, 500k/1M synthetic
 #
 # What it does (every step logged under $WORKDIR/results/<host>-<date>/):
@@ -27,9 +27,10 @@
 #   --repo URL             repository                                (default: https://github.com/harshameghadri/CREST)
 #   --tier T               quick | standard | full                   (default: standard)
 #   --datasets "a b"       explicit dataset list (overrides --tier; see --list-datasets)
-#   --repeats K            repeats per configuration                 (default: 5)
-#   --threads "1 2 4 8"    thread counts for the strong-scaling scan (default: powers of two up to all cores)
-#   --thread-dataset NAME  dataset for the thread scan               (default: pbmc68k, kang in the quick tier)
+#   --repeats K            repeats per configuration                 (default: 5; 2 in the quick tier)
+#   --threads "1 2 4 8"    thread counts for the strong-scaling scan (default: powers of two up to all cores;
+#                          quick tier: 1, 8 and all cores)
+#   --thread-dataset NAME  dataset for the thread scan               (default: pbmc68k; pbmc10k in the quick tier)
 #   --scanpy-max-cells N   skip scanpy above N cells (0 = never; default: from RAM, ~12.5k cells per GB)
 #   --timeout SEC          per-run limit                             (default: 7200)
 #   --python X.Y           Python for the venv                       (default: 3.11)
@@ -51,7 +52,7 @@ REF="dev"
 REPO="https://github.com/harshameghadri/CREST"
 TIER="standard"
 DATASETS=""
-REPEATS=5
+REPEATS=""
 THREADS=""
 THREAD_DS=""
 SCANPY_MAX=""
@@ -122,6 +123,7 @@ NEED_GB=$([[ "$TIER" == "full" ]] && echo 60 || ([[ "$TIER" == "quick" ]] && ech
 echo "  free disk in $WORKDIR: ${FREE_GB} GB (tier '$TIER' needs ~${NEED_GB} GB)"
 [[ $FREE_GB -ge $NEED_GB ]] || die "not enough disk space"
 if [[ -z "$SCANPY_MAX" ]]; then SCANPY_MAX=$(( RAM_GB * 12500 )); fi
+if [[ -z "$REPEATS" ]]; then REPEATS=$([[ "$TIER" == "quick" ]] && echo 2 || echo 5); fi
 echo "  scanpy is skipped above $SCANPY_MAX cells (--scanpy-max-cells 0 disables the cap)"
 
 STAMP="$(hostname -s 2>/dev/null || hostname)-$(date +%Y%m%d-%H%M)"
@@ -145,7 +147,9 @@ echo "  commit $COMMIT"
 VENV="$WORKDIR/venv-$(echo "$COMMIT" | cut -c1-10)"
 PY="$VENV/bin/python"
 if [[ $SKIP_BUILD -eq 0 || ! -x "$PY" ]]; then
+  rm -rf "$VENV"   # rebuild from scratch (uv refuses to reuse an existing venv)
   uv venv -q --python "$PYVER" "$VENV"
+  echo "  building CREST in release mode (a few minutes; log: logs/build.log)"
   uv pip install -q --python "$PY" maturin
   ( cd "$SRC" && VIRTUAL_ENV="$VENV" PATH="$VENV/bin:$PATH" maturin develop --release -E test,bench ) \
     > "$OUT/logs/build.log" 2>&1 || { tail -30 "$OUT/logs/build.log"; die "build failed (see logs/build.log)"; }
@@ -209,9 +213,15 @@ cp "$DATA/checksums.json" "$E/data_checksums.json" 2>/dev/null || true
 # ------------------------------------------------------------------ 6. runs
 bold "6. Benchmark runs"
 if [[ -z "$THREAD_DS" ]]; then
-  if [[ " $DATASETS " == *" pbmc68k "* ]]; then THREAD_DS=pbmc68k; else THREAD_DS="$(echo $DATASETS | awk '{print $NF}')"; fi
+  if [[ " $DATASETS " == *" pbmc68k "* ]]; then THREAD_DS=pbmc68k
+  elif [[ " $DATASETS " == *" pbmc10k "* ]]; then THREAD_DS=pbmc10k
+  else THREAD_DS="$(echo $DATASETS | awk '{print $NF}')"; fi
 fi
-if [[ -z "$THREADS" ]]; then p=1; THREADS=""; while [[ $p -lt $NCPU ]]; do THREADS="$THREADS $p"; p=$((p*2)); done; fi
+if [[ -z "$THREADS" ]]; then
+  if [[ "$TIER" == "quick" ]]; then THREADS="1 $(( NCPU < 8 ? NCPU : 8 ))"
+  else p=1; THREADS=""; while [[ $p -lt $NCPU ]]; do THREADS="$THREADS $p"; p=$((p*2)); done; fi
+fi
+echo "  thread scan on $THREAD_DS: threads $THREADS $NCPU; $REPEATS repeats"
 SCAN_ARGS=(--threads-scan $THREADS --thread-dataset "$THREAD_DS")
 [[ $SKIP_SCAN -eq 1 ]] && SCAN_ARGS=()
 PIN_ARGS=(); [[ $NO_PIN -eq 1 ]] && PIN_ARGS=(--no-pin)
