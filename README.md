@@ -115,7 +115,7 @@ per-step wall time and peak RSS, JIT warm-up excluded for scanpy),
 * **DESeq2 in Rust.** A step-by-step port of DESeq2's `DESeq()` / `results()`, one
   parallel pass over genes per stage, with the NB likelihood evaluated without
   the cancellation R suffers at tiny dispersions. Pseudobulk DE for 8 cell types
-  of Kang 2018 takes 7 s (R: 141 s, pydeseq2: 215 s).
+  of Kang 2018 takes 7 s (R: 131 s, pydeseq2: 202 s).
 * **Sparse Wilcoxon.** All implicit zeros of a gene form one tie block with a
   closed-form rank, so only non-zero values are sorted.
 * **Polars expressions.** Column-level operations are also available as a

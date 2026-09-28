@@ -13,7 +13,7 @@ _Last updated: 2026-09-28._
 | Core pipeline (QC → HVG → scale/PCA → kNN → Leiden → UMAP → t-test/Wilcoxon) | Done, validated against scanpy 1.11 (`tests/`), 6–7× faster, 4–10× less memory |
 | Out-of-core (Parquet) mode | Done, ~1 GB peak regardless of dataset size |
 | White-paper benchmark (68k / 100k / 200k) | Done, `bench/whitepaper/results/` |
-| **Pseudobulk DESeq2 in Rust** | **New this session**: `crest.tl.DESeq2` / `pseudobulk` / `pseudobulk_de`. Matches R DESeq2 1.42 to ~1e-9 on simulated data and ≤1e-7 on 5 of 8 Kang cell types; ~19× faster than R and ~30× faster than pydeseq2. See `docs/deseq2.md` |
+| **Pseudobulk DESeq2 in Rust** | **New this session**: `crest.tl.DESeq2` / `pseudobulk` / `pseudobulk_de`. Matches R DESeq2 1.42 to ~1e-9 on simulated data and ≤1e-7 on 5 of 8 Kang cell types; ~18× faster than R and ~28× faster than pydeseq2. See `docs/deseq2.md` |
 | Packaging | PyPI name `crest-sc`, import name `crest`, version 0.2.0 (DESeq2 not yet in a release) |
 | CI | `.github/workflows/CI.yml`: `cargo test` + `pytest`, then maturin wheels for all platforms (release on tag) |
 

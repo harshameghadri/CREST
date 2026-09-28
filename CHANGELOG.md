@@ -7,7 +7,7 @@
   `results()`: median-of-ratios size factors, Cox-Reid gene-wise dispersions,
   parametric trend, MAP shrinkage, NB-GLM Wald tests, Cook's filtering and
   outlier replacement, and independent filtering. It matches R to ~1e-9 on
-  simulated designs, is ~19× faster than R and ~30× faster than pydeseq2 on
+  simulated designs, is ~18× faster than R and ~28× faster than pydeseq2 on
   Kang 2018 pseudobulk. See `docs/deseq2.md`.
 - `crest.tl.pseudobulk` (streamed raw-count sums per sample × group) and
   `crest.tl.pseudobulk_de` (per-cell-type DESeq2 in one call).

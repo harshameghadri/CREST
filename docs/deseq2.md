@@ -52,9 +52,11 @@ inputs to R and CREST. Results are in `bench/deseq2/results/`.
   contrast, 2×8 and 2×12 with outlier replacement): size factors, dispersions,
   log2 fold changes, standard errors and p-values agree to ~1e-9 relative. The
   significant gene sets are identical.
-* Kang 2018: 5 of 8 cell types agree to ≤1e-7. The remaining three differ
-  through a handful of genes at the dispersion floor, and 99%+ of calls match.
-  See *Known differences*.
+* Kang 2018: identical significant sets (padj < 0.1) in 6 of 8 cell types. In
+  FCGR3A+ monocytes 1468/1469 match, in CD4 T cells 1350/1365. Every difference
+  traces to a few genes at the dispersion floor (*Known differences* 1).
+  For comparison, pydeseq2's number of calls differs from R's by 3–25% per cell
+  type (e.g. 1630 vs 1365 in CD4 T cells).
 * `tests/test_crest.py` checks against stored R 1.42 output (`tests/data/`), so CI
   guards R-parity without needing R.
 
@@ -65,9 +67,9 @@ coefficients), on the 4-core benchmark machine:
 
 | | per cell type | all 8 cell types |
 |---|---|---|
-| R DESeq2 1.42 | 13–23 s | 141 s |
-| pydeseq2 0.5.4 | 21–31 s | 215 s |
-| **CREST** | **0.4–1.2 s** | **7.3 s** (plus 0.4 s to pseudobulk 24k cells) |
+| R DESeq2 1.42 | 12–19 s | 131 s |
+| pydeseq2 0.5.4 | 20–28 s | 202 s |
+| **CREST** | **0.4–1.2 s** | **7.2 s** (plus 0.4 s to pseudobulk 24k cells) |
 
 ## Known differences
 
