@@ -6,7 +6,7 @@
 #   bash crest_git_housekeeping.sh --apply --yes   # no per-step questions
 #
 # What it does (each step is skipped if already done):
-#   1. clone (or reuse) harshameghadri/CREST and fetch everything
+#   1. reuse the CREST checkout you run it from (or clone into ./CREST) and fetch everything
 #   2. make sure `dev` exists and starts from `main`
 #   3. archive the stale branches as tags `archive/<branch>` and delete the branches
 #   4. list other remote branches already merged into main (for you to review)
@@ -17,7 +17,15 @@
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-git@github.com:harshameghadri/CREST.git}"
-WORKDIR="${WORKDIR:-$HOME/CREST}"
+# default: the CREST checkout you are in, else ./CREST (cloned there if missing)
+if [[ -z "${WORKDIR:-}" ]]; then
+  top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ -n "$top" ]] && git -C "$top" remote get-url origin 2>/dev/null | grep -qi "harshameghadri/CREST"; then
+    WORKDIR="$top"
+  else
+    WORKDIR="$PWD/CREST"
+  fi
+fi
 STALE_BRANCHES=(feat/leiden-hnsw-faer fix/production-readiness)
 WORK_BRANCH="${WORK_BRANCH:-claude/awesome-lamport-dsvfv2}"
 

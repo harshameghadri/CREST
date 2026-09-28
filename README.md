@@ -97,6 +97,7 @@ thread scaling, per-core CPU/clock/memory timelines, accuracy against scanpy,
 bootstrap confidence intervals) runs on your own machine with one command:
 
 ```bash
+cd /path/with/space                            # everything goes under ./crest-bench, nothing in $HOME
 curl -LO https://raw.githubusercontent.com/harshameghadri/CREST/dev/scripts/crest_paper_bench.sh
 bash crest_paper_bench.sh --tier standard      # quick | standard | full
 ```
