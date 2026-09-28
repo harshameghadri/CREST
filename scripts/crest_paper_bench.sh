@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # CREST paper benchmark - the whole thing, on your own machine, in one command.
 #
+#   cd /mnt/scratch                                # any roomy disk: everything is written below the current directory
 #   curl -LO https://raw.githubusercontent.com/harshameghadri/CREST/dev/scripts/crest_paper_bench.sh
-#   bash crest_paper_bench.sh                      # standard tier (~2-4 h on 8 cores)
-#   bash crest_paper_bench.sh --tier quick         # 3 small datasets, sanity check (~20 min)
+#   bash crest_paper_bench.sh                      # standard tier (several hours; scanpy dominates)
+#   bash crest_paper_bench.sh --tier quick         # 3 small datasets, 2 repeats, short thread scan (~30-60 min)
 #   bash crest_paper_bench.sh --tier full          # adds the 647k COVID atlas, 1.3M neurons, 500k/1M synthetic
+#
+# Nothing is written to $HOME: the source, venv, data, results and every cache (uv packages and
+# Pythons, cargo registry, numba, matplotlib, temp files) live under --workdir, which defaults to
+# ./crest-bench in the directory you run the script from.
 #
 # What it does (every step logged under $WORKDIR/results/<host>-<date>/):
 #   1. preflight: git, curl, uv (installs it with --install-uv), Rust (installs with --install-rust), disk, RAM
@@ -22,14 +27,15 @@
 #      exponents, Amdahl fits), tables (CSV + LaTeX), figures (PDF + PNG), report.md, and a .tar.gz
 #
 # Options:
-#   --workdir DIR          everything goes here                      (default: ~/crest-bench)
+#   --workdir DIR          everything goes here                      (default: ./crest-bench)
 #   --ref REF              branch/tag/commit to benchmark            (default: dev)
 #   --repo URL             repository                                (default: https://github.com/harshameghadri/CREST)
 #   --tier T               quick | standard | full                   (default: standard)
 #   --datasets "a b"       explicit dataset list (overrides --tier; see --list-datasets)
-#   --repeats K            repeats per configuration                 (default: 5)
-#   --threads "1 2 4 8"    thread counts for the strong-scaling scan (default: powers of two up to all cores)
-#   --thread-dataset NAME  dataset for the thread scan               (default: pbmc68k, kang in the quick tier)
+#   --repeats K            repeats per configuration                 (default: 5; 2 in the quick tier)
+#   --threads "1 2 4 8"    thread counts for the strong-scaling scan (default: powers of two up to all cores;
+#                          quick tier: 1, 8 and all cores)
+#   --thread-dataset NAME  dataset for the thread scan               (default: pbmc68k; pbmc10k in the quick tier)
 #   --scanpy-max-cells N   skip scanpy above N cells (0 = never; default: from RAM, ~12.5k cells per GB)
 #   --timeout SEC          per-run limit                             (default: 7200)
 #   --python X.Y           Python for the venv                       (default: 3.11)
@@ -46,12 +52,12 @@
 
 set -euo pipefail
 
-WORKDIR="$HOME/crest-bench"
+WORKDIR="$PWD/crest-bench"
 REF="dev"
 REPO="https://github.com/harshameghadri/CREST"
 TIER="standard"
 DATASETS=""
-REPEATS=5
+REPEATS=""
 THREADS=""
 THREAD_DS=""
 SCANPY_MAX=""
@@ -89,6 +95,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Keep every cache and install under the work directory (the home disk may be small).
+mkdir -p "$WORKDIR"
+WORKDIR="$(cd "$WORKDIR" && pwd)"
+C="$WORKDIR/cache"
+mkdir -p "$C"/{uv,uv-python,cargo,numba,mpl,xdg,tmp}
+export UV_CACHE_DIR="$C/uv" UV_PYTHON_INSTALL_DIR="$C/uv-python" UV_INSTALL_DIR="$WORKDIR/bin"
+export NUMBA_CACHE_DIR="$C/numba" MPLCONFIGDIR="$C/mpl" XDG_CACHE_HOME="$C/xdg" TMPDIR="$C/tmp"
+export PATH="$WORKDIR/bin:$PATH"
+
 bold() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 die() { printf '\033[31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 OS="$(uname -s)"
@@ -101,27 +116,30 @@ command -v git >/dev/null || die "git is required"
 command -v curl >/dev/null || die "curl is required"
 if ! command -v uv >/dev/null; then
   if [[ $INSTALL_UV -eq 1 ]]; then
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+    curl -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh   # into $WORKDIR/bin
   else
     die "uv is required: curl -LsSf https://astral.sh/uv/install.sh | sh   (or re-run with --install-uv)"
   fi
 fi
 [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+[[ -x "$WORKDIR/rust/cargo/bin/cargo" ]] && export RUSTUP_HOME="$WORKDIR/rust/rustup" PATH="$WORKDIR/rust/cargo/bin:$PATH"
 if ! command -v cargo >/dev/null; then
   if [[ $INSTALL_RUST -eq 1 ]]; then
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-    source "$HOME/.cargo/env"
+    export RUSTUP_HOME="$WORKDIR/rust/rustup" CARGO_HOME="$WORKDIR/rust/cargo"   # not in $HOME
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
+    export PATH="$CARGO_HOME/bin:$PATH"
   else
     die "Rust is required: curl https://sh.rustup.rs -sSf | sh   (or re-run with --install-rust)"
   fi
 fi
-mkdir -p "$WORKDIR"
+# crate downloads for the build go under the work directory too (the toolchain stays where it is)
+export CARGO_HOME="$C/cargo"
 FREE_GB=$(df -Pk "$WORKDIR" | awk 'NR==2 {print int($4/1048576)}')
 NEED_GB=$([[ "$TIER" == "full" ]] && echo 60 || ([[ "$TIER" == "quick" ]] && echo 3 || echo 10))
 echo "  free disk in $WORKDIR: ${FREE_GB} GB (tier '$TIER' needs ~${NEED_GB} GB)"
 [[ $FREE_GB -ge $NEED_GB ]] || die "not enough disk space"
 if [[ -z "$SCANPY_MAX" ]]; then SCANPY_MAX=$(( RAM_GB * 12500 )); fi
+if [[ -z "$REPEATS" ]]; then REPEATS=$([[ "$TIER" == "quick" ]] && echo 2 || echo 5); fi
 echo "  scanpy is skipped above $SCANPY_MAX cells (--scanpy-max-cells 0 disables the cap)"
 
 STAMP="$(hostname -s 2>/dev/null || hostname)-$(date +%Y%m%d-%H%M)"
@@ -145,7 +163,9 @@ echo "  commit $COMMIT"
 VENV="$WORKDIR/venv-$(echo "$COMMIT" | cut -c1-10)"
 PY="$VENV/bin/python"
 if [[ $SKIP_BUILD -eq 0 || ! -x "$PY" ]]; then
+  rm -rf "$VENV"   # rebuild from scratch (uv refuses to reuse an existing venv)
   uv venv -q --python "$PYVER" "$VENV"
+  echo "  building CREST in release mode (a few minutes; log: logs/build.log)"
   uv pip install -q --python "$PY" maturin
   ( cd "$SRC" && VIRTUAL_ENV="$VENV" PATH="$VENV/bin:$PATH" maturin develop --release -E test,bench ) \
     > "$OUT/logs/build.log" 2>&1 || { tail -30 "$OUT/logs/build.log"; die "build failed (see logs/build.log)"; }
@@ -209,9 +229,15 @@ cp "$DATA/checksums.json" "$E/data_checksums.json" 2>/dev/null || true
 # ------------------------------------------------------------------ 6. runs
 bold "6. Benchmark runs"
 if [[ -z "$THREAD_DS" ]]; then
-  if [[ " $DATASETS " == *" pbmc68k "* ]]; then THREAD_DS=pbmc68k; else THREAD_DS="$(echo $DATASETS | awk '{print $NF}')"; fi
+  if [[ " $DATASETS " == *" pbmc68k "* ]]; then THREAD_DS=pbmc68k
+  elif [[ " $DATASETS " == *" pbmc10k "* ]]; then THREAD_DS=pbmc10k
+  else THREAD_DS="$(echo $DATASETS | awk '{print $NF}')"; fi
 fi
-if [[ -z "$THREADS" ]]; then p=1; THREADS=""; while [[ $p -lt $NCPU ]]; do THREADS="$THREADS $p"; p=$((p*2)); done; fi
+if [[ -z "$THREADS" ]]; then
+  if [[ "$TIER" == "quick" ]]; then THREADS="1 $(( NCPU < 8 ? NCPU : 8 ))"
+  else p=1; THREADS=""; while [[ $p -lt $NCPU ]]; do THREADS="$THREADS $p"; p=$((p*2)); done; fi
+fi
+echo "  thread scan on $THREAD_DS: threads $(echo $THREADS $NCPU | tr ' ' '\n' | sort -nu | xargs); $REPEATS repeats"
 SCAN_ARGS=(--threads-scan $THREADS --thread-dataset "$THREAD_DS")
 [[ $SKIP_SCAN -eq 1 ]] && SCAN_ARGS=()
 PIN_ARGS=(); [[ $NO_PIN -eq 1 ]] && PIN_ARGS=(--no-pin)

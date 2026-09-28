@@ -59,7 +59,9 @@ instead of OOM-killing).
 ## Reproducing the results
 
 ```bash
-# everything (build, tests, data, runs, stats, figures, tarball), on the local machine:
+# everything (build, tests, data, runs, stats, figures, tarball), on the local machine.
+# Run it from a roomy disk: all files and caches go under ./crest-bench (nothing in $HOME).
+cd /mnt/scratch
 bash scripts/crest_paper_bench.sh --tier quick        # ~20 min sanity run
 bash scripts/crest_paper_bench.sh --tier standard     # the paper tables; --tier full adds 647k + 1.3M cells
 
