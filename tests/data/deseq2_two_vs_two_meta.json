@@ -1,0 +1,1 @@
+{"elapsed": 4.036, "sf": [0.762929149258466, 0.952177278568023, 1.02797921265397, 1.45902933899486], "priorVar": 0.25, "trend": [0.0607029723289757, 3.53217825350648], "fitType": "parametric", "design": "~ condition", "contrast": null, "levels": {"condition": ["g0", "g1"]}}
