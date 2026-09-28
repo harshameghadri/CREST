@@ -1,85 +1,71 @@
 //! Utility functions for UMAP
 
-/// Fits the UMAP parameters a and b to the curve 1 / (1 + a * x^(2b))
-/// interpolating the spread and min_dist parameters.
+/// Fits the UMAP curve 1 / (1 + a * x^(2b)) to the target
+/// y = 1 (x < min_dist), exp(-(x - min_dist) / spread) otherwise, on 300 points
+/// in [0, 3 * spread] — the same least-squares problem umap-learn solves with
+/// scipy's `curve_fit`, solved here by Levenberg–Marquardt in f64.
 pub fn find_ab_params(spread: f32, min_dist: f32) -> (f32, f32) {
-    let mut a = 1.0f32;
-    let mut b = 1.0f32;
-    
-    // Create training data along the x-axis
+    let (spread, min_dist) = (spread as f64, min_dist as f64);
     let n_pts = 300;
-    let max_x = spread * 3.0;
-    let mut xs = vec![0.0f32; n_pts];
-    let mut ys = vec![0.0f32; n_pts];
-    
-    for i in 0..n_pts {
-        let x = (i as f32 / (n_pts - 1) as f32) * max_x;
-        xs[i] = x;
-        if x < min_dist {
-            ys[i] = 1.0;
+    let xs: Vec<f64> = (0..n_pts).map(|i| i as f64 * 3.0 * spread / (n_pts - 1) as f64).collect();
+    let ys: Vec<f64> = xs.iter().map(|&x| if x < min_dist { 1.0 } else { (-(x - min_dist) / spread).exp() }).collect();
+
+    let sse = |a: f64, b: f64| -> f64 {
+        xs.iter().zip(&ys).map(|(&x, &y)| {
+            let f = 1.0 / (1.0 + a * x.powf(2.0 * b));
+            (f - y) * (f - y)
+        }).sum()
+    };
+    let (mut a, mut b) = (1.0f64, 1.0f64);
+    let mut lambda = 1e-3;
+    let mut cur = sse(a, b);
+    for _ in 0..500 {
+        // J^T J and J^T r for residual r = f - y
+        let (mut jaa, mut jab, mut jbb, mut ga, mut gb) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        for (&x, &y) in xs.iter().zip(&ys) {
+            if x <= 0.0 {
+                let r = 1.0 - y; // f(0) = 1, derivatives vanish
+                let _ = r;
+                continue;
+            }
+            let x2b = x.powf(2.0 * b);
+            let den = 1.0 + a * x2b;
+            let f = 1.0 / den;
+            let r = f - y;
+            let da = -x2b / (den * den);
+            let db = -2.0 * a * x2b * x.ln() / (den * den);
+            jaa += da * da;
+            jab += da * db;
+            jbb += db * db;
+            ga += da * r;
+            gb += db * r;
+        }
+        let (m_aa, m_bb) = (jaa * (1.0 + lambda), jbb * (1.0 + lambda));
+        let det = m_aa * m_bb - jab * jab;
+        if det.abs() < 1e-300 {
+            break;
+        }
+        let step_a = -(m_bb * ga - jab * gb) / det;
+        let step_b = -(-jab * ga + m_aa * gb) / det;
+        let (na, nb) = (a + step_a, b + step_b);
+        let new = if na > 0.0 && nb > 0.0 { sse(na, nb) } else { f64::INFINITY };
+        if new < cur {
+            let done = (cur - new) < 1e-15 * cur.max(1e-300);
+            a = na;
+            b = nb;
+            cur = new;
+            lambda = (lambda / 10.0).max(1e-12);
+            if done {
+                break;
+            }
         } else {
-            ys[i] = (-(x - min_dist) / spread).exp();
+            lambda *= 10.0;
+            if lambda > 1e12 {
+                break;
+            }
         }
     }
-    
-    // Simple Gradient Descent / Adam optimizer to find a and b
-    let mut m_a = 0.0;
-    let mut v_a = 0.0;
-    let mut m_b = 0.0;
-    let mut v_b = 0.0;
-    
-    let lr = 0.05;
-    let beta1 = 0.9;
-    let beta2 = 0.999;
-    let eps = 1e-8;
-    
-    for epoch in 1..=5000 {
-        let mut grad_a = 0.0;
-        let mut grad_b = 0.0;
-        
-        for i in 0..n_pts {
-            let x = xs[i];
-            let y_true = ys[i];
-            
-            // Avoid x=0 for b gradient (0^0 is tricky, though x^2b when x>0 is fine)
-            if x <= 0.0 { continue; }
-            
-            let x_2b = x.powf(2.0 * b);
-            let denom = 1.0 + a * x_2b;
-            let y_pred = 1.0 / denom;
-            
-            let diff = y_pred - y_true;
-            
-            // Gradients of MSE loss w.r.t 'a' and 'b'
-            let d_y_pred_d_a = -(x_2b) / (denom * denom);
-            let d_y_pred_d_b = -2.0 * a * x_2b * x.ln() / (denom * denom);
-            
-            grad_a += 2.0 * diff * d_y_pred_d_a;
-            grad_b += 2.0 * diff * d_y_pred_d_b;
-        }
-        
-        grad_a /= n_pts as f32;
-        grad_b /= n_pts as f32;
-        
-        // Adam update
-        m_a = beta1 * m_a + (1.0 - beta1) * grad_a;
-        v_a = beta2 * v_a + (1.0 - beta2) * grad_a * grad_a;
-        let m_hat_a = m_a / (1.0 - beta1.powi(epoch));
-        let v_hat_a = v_a / (1.0 - beta2.powi(epoch));
-        a -= lr * m_hat_a / (v_hat_a.sqrt() + eps);
-        
-        m_b = beta1 * m_b + (1.0 - beta1) * grad_b;
-        v_b = beta2 * v_b + (1.0 - beta2) * grad_b * grad_b;
-        let m_hat_b = m_b / (1.0 - beta1.powi(epoch));
-        let v_hat_b = v_b / (1.0 - beta2.powi(epoch));
-        b -= lr * m_hat_b / (v_hat_b.sqrt() + eps);
-        
-        // Ensure a and b stay positive
-        if a < 1e-5 { a = 1e-5; }
-        if b < 1e-5 { b = 1e-5; }
-    }
-    
-    (a, b)
+    (a as f32, b as f32)
 }
 
 #[cfg(test)]
@@ -88,8 +74,10 @@ mod tests {
 
     #[test]
     fn test_find_ab_params() {
+        // reference values from umap-learn (scipy curve_fit)
         let (a, b) = find_ab_params(1.0, 0.1);
-        assert!(a > 0.5 && a < 2.5);
-        assert!(b > 0.5 && b < 1.5);
+        assert!((a - 1.5769).abs() < 2e-3 && (b - 0.8951).abs() < 2e-3, "{} {}", a, b);
+        let (a, b) = find_ab_params(1.0, 0.5);
+        assert!((a - 0.5830).abs() < 2e-3 && (b - 1.3342).abs() < 2e-3, "{} {}", a, b);
     }
 }

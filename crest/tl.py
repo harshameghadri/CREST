@@ -1,228 +1,261 @@
-import polars as pl
+"""Tools (scanpy ``sc.tl`` equivalents) on :class:`~crest.core.BioFrame`."""
+
+from __future__ import annotations
+
+import re
+from typing import Optional, Sequence, Union
+
 import numpy as np
-import scipy.sparse as sp
-from scipy.sparse.linalg import LinearOperator, svds
-import warnings
+import polars as pl
 
-def sparse_masked_pca(
-    df: pl.LazyFrame,
-    n_cells: int,
-    n_genes: int,
-    n_comps: int = 50,
-    random_state: int = 42
-) -> dict:
+from .core import BioFrame
+from . import crest as _native
+from .pp import gene_stats, _mean_var
+from .deseq2 import DESeq2, Pseudobulk, deseq2, pseudobulk, pseudobulk_de  # noqa: F401
+
+__all__ = ["pca", "leiden", "umap", "rank_genes_groups", "score_genes",
+           "pseudobulk", "pseudobulk_de", "deseq2", "DESeq2", "Pseudobulk"]
+
+
+# --------------------------------------------------------------------------- PCA
+def _scale_params(bf: BioFrame, mask: np.ndarray):
+    """Per-gene log-scale mean/std (ddof=1) for the current ops, cached by HVG."""
+    cached = bf.uns.get("hvg", {}).get("ops") == bf.ops and "mean_log" in bf.var.columns
+    if cached:
+        mean, std = bf.var["mean_log"].to_numpy(), bf.var["std_log"].to_numpy()
+    else:
+        st = gene_stats(bf)
+        mean, var = _mean_var(st[:, 0], st[:, 1], bf.n_obs)
+        std = np.sqrt(var)
+        std[std == 0] = 1.0
+    return np.ascontiguousarray(mean[mask], np.float64), np.ascontiguousarray(std[mask], np.float64)
+
+
+def pca(bf: BioFrame, n_comps: int = 50, use_highly_variable: Optional[bool] = None,
+        scale: Optional[bool] = None, max_value: Optional[float] = None) -> BioFrame:
+    """Exact PCA of the (optionally scaled) matrix via its covariance, streamed.
+
+    One pass accumulates the gene × gene Gram matrix from sparse rows, a
+    symmetric eigendecomposition gives the loadings, and a second pass projects
+    the cells. With scaling (``crest.pp.scale`` or ``scale=True``) the result
+    equals ``sc.pp.scale(max_value) + sc.tl.pca`` on the dense matrix, but the
+    dense matrix is never formed. Memory: one chunk + a genes² matrix.
+
+    Adds ``obsm['X_pca']``, ``varm['PCs']``, ``uns['pca']`` (variance, variance_ratio).
     """
-    CREST Native Sparse Masked PCA.
+    if use_highly_variable is None:
+        use_highly_variable = "highly_variable" in bf.var.columns
+    mask = bf.var["highly_variable"].to_numpy().astype(bool) if use_highly_variable else np.ones(bf.n_vars, bool)
+    d = int(mask.sum())
+    if d < 2:
+        raise ValueError("need at least 2 genes for PCA")
+    if d > 20_000:
+        raise ValueError(f"{d} genes: select highly variable genes first (Gram PCA is O(genes^2) memory)")
+    if scale is None:
+        scale = "scale" in bf.uns
+    if max_value is None:
+        max_value = bf.uns.get("scale", {}).get("max_value", 10.0) if scale else 0.0
+    gmap = np.full(bf.n_vars, -1, np.int32)
+    gmap[mask] = np.arange(d, dtype=np.int32)
+    mean = std = None
+    if scale:
+        mean, std = _scale_params(bf, mask)
 
-    Pain Point: Standard PCA dense-centers sparse matrices. On 1M cells x 20k genes,
-    mean centering creates an 80GB dense matrix, crashing the system.
+    n = bf.n_obs
+    gram = np.zeros((d, d), np.float64)
+    colsum = np.zeros(d, np.float64)
+    for ctx in bf.iter_ctx():
+        _native.gram_accumulate(*ctx, gmap, gram, colsum, scale, mean, std, float(max_value or 0.0))
+    k = min(n_comps, d, n - 1)
+    variance, loadings, total = _native.pca_from_gram(gram, colsum, n, k)
+    del gram
 
-    Solution: We use SciPy's LinearOperator to implicitly calculate A_centered @ v
-    without ever materializing the centered matrix in memory.
+    shift = (colsum / n) @ loadings
+    X = np.empty((n, k), np.float32)
+    X[:] = -shift.astype(np.float32)
+    for ctx in bf.iter_ctx():
+        _native.project(*ctx, gmap, loadings, X, scale, mean, std, float(max_value or 0.0))
+
+    pcs = np.zeros((bf.n_vars, k), np.float32)
+    pcs[mask] = loadings
+    bf.obsm["X_pca"] = X
+    bf.varm["PCs"] = pcs
+    bf.uns["pca"] = {"variance": variance, "variance_ratio": variance / total,
+                     "params": {"scale": bool(scale), "max_value": max_value, "use_highly_variable": bool(use_highly_variable)}}
+    return bf
+
+
+# --------------------------------------------------------------------------- clustering / embedding
+def _graph(bf: BioFrame):
+    if "neighbors" not in bf.uns:
+        raise KeyError("run crest.pp.neighbors first")
+    nb = bf.uns["neighbors"]
+    return nb["rows"], nb["cols"], nb["weights"]
+
+
+def leiden(bf: BioFrame, resolution: float = 1.0, n_iterations: int = 2, random_state: int = 0,
+           key_added: str = "leiden") -> BioFrame:
+    """Leiden clustering of the neighbour graph (labels ordered by cluster size, "0" largest)."""
+    rows, cols, w = _graph(bf)
+    lab = _native.leiden(bf.n_obs, rows, cols, w, resolution, n_iterations, random_state)
+    sizes = np.bincount(lab)
+    order = np.argsort(-sizes, kind="stable")
+    relabel = np.empty_like(order)
+    relabel[order] = np.arange(len(order))
+    bf.obs = bf.obs.with_columns(pl.Series(key_added, relabel[lab].astype(str)))
+    bf.uns[key_added] = {"params": {"resolution": resolution, "n_iterations": n_iterations, "random_state": random_state}}
+    return bf
+
+
+def umap(bf: BioFrame, min_dist: float = 0.5, spread: float = 1.0, n_components: int = 2,
+         n_epochs: Optional[int] = None, random_state: int = 0) -> BioFrame:
+    """UMAP embedding of the neighbour graph (scanpy defaults: min_dist=0.5)."""
+    rows, cols, w = _graph(bf)
+    bf.obsm["X_umap"] = _native.umap(bf.n_obs, rows, cols, w, n_components, min_dist, spread, n_epochs, 100, random_state)
+    return bf
+
+
+# --------------------------------------------------------------------------- differential expression
+def _natural_key(s: str):
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", s)]
+
+
+def _bh(p: np.ndarray) -> np.ndarray:
+    """Benjamini-Hochberg adjusted p-values."""
+    n = len(p)
+    order = np.argsort(p)
+    ranked = p[order] * n / np.arange(1, n + 1)
+    adj = np.minimum.accumulate(ranked[::-1])[::-1]
+    out = np.empty(n)
+    out[order] = np.minimum(adj, 1.0)
+    return out
+
+
+def rank_genes_groups(bf: BioFrame, groupby: str, method: str = "t-test", groups: Union[str, Sequence[str]] = "all",
+                      n_genes: Optional[int] = 100, tie_correct: bool = False,
+                      memory_budget_gb: float = 0.25) -> pl.DataFrame:
+    """Each group vs the rest, as ``sc.tl.rank_genes_groups(reference="rest")``.
+
+    ``method="t-test"`` (Welch) or ``"wilcoxon"`` (Mann-Whitney U, normal
+    approximation). The Wilcoxon test ranks only non-zero values: all implicit
+    zeros of a gene form one tie block whose rank is known in closed form.
+    Returns a long DataFrame (group, names, scores, logfoldchanges, pvals,
+    pvals_adj) with the top ``n_genes`` per group by score; also stored in
+    ``uns['rank_genes_groups']``.
     """
-    if n_cells < 2 or n_genes < 2:
-        raise ValueError(f"Need at least 2 cells and 2 genes, got n_cells={n_cells}, n_genes={n_genes}")
-    if n_comps < 1:
-        raise ValueError(f"n_comps must be >= 1, got {n_comps}")
+    labels = bf.obs[groupby].cast(pl.Utf8).to_numpy()
+    cats = sorted({x for x in labels if x is not None}, key=_natural_key)
+    if groups != "all":
+        cats = [c for c in cats if c in set(groups)]
+    code = {c: i for i, c in enumerate(cats)}
+    grp = np.array([code.get(x, np.iinfo(np.uint32).max) if x is not None else np.iinfo(np.uint32).max
+                    for x in labels], dtype=np.uint32)
+    G, V = len(cats), bf.n_vars
+    sizes = np.bincount(grp[grp != np.iinfo(np.uint32).max], minlength=G).astype(np.float64)
+    N = sizes.sum()
 
-    # Extract arrays to build the COO matrix pointers
-    collected = df.select("cell_id", "gene_id", "count").collect()
-    cell_ids = collected.to_series(0).to_numpy()
-    gene_ids = collected.to_series(1).to_numpy()
-    counts = collected.to_series(2).to_numpy()
+    s = np.zeros((G, V)); q = np.zeros((G, V)); z = np.zeros((G, V))
+    for ctx in bf.iter_ctx():
+        _native.group_gene_sums(*ctx, grp, s, q, z)
+    S_all, Q_all = s.sum(0), q.sum(0)
+    nnz_gene = z.sum(0)  # exact non-zeros per gene (sizes Wilcoxon gene blocks)
+    del z
 
-    # 1. Build the raw uncentered CSR matrix
-    A = sp.coo_matrix((counts, (cell_ids, gene_ids)), shape=(n_cells, n_genes)).tocsr()
+    if method == "wilcoxon":
+        wscores = np.zeros((G, V))
+        budget = memory_budget_gb * 1e9 / 12.0
+        lo = 0
+        while lo < V:
+            hi, acc = lo, 0.0
+            while hi < V and (acc + nnz_gene[hi] <= budget or hi == lo):
+                acc += nnz_gene[hi]
+                hi += 1
+            parts = [_native.collect_gene_block(*ctx, grp, lo, hi) for ctx in bf.iter_ctx()]
+            cat = [np.concatenate([p[i] for p in parts]) if len(parts) > 1 else parts[0][i] for i in range(3)]
+            del parts
+            rs, ties = _native.wilcoxon_rank_sums(cat[0], cat[1], cat[2], hi - lo, sizes.astype(np.uint64))
+            del cat
+            T = 1.0 - ties / (N ** 3 - N) if tie_correct else np.ones(hi - lo)
+            std = np.sqrt(T[None, :] * sizes[:, None] * (N - sizes)[:, None] * (N + 1) / 12.0)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                wscores[:, lo:hi] = (rs - sizes[:, None] * (N + 1) / 2.0) / std
+            lo = hi
+    elif method != "t-test":
+        raise ValueError('method must be "t-test" or "wilcoxon"')
 
-    # 2. Calculate column means for implicit centering
-    # A.sum(0) is a 1 x n_genes matrix. np.A1 flattens it to a 1D array.
-    col_means = A.sum(0).A1 / n_cells
-
-    def matvec(v):
-        # A_centered @ v = (A - 1 * mu) @ v = A @ v - 1 * (mu @ v)
-        Av = A.dot(v)
-        mu_dot_v = col_means.dot(v)
-        return Av - mu_dot_v
-
-    def rmatvec(u):
-        # A_centered.T @ u = A.T @ u - mu.T * (1.T @ u)
-        At_u = A.T.dot(u)
-        sum_u = u.sum(axis=0)
-        return At_u - np.outer(col_means, sum_u) if u.ndim > 1 else At_u - col_means * sum_u
-
-    # 3. Create the LinearOperator intercepting the SVD dot products
-    A_centered_op = LinearOperator(
-        shape=(n_cells, n_genes),
-        matvec=matvec,
-        rmatvec=rmatvec,
-        dtype=np.float32
-    )
-
-    # 4. Compute SVD using ARPACK explicitly bypassing densification
-    rng = np.random.RandomState(random_state)
-    v0 = rng.rand(min(A.shape))
-
-    # k must be smaller than the minimum dimension of the matrix
-    k = min(n_comps, n_genes - 1, n_cells - 1)
-    if k < 1:
-        raise ValueError(f"Cannot compute PCA: k={k} (need at least 1 component)")
-
-    # Catch ARPACK warnings about slow convergence
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        U, S, Vt = svds(A_centered_op, k=k, v0=v0)
-
-    # ARPACK returns SVD in increasing order of singular values, we flip them
-    U, S, Vt = U[:, ::-1], S[::-1], Vt[::-1, :]
-
-    # The PCA coordinates are U * S
-    X_pca = U * S
-
-    return {
-        "X_pca": X_pca,
-        "variance": S ** 2 / (n_cells - 1),
-        "components": Vt
-    }
-
-
-def incremental_pca(
-    df: pl.LazyFrame,
-    n_cells: int,
-    n_genes: int,
-    n_comps: int = 50,
-    chunk_size: int = 50000,
-) -> dict:
-    """
-    CREST Out-Of-Core PCA for massive datasets (>1M cells).
-
-    Pain Point: Standard ARPACK SVD requires holding all expressions in a single
-    NumPy SciPy Sparse Matrix. For 1.3M cells x 20k genes, just extracting the
-    `counts` array into NumPy exceeds 8GB of RAM.
-
-    Solution: Stream the underlying Parquet LazyFrame in small chunks
-    (e.g. 50k cells at a time), convert to dense, and partially fit sklearn's
-    IncrementalPCA.
-    """
-    from sklearn.decomposition import IncrementalPCA
-    import time
-    import duckdb
-
-    if chunk_size <= 0:
-        raise ValueError(f"chunk_size must be positive, got {chunk_size}")
-    if n_comps < 1:
-        raise ValueError(f"n_comps must be >= 1, got {n_comps}")
-
-    # Extract the Parquet file path from the LazyFrame's execution plan.
-    # This bypasses a Polars streaming cache memory leak by using DuckDB instead.
-    explain_str = df.explain()
-    try:
-        file_path = explain_str.split("Parquet SCAN [")[1].split("]")[0]
-    except (IndexError, ValueError):
-        raise RuntimeError(
-            "Could not extract Parquet file path from LazyFrame explain output. "
-            "incremental_pca requires a LazyFrame backed by a Parquet file. "
-            f"Got explain: {explain_str[:200]}"
-        )
-
-    print(f"Initializing IncrementalPCA (n_components={n_comps})...")
-    ipca = IncrementalPCA(n_components=n_comps, batch_size=None)
-
-    # Connect to duckdb — use parameterized path via DuckDB's read_parquet
-    con = duckdb.connect(database=':memory:')
-
-    print("Pass 1: Fitting Incremental PCA Model via Zero-Copy DuckDB Stream...")
-    t_pass1 = time.time()
-
-    for start_idx in range(0, n_cells, chunk_size):
-        end_idx = min(start_idx + chunk_size, n_cells)
-        t_batch = time.time()
-
-        # DuckDB pushes the filter completely down to the Parquet row group level
-        batch_df = pl.from_arrow(con.execute(
-            "SELECT cell_id, gene_id, count FROM read_parquet(?) WHERE cell_id >= ? AND cell_id < ?",
-            [file_path, start_idx, end_idx]
-        ).fetch_arrow_table())
-
-        if batch_df is None or len(batch_df) == 0:
-            continue
-
-        local_cell_min = batch_df["cell_id"].min()
-        local_cell_max = batch_df["cell_id"].max()
-
-        # Shift cell IDs to be 0-indexed for the local sparse matrix
-        chunk_cell_ids = batch_df["cell_id"].to_numpy() - local_cell_min
-        chunk_gene_ids = batch_df["gene_id"].to_numpy()
-        chunk_counts = batch_df["count"].to_numpy()
-
-        local_n_cells = (local_cell_max - local_cell_min) + 1
-
-        # Build local CSR and convert to float32 dense
-        chunk_dense = sp.coo_matrix(
-            (chunk_counts, (chunk_cell_ids, chunk_gene_ids)),
-            shape=(local_n_cells, n_genes)
-        ).astype(np.float32).toarray()
-
-        ipca.partial_fit(chunk_dense)
-        print(f"  Fit Chunk [{start_idx}:{end_idx}] in {time.time() - t_batch:.2f}s")
-
-    print(f"Pass 1 Completed in {time.time() - t_pass1:.2f}s")
-    print("Pass 2: Projecting Data via Zero-Copy DuckDB Stream...")
-    t_pass2 = time.time()
-
-    X_pca_chunks = []
-
-    for start_idx in range(0, n_cells, chunk_size):
-        end_idx = min(start_idx + chunk_size, n_cells)
-
-        batch_df = pl.from_arrow(con.execute(
-            "SELECT cell_id, gene_id, count FROM read_parquet(?) WHERE cell_id >= ? AND cell_id < ?",
-            [file_path, start_idx, end_idx]
-        ).fetch_arrow_table())
-
-        if batch_df is None or len(batch_df) == 0:
-            # Log warning instead of silently fabricating zero rows
-            warnings.warn(
-                f"Empty batch for cells [{start_idx}:{end_idx}]. "
-                "Padding with zeros — these cells have no expression data.",
-                stacklevel=2
-            )
-            X_pca_chunks.append(np.zeros((end_idx - start_idx, n_comps), dtype=np.float32))
-            continue
-
-        local_cell_min = batch_df["cell_id"].min()
-        local_cell_max = batch_df["cell_id"].max()
-
-        chunk_cell_ids = batch_df["cell_id"].to_numpy() - local_cell_min
-        chunk_gene_ids = batch_df["gene_id"].to_numpy()
-        chunk_counts = batch_df["count"].to_numpy()
-
-        local_n_cells = (local_cell_max - local_cell_min) + 1
-
-        chunk_dense = sp.coo_matrix(
-            (chunk_counts, (chunk_cell_ids, chunk_gene_ids)),
-            shape=(local_n_cells, n_genes)
-        ).astype(np.float32).toarray()
-
-        transformed_chunk = ipca.transform(chunk_dense)
-
-        # If there were missing cells at the end or beginning of the chunk, pad with zeros
-        # to ensure the final X_pca shape maps exactly to n_cells
-        if local_n_cells < (end_idx - start_idx):
-            pad_before = int(local_cell_min - start_idx)
-            padded_chunk = np.zeros((end_idx - start_idx, n_comps), dtype=np.float32)
-
-            # Insert the exact transformed array into the padded offset
-            insert_end = pad_before + len(transformed_chunk)
-            padded_chunk[pad_before:insert_end] = transformed_chunk
-            X_pca_chunks.append(padded_chunk)
+    names = np.array(bf.var_names, dtype=object)
+    frames, uns = [], {"params": {"groupby": groupby, "method": method, "reference": "rest"}, "groups": cats}
+    k = V if n_genes is None else min(n_genes, V)
+    for i, c in enumerate(cats):  # one group at a time: O(genes) temporaries
+        n1, n2 = sizes[i], N - sizes[i]
+        m1 = s[i] / n1
+        m2 = (S_all - s[i]) / n2
+        logfc = np.log2((np.expm1(m1) + 1e-9) / (np.expm1(m2) + 1e-9))
+        if method == "t-test":
+            v1 = np.maximum((q[i] - n1 * m1 ** 2) / (n1 - 1), 0)
+            v2 = np.maximum(((Q_all - q[i]) - n2 * m2 ** 2) / (n2 - 1), 0)
+            a, b = v1 / n1, v2 / n2
+            with np.errstate(divide="ignore", invalid="ignore"):
+                sc_ = (m1 - m2) / np.sqrt(a + b)
+                df = (a + b) ** 2 / (a ** 2 / (n1 - 1) + b ** 2 / (n2 - 1))
+            df = np.where(np.isnan(df), 1.0, df)
+            pv = _native.t_pvalues(np.ascontiguousarray(sc_), np.ascontiguousarray(df))
         else:
-            X_pca_chunks.append(transformed_chunk)
+            sc_ = wscores[i]
+            pv = _native.normal_pvalues(np.ascontiguousarray(sc_))
+        sc_ = np.where(np.isnan(sc_), 0.0, sc_)
+        pv = np.where(np.isnan(pv), 1.0, pv)
+        padj = _bh(pv)
+        top = np.argsort(-sc_, kind="stable")[:k]
+        frames.append(pl.DataFrame({
+            "group": [c] * k, "names": names[top].astype(str), "scores": sc_[top],
+            "logfoldchanges": logfc[top], "pvals": pv[top], "pvals_adj": padj[top],
+        }))
+    out = pl.concat(frames) if frames else pl.DataFrame()
+    uns["table"] = out
+    bf.uns["rank_genes_groups"] = uns
+    return out
 
-    print(f"Pass 2 Completed in {time.time() - t_pass2:.2f}s. Merging projection chunks...")
-    X_pca = np.vstack(X_pca_chunks)
 
-    return {
-        "X_pca": X_pca,
-        "variance": ipca.explained_variance_,
-        "components": ipca.components_
-    }
+# --------------------------------------------------------------------------- gene set scores
+def score_genes(bf: BioFrame, gene_list: Sequence[str], ctrl_size: int = 50, n_bins: int = 25,
+                random_state: int = 0, score_name: str = "score", ctrl_as_ref: bool = True) -> BioFrame:
+    """Gene-set score (mean of set − mean of expression-matched control genes),
+    reproducing ``sc.tl.score_genes`` including its control-gene sampling."""
+    names = bf.var_names
+    pos = {n: i for i, n in enumerate(names)}
+    glist = [g for g in dict.fromkeys(gene_list) if g in pos]
+    if not glist:
+        raise ValueError("no genes of gene_list are in var")
+    n = bf.n_obs
+    st = gene_stats(bf)
+    obs_avg = st[:, 0] / n
+    finite = np.isfinite(obs_avg)
+    pool = np.flatnonzero(finite)
+    avg = obs_avg[pool]
+    sorted_avg = np.sort(avg)
+    rank_min = np.searchsorted(sorted_avg, avg, side="left") + 1.0  # pandas rank(method="min")
+    n_items = int(np.round(len(avg) / (n_bins - 1)))
+    cut = rank_min // n_items
+    cut_of = dict(zip(pool.tolist(), cut.tolist()))
+    in_list = np.isin(pool, [pos[g] for g in glist])
+    rs = np.random.RandomState(random_state)  # same stream as scanpy's np.random.seed
+    ctrl = set()
+    for c in np.unique([cut_of[pos[g]] for g in glist if pos[g] in cut_of]):
+        sel = (cut == c) & (np.ones_like(in_list) if ctrl_as_ref else ~in_list)
+        r_genes = pool[sel]
+        if ctrl_size < len(r_genes):
+            r_genes = r_genes[rs.choice(len(r_genes), ctrl_size, replace=False)]
+        if ctrl_as_ref:
+            r_genes = r_genes[~np.isin(r_genes, [pos[g] for g in glist])]
+        ctrl.update(r_genes.tolist())
+    if not ctrl:
+        raise RuntimeError("no control genes found")
+    w = np.zeros(bf.n_vars, np.float64)
+    w[[pos[g] for g in glist]] += 1.0 / len(glist)
+    w[sorted(ctrl)] -= 1.0 / len(ctrl)
+    score = np.zeros(n, np.float64)
+    for ctx in bf.iter_ctx():
+        _native.weighted_row_sums(*ctx, w, score)
+    bf.obs = bf.obs.with_columns(pl.Series(score_name, score))
+    return bf

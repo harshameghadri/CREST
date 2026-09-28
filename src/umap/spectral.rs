@@ -1,166 +1,129 @@
-//! Spectral Initialization via Laplacian Eigenmaps
+//! Spectral initialisation (Laplacian eigenmaps), as umap-learn's `spectral_layout`.
 //!
-//! Because UMAP requires initializing the embedding to preserve global topology,
-//! we compute the eigenvectors corresponding to the largest eigenvalues of the
-//! normalized adjacency matrix M = D^{-1/2} A D^{-1/2}.
-//! Since we only need the top d+1 eigenvectors, Subspace Iteration (Simultaneous Iteration)
-//! is exceptionally fast and bypasses the need for heavy ARPACK bindings.
+//! Top eigenvectors of M = D^{-1/2} A D^{-1/2} (equivalently the smallest of the
+//! normalised Laplacian) by block subspace iteration on (M + I)/2 with the known
+//! trivial eigenvector D^{1/2}1 deflated, followed by a Rayleigh-Ritz step.
 
-use rand::Rng;
+use faer::Mat;
+use rand::SeedableRng;
+use rand_distr::{Distribution, StandardNormal};
 use rayon::prelude::*;
 
-/// Initializes the embedding coordinates using Laplacian Eigenmaps (Spectral Embedding).
-/// 
-/// Calculates the eigenvectors of the Random Walk Normalized Graph Laplacian:
-///     $ \mathbf{L}_{rw} = \mathbf{I} - \mathbf{D}^{-1/2} \mathbf{A} \mathbf{D}^{-1/2} $
-/// 
-/// Rather than using complex iterative solvers like ARPACK, this uses a robust, 
-/// multi-threaded Sparse Subspace Iteration method:
-/// 1. Initialize random orthornormal basis $\mathbf{V}$
-/// 2. Iteratively multiply $\mathbf{V}_{new} = (\mathbf{I} + \mathbf{D}^{-1/2}\mathbf{A}\mathbf{D}^{-1/2}) \mathbf{V}$
-/// 3. Orthogonalize $\mathbf{V}_{new}$ using Modified Gram-Schmidt
+/// Returns an n × n_components row-major embedding (unscaled eigenvectors).
 pub fn spectral_layout(
     graph: &super::graph::UmapGraph,
     n_components: usize,
     max_iter: usize,
-) -> Vec<Vec<f32>> {
-    // Determine N (number of vertices)
-    let n = graph.edges.iter()
-        .map(|e| e.source.max(e.target))
-        .max()
-        .map(|max_idx| max_idx + 1)
-        .unwrap_or(0);
-
-    if n <= n_components {
-        // Fallback or empty
-        let mut rng = rand::thread_rng();
-        let mut fallback = vec![vec![0.0; n_components]; n];
-        for row in &mut fallback {
-            for val in row.iter_mut() {
-                *val = rng.gen_range(-10.0..10.0);
-            }
-        }
-        return fallback;
+    seed: u64,
+) -> Vec<f32> {
+    let n = graph.n;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    if n <= n_components + 2 || graph.edges.is_empty() {
+        return (0..n * n_components).map(|_| StandardNormal.sample(&mut rng)).collect();
     }
 
-    // 1. Compute Degree Matrix D
-    let mut degrees = vec![0.0f32; n];
+    // CSR of the symmetric graph
+    let mut deg = vec![0.0f64; n];
+    let mut cnt = vec![0usize; n + 1];
     for e in &graph.edges {
-        degrees[e.source] += e.weight;
+        deg[e.source] += e.weight as f64;
+        cnt[e.source + 1] += 1;
     }
-
-    // 2. Compute D^{-1/2} values
-    let d_inv_sqrt: Vec<f32> = degrees.into_iter().map(|d| {
-        if d > 1e-8 { d.powf(-0.5) } else { 0.0 }
-    }).collect();
-
-    // 3. Build CSR representation of M = D^{-1/2} A D^{-1/2} for fast SpMV
-    // First, count edges per row
-    let mut row_counts = vec![0usize; n];
-    for e in &graph.edges {
-        row_counts[e.source] += 1;
-    }
-    
-    let mut row_ptrs = vec![0usize; n + 1];
     for i in 0..n {
-        row_ptrs[i + 1] = row_ptrs[i] + row_counts[i];
+        cnt[i + 1] += cnt[i];
     }
-    
-    let nnz = row_ptrs[n];
-    let mut col_indices = vec![0usize; nnz];
-    let mut values = vec![0.0f32; nnz];
-    
-    // We reuse row_counts to keep track of insertion positions
-    let mut current_pos = row_ptrs[..n].to_vec();
+    let mut pos = cnt[..n].to_vec();
+    let mut col = vec![0usize; cnt[n]];
+    let mut val = vec![0.0f64; cnt[n]];
+    let dis: Vec<f64> = deg.iter().map(|&d| if d > 0.0 { 1.0 / d.sqrt() } else { 0.0 }).collect();
     for e in &graph.edges {
-        let pos = current_pos[e.source];
-        col_indices[pos] = e.target;
-        // Apply D^{-1/2} scaling symmetrically
-        values[pos] = e.weight * d_inv_sqrt[e.source] * d_inv_sqrt[e.target];
-        current_pos[e.source] += 1;
+        let p = pos[e.source];
+        col[p] = e.target;
+        val[p] = e.weight as f64 * dis[e.source] * dis[e.target];
+        pos[e.source] += 1;
     }
 
-    // 4. Subspace Iteration to find largest `k` eigenvectors
-    let k = n_components + 1;
-    
-    // Initialize dense matrix V of size (N x k) with random normal values
-    // Using flat vector representation for V: V[i * k + j] is the j-th component of the i-th point
-    let mut v = vec![0.0f32; n * k];
-    let mut rng = rand::thread_rng();
-    for val in &mut v {
-        // Box-Muller transform for N(0, 1)
-        let u1: f32 = rng.gen_range(0.0001..1.0);
-        let u2: f32 = rng.gen_range(0.0001..1.0);
-        *val = (-2.0f32 * u1.ln()).sqrt() * (2.0f32 * std::f32::consts::PI * u2).cos();
-    }
-    
-    // Iteration parameters
-    for _iter in 0..max_iter {
-        // (a) V_new = M * V
-        // Parallel SpMM (Sparse Matrix - Dense Matrix multiply)
-        let mut v_new = vec![0.0f32; n * k];
-        v_new.par_chunks_exact_mut(k).enumerate().for_each(|(i, row_out)| {
-            let start = row_ptrs[i];
-            let end = row_ptrs[i + 1];
-            
-            for ptr in start..end {
-                let j = col_indices[ptr];
-                let val = values[ptr];
-                let v_j_start = j * k;
-                
-                for c in 0..k {
-                    row_out[c] += val * v[v_j_start + c];
-                }
+    // trivial eigenvector
+    let mut v0: Vec<f64> = deg.iter().map(|d| d.sqrt()).collect();
+    let nv0 = v0.iter().map(|x| x * x).sum::<f64>().sqrt().max(1e-300);
+    v0.iter_mut().for_each(|x| *x /= nv0);
+
+    let m = n_components + 2; // guard vectors speed convergence
+    // column-major n × m
+    let mut v: Vec<f64> = (0..n * m).map(|_| StandardNormal.sample(&mut rng)).collect();
+
+    let orthonormalize = |v: &mut Vec<f64>| {
+        for c in 0..m {
+            let (head, tail) = v.split_at_mut(c * n);
+            let col_c = &mut tail[..n];
+            // deflate trivial vector
+            let dot0: f64 = col_c.iter().zip(&v0).map(|(a, b)| a * b).sum();
+            col_c.iter_mut().zip(&v0).for_each(|(a, b)| *a -= dot0 * b);
+            for p in 0..c {
+                let col_p = &head[p * n..(p + 1) * n];
+                let dot: f64 = col_c.iter().zip(col_p).map(|(a, b)| a * b).sum();
+                col_c.iter_mut().zip(col_p).for_each(|(a, b)| *a -= dot * b);
             }
-            // Add Identity (M + I) to shift spectrum and avoid negative eigenvalue oscillations
-            for c in 0..k {
-                row_out[c] += v[i * k + c];
+            let nrm = col_c.iter().map(|x| x * x).sum::<f64>().sqrt();
+            let nrm = if nrm > 1e-300 { nrm } else { 1.0 };
+            col_c.iter_mut().for_each(|x| *x /= nrm);
+        }
+    };
+    let apply = |v: &[f64]| -> Vec<f64> {
+        // (M + I)/2 applied to every column
+        let mut out = vec![0.0f64; n * m];
+        out.par_chunks_mut(n).enumerate().for_each(|(c, oc)| {
+            let vc = &v[c * n..(c + 1) * n];
+            for i in 0..n {
+                let mut s = vc[i];
+                for p in cnt[i]..cnt[i + 1] {
+                    s += val[p] * vc[col[p]];
+                }
+                oc[i] = 0.5 * s;
             }
         });
-        
-        // (b) Orthogonalize V_new using Modified Gram-Schmidt over columns
-        // We transpose logic to operate on columns sequentially, since MGS depends on previous columns
-        for c in 0..k {
-            // Compute norm of column c
-            let mut norm_sq = 0.0f32;
-            for i in 0..n {
-                let val = v_new[i * k + c];
-                norm_sq += val * val;
-            }
-            let norm = if norm_sq > 1e-12 { norm_sq.sqrt() } else { 1.0 };
-            
-            // Normalize column c
-            for i in 0..n {
-                v_new[i * k + c] /= norm;
-            }
-            
-            // Orthogonalize subsequent columns
-            for next_c in (c + 1)..k {
-                let mut dot = 0.0f32;
+        out
+    };
+
+    orthonormalize(&mut v);
+    for _ in 0..max_iter.max(1) {
+        v = apply(&v);
+        orthonormalize(&mut v);
+    }
+
+    // Rayleigh-Ritz: order the subspace by eigenvalue of (M + I)/2
+    let mv = apply(&v);
+    let h = Mat::<f64>::from_fn(m, m, |a, b| {
+        v[a * n..(a + 1) * n].iter().zip(&mv[b * n..(b + 1) * n]).map(|(x, y)| x * y).sum()
+    });
+    let hs = Mat::<f64>::from_fn(m, m, |a, b| 0.5 * (h[(a, b)] + h[(b, a)]));
+    let mut emb = vec![0.0f32; n * n_components];
+    let eig = hs.self_adjoint_eigen(faer::Side::Lower);
+    crate::simd::clean_simd_state();
+    match eig {
+        Ok(eig) => {
+            let u = eig.U();
+            // eigenvalues ascending: take the largest n_components
+            for c in 0..n_components {
+                let src = m - 1 - c;
                 for i in 0..n {
-                    dot += v_new[i * k + c] * v_new[i * k + next_c];
-                }
-                for i in 0..n {
-                    v_new[i * k + next_c] -= dot * v_new[i * k + c];
+                    let mut s = 0.0;
+                    for a in 0..m {
+                        s += v[a * n + i] * u[(a, src)];
+                    }
+                    emb[i * n_components + c] = s as f32;
                 }
             }
         }
-        
-        v = v_new;
-    }
-
-    // 5. Extract results (skip the first eigenvector which corresponds to constant eigenvalue 1)
-    let mut embedding = vec![vec![0.0f32; n_components]; n];
-    for i in 0..n {
-        for c in 0..n_components {
-            // Scale and map to components (c+1 corresponds to ignoring the 0th trivial eigenvector)
-            // UMAP additionally scales by dividing by the second highest eigenvalue, 
-            // but just returning the vectors is standard spectral embedding.
-            embedding[i][c] = d_inv_sqrt[i] * v[i * k + (c + 1)];
+        Err(_) => {
+            for c in 0..n_components {
+                for i in 0..n {
+                    emb[i * n_components + c] = v[c * n + i] as f32;
+                }
+            }
         }
     }
-
-    embedding
+    emb
 }
 
 #[cfg(test)]
@@ -169,28 +132,37 @@ mod tests {
     use super::super::graph::{Edge, UmapGraph};
 
     #[test]
-    fn test_spectral_layout() {
-        // A simple path graph 0 - 1 - 2 - 3
-        let edges = vec![
-            Edge { source: 0, target: 1, weight: 1.0 },
-            Edge { source: 1, target: 0, weight: 1.0 },
-            Edge { source: 1, target: 2, weight: 1.0 },
-            Edge { source: 2, target: 1, weight: 1.0 },
-            Edge { source: 2, target: 3, weight: 1.0 },
-            Edge { source: 3, target: 2, weight: 1.0 },
-        ];
-        
-        let graph = UmapGraph { edges };
-        let embedding = spectral_layout(&graph, 2, 50);
-        
-        // Ensure the embedding has 4 nodes and 2 components
-        assert_eq!(embedding.len(), 4);
-        assert_eq!(embedding[0].len(), 2);
-        
-        // Spectral layout on a path graph should separate the endpoints (0 and 3) the most.
-        let dist_0_3 = (embedding[0][0] - embedding[3][0]).powi(2) + (embedding[0][1] - embedding[3][1]).powi(2);
-        let dist_0_1 = (embedding[0][0] - embedding[1][0]).powi(2) + (embedding[0][1] - embedding[1][1]).powi(2);
-        
-        assert!(dist_0_3 > dist_0_1, "Endpoints 0 and 3 should be further apart than connected nodes 0 and 1");
+    fn test_spectral_layout_path_graph() {
+        // path graph 0-1-...-19: the random-walk Fiedler vector D^{-1/2} v is
+        // monotone along the path (v itself is not, at the degree-1 endpoints)
+        let n = 20;
+        let mut edges = vec![];
+        for i in 0..n - 1 {
+            edges.push(Edge { source: i, target: i + 1, weight: 1.0 });
+            edges.push(Edge { source: i + 1, target: i, weight: 1.0 });
+        }
+        let graph = UmapGraph { n, edges };
+        let emb = spectral_layout(&graph, 2, 2000, 0);
+        assert_eq!(emb.len(), n * 2);
+        let first: Vec<f32> = (0..n)
+            .map(|i| emb[i * 2] / if i == 0 || i == n - 1 { 1.0 } else { 2f32.sqrt() })
+            .collect();
+        let inc = first.windows(2).all(|w| w[0] < w[1]);
+        let dec = first.windows(2).all(|w| w[0] > w[1]);
+        assert!(inc || dec, "Fiedler vector not monotone: {:?}", first);
+    }
+
+    #[test]
+    fn test_spectral_deterministic() {
+        let mut edges = vec![];
+        for i in 0..50usize {
+            let j = (i * 7 + 3) % 50;
+            if i != j {
+                edges.push(Edge { source: i, target: j, weight: 1.0 });
+                edges.push(Edge { source: j, target: i, weight: 1.0 });
+            }
+        }
+        let g = UmapGraph { n: 50, edges };
+        assert_eq!(spectral_layout(&g, 2, 30, 5), spectral_layout(&g, 2, 30, 5));
     }
 }

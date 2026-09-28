@@ -1,19 +1,6 @@
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
-use instant_distance::{Builder, Point, Search};
-
-/// PCA point for HNSW distance computation
-#[derive(Clone, Debug)]
-struct PcaPoint(Vec<f32>);
-
-impl Point for PcaPoint {
-    fn distance(&self, other: &Self) -> f32 {
-        self.0.iter().zip(other.0.iter())
-            .map(|(a, b)| (a - b).powi(2))
-            .sum::<f32>()
-            .sqrt()
-    }
-}
+use crate::knn::hnsw_knn;
 
 /// Unpack PCA coordinates from either:
 /// (a) a normal multi-row DataFrame (n_cells rows, each is List(f32))
@@ -85,30 +72,14 @@ fn compute_neighbors(inputs: &[Series]) -> PolarsResult<Series> {
         return Ok(Series::new("neighbors".into(), vec![empty]));
     }
 
-    let k = k.min(n_cells - 1);
-
-    // Build HNSW index
-    let points: Vec<PcaPoint> = raw_data.iter().map(|v| PcaPoint(v.clone())).collect();
-    let (hnsw, _ids) = Builder::default()
-        .ef_construction(200)
-        .build_hnsw(points.clone());
-
-    // Query KNN for each cell
+    // Query KNN for each cell (true row indices, self excluded)
+    let knn = hnsw_knn(&raw_data, k);
     let mut cell_neighbors: Vec<Series> = Vec::with_capacity(n_cells);
-    let mut search = Search::default();
-
-    for (i, point) in points.iter().enumerate() {
-        let results = hnsw.search(point, &mut search);
-        let mut flat: Vec<f32> = Vec::with_capacity(k * 2);
-        for item in results.take(k + 1) {
-            let j = item.pid.into_inner() as usize;
-            if j != i {
-                flat.push(j as f32);
-                flat.push(item.distance);
-            }
-            if flat.len() >= k * 2 {
-                break;
-            }
+    for (indices, dists) in knn {
+        let mut flat: Vec<f32> = Vec::with_capacity(indices.len() * 2);
+        for (j, d) in indices.into_iter().zip(dists) {
+            flat.push(j as f32);
+            flat.push(d);
         }
         cell_neighbors.push(Series::new("".into(), flat));
     }
@@ -139,33 +110,12 @@ fn compute_connectivities(inputs: &[Series]) -> PolarsResult<Series> {
         return Ok(Series::new("connectivities".into(), vec![empty]));
     }
 
-    let k = k.min(n_cells - 1);
-
-    // Build HNSW index
-    let points: Vec<PcaPoint> = raw_data.iter().map(|v| PcaPoint(v.clone())).collect();
-    let (hnsw, _ids) = Builder::default()
-        .ef_construction(200)
-        .build_hnsw(points.clone());
-
-    // Collect KNN for all cells
+    // Collect KNN for all cells (true row indices, self excluded)
     let mut all_kth_dists: Vec<f32> = Vec::with_capacity(n_cells);
     let mut all_neighbors: Vec<Vec<(usize, f32)>> = Vec::with_capacity(n_cells);
-    let mut search = Search::default();
-
-    for (i, point) in points.iter().enumerate() {
-        let results = hnsw.search(point, &mut search);
-        let mut cell_nn: Vec<(usize, f32)> = Vec::with_capacity(k);
-        for item in results.take(k + 1) {
-            let j = item.pid.into_inner() as usize;
-            if j != i {
-                cell_nn.push((j, item.distance));
-            }
-            if cell_nn.len() >= k {
-                break;
-            }
-        }
-        let kth_dist = cell_nn.last().map(|x| x.1).unwrap_or(1.0);
-        all_kth_dists.push(kth_dist);
+    for (indices, dists) in hnsw_knn(&raw_data, k) {
+        let cell_nn: Vec<(usize, f32)> = indices.into_iter().zip(dists).collect();
+        all_kth_dists.push(cell_nn.last().map(|x| x.1).unwrap_or(1.0));
         all_neighbors.push(cell_nn);
     }
 
@@ -191,24 +141,6 @@ fn compute_connectivities(inputs: &[Series]) -> PolarsResult<Series> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_hnsw_basic() {
-        let points = vec![
-            PcaPoint(vec![0.0, 0.0]),
-            PcaPoint(vec![1.0, 0.0]),
-            PcaPoint(vec![10.0, 10.0]),
-        ];
-
-        let (hnsw, _ids) = Builder::default()
-            .build_hnsw(points.clone());
-
-        let mut search = Search::default();
-        let results: Vec<_> = hnsw.search(&points[0], &mut search).take(2).collect();
-
-        // Most results should contain point 0 (self) and point 1 (nearest)
-        assert!(!results.is_empty());
-    }
 
     #[test]
     fn test_unpack_pca_flat() {

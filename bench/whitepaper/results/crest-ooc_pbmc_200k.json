@@ -1,0 +1,56 @@
+{
+  "tool": "crest-ooc",
+  "data": "pbmc_200k.h5",
+  "n_cells": 195479,
+  "total_seconds": 282.8847781450004,
+  "baseline_rss_gb": 0.413192192,
+  "peak_rss_gb": 1.031274496,
+  "steps": {
+    "read": {
+      "seconds": 33.95515386700026,
+      "peak_rss_gb": 0.499326976
+    },
+    "qc_filter": {
+      "seconds": 10.804396227000325,
+      "peak_rss_gb": 0.654475264
+    },
+    "normalize_log1p": {
+      "seconds": 1.3349999790079892e-05,
+      "peak_rss_gb": 0.442372096
+    },
+    "hvg": {
+      "seconds": 7.859501662000184,
+      "peak_rss_gb": 0.643575808
+    },
+    "scale_pca": {
+      "seconds": 14.953908816998592,
+      "peak_rss_gb": 0.65370112
+    },
+    "neighbors": {
+      "seconds": 4.648366979999992,
+      "peak_rss_gb": 0.597123072
+    },
+    "leiden": {
+      "seconds": 2.440643482001178,
+      "peak_rss_gb": 0.778166272
+    },
+    "umap": {
+      "seconds": 26.568403190000026,
+      "peak_rss_gb": 0.754970624
+    },
+    "de_ttest": {
+      "seconds": 12.976397786000234,
+      "peak_rss_gb": 0.769507328
+    },
+    "de_wilcoxon": {
+      "seconds": 168.5530448289992,
+      "peak_rss_gb": 1.031274496
+    }
+  },
+  "machine": {
+    "cpu": "x86_64",
+    "cores": 4,
+    "ram_gb": 16.87754752,
+    "python": "3.11.15"
+  }
+}

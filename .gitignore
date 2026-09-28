@@ -78,6 +78,7 @@ docs/_build/
 
 # Large datasets and data files
 data/
+!tests/data/
 *.h5
 *.mtx
 *.mtx.gz
@@ -109,4 +110,8 @@ research/
 # Misc
 .ruff_cache/
 .claude/
-CLAUDE.md
+
+# Local benchmark runs
+.venv-bench/
+bench_data/
+bench_results/

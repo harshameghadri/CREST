@@ -1,6 +1,11 @@
-use instant_distance::{Builder, Point, Search};
+//! Fuzzy simplicial set (UMAP / scanpy `connectivities`) from a kNN graph.
+//!
+//! Follows umap-learn's `smooth_knn_dist` + `compute_membership_strengths` +
+//! fuzzy union exactly, with the scanpy convention that `n_neighbors` counts
+//! the cell itself (so the kNN graph holds `n_neighbors - 1` true neighbours).
+
+use crate::knn::{knn, KnnGraph, Points};
 use rayon::prelude::*;
-use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct Edge {
@@ -9,144 +14,107 @@ pub struct Edge {
     pub weight: f32,
 }
 
+/// Symmetric weighted graph; `edges` lists both (i, j) and (j, i).
 pub struct UmapGraph {
+    pub n: usize,
     pub edges: Vec<Edge>,
 }
 
-/// PCA point for HNSW distance computation
-#[derive(Clone, Debug)]
-struct PcaPoint(Vec<f32>);
+const SMOOTH_K_TOLERANCE: f64 = 1e-5;
+const MIN_K_DIST_SCALE: f64 = 1e-3;
 
-impl Point for PcaPoint {
-    fn distance(&self, other: &Self) -> f32 {
-        self.0.iter().zip(other.0.iter())
-            .map(|(a, b)| (a - b).powi(2))
-            .sum::<f32>()
-            .sqrt()
-    }
-}
-
-pub fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| (x - y).powi(2)).sum::<f32>().sqrt()
-}
-
-pub fn build_fuzzy_simplicial_set(
-    data: &[Vec<f32>],
-    n_neighbors: usize,
-) -> UmapGraph {
-    let n = data.len();
-    if n == 0 {
-        return UmapGraph { edges: vec![] };
-    }
-
-    let k = n_neighbors.min(n - 1);
-    if k == 0 {
-        return UmapGraph { edges: vec![] };
-    }
-    let target_sum = (k as f32).log2();
-
-    // 1. Build HNSW index for O(n log n) approximate KNN
-    let points: Vec<PcaPoint> = data.iter().map(|v| PcaPoint(v.clone())).collect();
-    let (hnsw, _ids) = Builder::default()
-        .ef_construction(200)
-        .build_hnsw(points.clone());
-
-    // 2. Find k nearest neighbors for each point using HNSW
-    // Note: instant-distance's search is NOT thread-safe with shared Search state,
-    // so we build results sequentially (HNSW query is already fast: O(log n) per query)
-    let mut knn_results: Vec<(Vec<usize>, Vec<f32>)> = Vec::with_capacity(n);
-    let mut search = Search::default();
-
-    for (cell_idx, point) in points.iter().enumerate() {
-        let results = hnsw.search(point, &mut search);
-        let mut indices = Vec::with_capacity(k);
-        let mut distances = Vec::with_capacity(k);
-        for item in results.take(k + 1) {
-            let idx = item.pid.into_inner() as usize;
-            if idx != cell_idx {
-                indices.push(idx);
-                distances.push(item.distance);
-            }
-            if indices.len() >= k {
-                break;
+/// Per-cell (rho, sigma) of umap-learn's smooth_knn_dist (local_connectivity = 1).
+fn smooth_knn_dist(dists: &[f32], k: usize, n_neighbors: usize, mean_all: f64) -> (f64, f64) {
+    let target = (n_neighbors as f64).log2();
+    let rho = dists.iter().copied().find(|&d| d > 0.0).map(|d| d as f64).unwrap_or(0.0);
+    let (mut lo, mut hi, mut mid) = (0.0f64, f64::INFINITY, 1.0f64);
+    for _ in 0..64 {
+        let mut psum = 0.0;
+        for &d in &dists[..k] {
+            let v = d as f64 - rho;
+            psum += if v > 0.0 { (-v / mid).exp() } else { 1.0 };
+        }
+        if (psum - target).abs() < SMOOTH_K_TOLERANCE {
+            break;
+        }
+        if psum > target {
+            hi = mid;
+            mid = (lo + hi) / 2.0;
+        } else {
+            lo = mid;
+            if hi == f64::INFINITY {
+                mid *= 2.0;
+            } else {
+                mid = (lo + hi) / 2.0;
             }
         }
-        knn_results.push((indices, distances));
     }
+    // mean over the umap distance row, which includes self at distance 0
+    let mean_i = dists[..k].iter().map(|&d| d as f64).sum::<f64>() / (k + 1) as f64;
+    let floor = if rho > 0.0 { MIN_K_DIST_SCALE * mean_i } else { MIN_K_DIST_SCALE * mean_all };
+    (rho, mid.max(floor))
+}
 
-    // 3. Compute rho, sigma, and asymmetric weights (UMAP membership strengths)
-    let asymmetric_edges: Vec<Vec<(usize, f32)>> = knn_results.into_par_iter().map(|(indices, dists)| {
-        let rho = dists.first().copied().unwrap_or(0.0);
+/// Fuzzy simplicial set of a kNN graph whose rows hold `n_neighbors - 1` neighbours.
+pub fn fuzzy_simplicial_set(g: &KnnGraph, n_neighbors: usize) -> UmapGraph {
+    let (n, k) = (g.n, g.k);
+    if n == 0 || k == 0 {
+        return UmapGraph { n, edges: vec![] };
+    }
+    let mean_all = g.distances.iter().map(|&d| d as f64).sum::<f64>() / (n * (k + 1)) as f64;
 
-        // Binary search for sigma such that sum of membership strengths = log2(k)
-        let mut lo = 0.0;
-        let mut hi = 1e6;
-        let mut sigma = 1.0;
-
-        for _ in 0..64 {
-            let mut sum: f32 = 0.0;
-            for &d in &dists {
-                let val = d - rho;
-                if val > 0.0 {
-                    sum += (-val / sigma).exp();
-                } else {
-                    sum += 1.0;
+    // Directed membership strengths keyed by the unordered pair.
+    let mut entries: Vec<(u64, f32)> = (0..n)
+        .into_par_iter()
+        .flat_map_iter(|i| {
+            let d = &g.distances[i * k..(i + 1) * k];
+            let idx = &g.indices[i * k..(i + 1) * k];
+            let (rho, sigma) = smooth_knn_dist(d, k, n_neighbors, mean_all);
+            idx.iter().zip(d).filter_map(move |(&j, &dist)| {
+                if j == u32::MAX || j as usize == i {
+                    return None;
                 }
-            }
+                let v = dist as f64 - rho;
+                let w = if v <= 0.0 || sigma == 0.0 { 1.0 } else { (-v / sigma).exp() };
+                let (a, b) = if (i as u32) < j { (i as u64, j as u64) } else { (j as u64, i as u64) };
+                Some(((a << 32) | b, w as f32))
+            })
+        })
+        .collect();
+    entries.par_sort_unstable_by_key(|e| e.0);
 
-            if (sum - target_sum).abs() < 1e-5 {
-                break;
-            }
-
-            if sum > target_sum {
-                hi = sigma;
-                sigma = (lo + hi) / 2.0;
-            } else {
-                lo = sigma;
-                sigma = if hi > 1e5 { sigma * 2.0 } else { (lo + hi) / 2.0 };
-            }
+    // Fuzzy union: w = a + b - a*b when both directions exist.
+    let mut edges = Vec::with_capacity(entries.len() * 2);
+    let mut p = 0;
+    while p < entries.len() {
+        let (key, mut w) = entries[p];
+        let mut q = p + 1;
+        while q < entries.len() && entries[q].0 == key {
+            let b = entries[q].1;
+            w = w + b - w * b;
+            q += 1;
         }
-
-        // Compute membership strengths
-        indices.into_iter().zip(dists.into_iter()).map(|(j, d)| {
-            let val = d - rho;
-            let weight = if val > 0.0 {
-                (-val / sigma).exp()
-            } else {
-                1.0
-            };
-            (j, weight)
-        }).collect()
-    }).collect();
-
-    // 4. Symmetrize Graph: B = A + A^T - A * A^T
-    let mut weight_map: HashMap<(usize, usize), f32> = HashMap::new();
-    for (i, edges) in asymmetric_edges.iter().enumerate() {
-        for &(j, w) in edges {
-            weight_map.insert((i, j), w);
+        if w > 0.0 {
+            let (a, b) = ((key >> 32) as usize, (key & 0xffff_ffff) as usize);
+            edges.push(Edge { source: a, target: b, weight: w });
+            edges.push(Edge { source: b, target: a, weight: w });
         }
+        p = q;
     }
+    UmapGraph { n, edges }
+}
 
-    let mut symmetric_graph: HashMap<(usize, usize), f32> = HashMap::new();
-
-    for i in 0..n {
-        for &(j, weight_ij) in &asymmetric_edges[i] {
-            let weight_ji = weight_map.get(&(j, i)).copied().unwrap_or(0.0);
-            let sym_weight = weight_ij + weight_ji - (weight_ij * weight_ji);
-
-            if sym_weight > 0.0 {
-                symmetric_graph.insert((i, j), sym_weight);
-                symmetric_graph.insert((j, i), sym_weight);
-            }
-        }
+/// kNN (via `crate::knn`) + fuzzy simplicial set from dense rows.
+/// `n_neighbors` includes the cell itself (scanpy convention).
+pub fn build_fuzzy_simplicial_set(data: &[Vec<f32>], n_neighbors: usize) -> UmapGraph {
+    let n = data.len();
+    if n < 2 || n_neighbors < 2 {
+        return UmapGraph { n, edges: vec![] };
     }
-
-    // 5. Convert to Edge List
-    let edges: Vec<Edge> = symmetric_graph.into_iter().map(|((src, tgt), w)| {
-        Edge { source: src, target: tgt, weight: w }
-    }).collect();
-
-    UmapGraph { edges }
+    let d = data[0].len();
+    let flat: Vec<f32> = data.iter().flat_map(|r| r.iter().copied()).collect();
+    let g = knn(Points::new(&flat, n, d), n_neighbors - 1, None, 0);
+    fuzzy_simplicial_set(&g, n_neighbors)
 }
 
 #[cfg(test)]
@@ -155,44 +123,36 @@ mod tests {
 
     #[test]
     fn test_fuzzy_simplicial_set() {
-        let data = vec![
-            vec![0.0, 0.0],
-            vec![0.1, 0.1],
-            vec![1.0, 1.0],
-            vec![1.1, 1.1],
-        ];
-
+        let data = vec![vec![0.0, 0.0], vec![0.1, 0.1], vec![1.0, 1.0], vec![1.1, 1.1]];
         let graph = build_fuzzy_simplicial_set(&data, 2);
-
-        assert!(!graph.edges.is_empty(), "Graph should not be empty");
-
-        let mut saw_0_1 = false;
-        let mut saw_2_3 = false;
-
+        assert_eq!(graph.n, 4);
+        let has = |a: usize, b: usize| graph.edges.iter().any(|e| e.source == a && e.target == b);
+        assert!(has(0, 1) && has(1, 0) && has(2, 3) && has(3, 2));
+        // symmetric weights
         for e in &graph.edges {
-            if (e.source == 0 && e.target == 1) || (e.source == 1 && e.target == 0) {
-                saw_0_1 = true;
-            }
-            if (e.source == 2 && e.target == 3) || (e.source == 3 && e.target == 2) {
-                saw_2_3 = true;
-            }
+            let back = graph.edges.iter().find(|f| f.source == e.target && f.target == e.source).unwrap();
+            assert_eq!(e.weight, back.weight);
         }
+    }
 
-        assert!(saw_0_1, "Expected edge between 0 and 1");
-        assert!(saw_2_3, "Expected edge between 2 and 3");
+    #[test]
+    fn test_sigma_hits_target() {
+        // membership strengths of each row sum to log2(n_neighbors)
+        let d = [1.0f32, 1.5, 2.0, 2.2, 3.0];
+        let (rho, sigma) = smooth_knn_dist(&d, 5, 6, 1.0);
+        let s: f64 = d.iter().map(|&x| { let v = x as f64 - rho; if v > 0.0 { (-v / sigma).exp() } else { 1.0 } }).sum();
+        assert!((s - 6f64.log2()).abs() < 1e-4);
     }
 
     #[test]
     fn test_empty_data() {
         let data: Vec<Vec<f32>> = vec![];
-        let graph = build_fuzzy_simplicial_set(&data, 5);
-        assert!(graph.edges.is_empty());
+        assert!(build_fuzzy_simplicial_set(&data, 5).edges.is_empty());
     }
 
     #[test]
     fn test_single_point() {
         let data = vec![vec![1.0, 2.0, 3.0]];
-        let graph = build_fuzzy_simplicial_set(&data, 5);
-        assert!(graph.edges.is_empty());
+        assert!(build_fuzzy_simplicial_set(&data, 5).edges.is_empty());
     }
 }

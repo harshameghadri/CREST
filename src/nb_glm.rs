@@ -28,7 +28,7 @@ fn deseq2_irls(inputs: &[Series]) -> PolarsResult<Series> {
     // We will output the fitted beta coefficients as a List of length `num_covariates`
     let mut all_betas: Vec<Option<Series>> = Vec::with_capacity(ca_counts.len());
     
-    for ((((opt_counts, opt_sf), opt_design), opt_disp)) in ca_counts.into_iter()
+    for (((opt_counts, opt_sf), opt_design), opt_disp) in ca_counts.into_iter()
         .zip(ca_size_factors.into_iter())
         .zip(ca_design.into_iter())
         .zip(ca_disp.into_iter()) {
@@ -158,13 +158,12 @@ fn deseq2_irls(inputs: &[Series]) -> PolarsResult<Series> {
             let out_series = Series::new("beta".into(), &beta_vec);
             all_betas.push(Some(out_series));
         } else {
-            // StatsModels returns zeros when IRLS fails to converge. 
-            // Mirroring that behavior to maintain output shape matching.
-            let zeros = vec![0.0f32; num_covariates];
-            all_betas.push(Some(Series::new("beta".into(), &zeros)));
+            // Not converged: return null rather than zeros, which would be
+            // indistinguishable from a genuine zero effect.
+            all_betas.push(None);
         }
     }
-    
+
     // We return a ListChunked array where each row contains the list of Beta coefficients
     let mut builder = ListPrimitiveChunkedBuilder::<Float32Type>::new("beta".into(), all_betas.len(), all_betas.len() * num_covariates, DataType::Float32);
     
