@@ -144,7 +144,8 @@ def step_table(df: pl.DataFrame) -> pl.DataFrame:
         for s in steps:
             v = g[f"step:{s}"].drop_nulls().to_numpy()
             if len(v):
-                p = g[f"par:{s}"].drop_nulls().to_numpy()
+                # CPU/wall is meaningless for steps shorter than the timer resolution (lazy steps)
+                p = g[f"par:{s}"].drop_nulls().to_numpy() if np.median(v) >= 0.05 else np.array([])
                 m = g[f"mem:{s}"].drop_nulls().to_numpy()
                 rows.append({"dataset": ds, "tool": tool, "step": s, "median_s": float(np.median(v)), "iqr_s": iqr(v),
                              "parallelism": float(np.median(p)) if len(p) else None,
@@ -340,6 +341,34 @@ def to_latex(df: pl.DataFrame, path: Path, caption: str):
     path.write_text("\n".join(lines) + "\n")
 
 
+def compact_main(t: pl.DataFrame) -> pl.DataFrame:
+    """Readable summary: median [IQR] per tool, speedup and memory ratio with CIs."""
+    rows = []
+    for r in t.iter_rows(named=True):
+        row = {"dataset": r["dataset"], "cells": r["n_cells"]}
+        for tool in TOOLS:
+            if r.get(f"{tool}_time_median") is not None:
+                row[f"{LABELS[tool]} time (s)"] = f"{r[f'{tool}_time_median']:.3g} [{r[f'{tool}_time_iqr']:.2g}]"
+                row[f"{LABELS[tool]} memory (GB)"] = f"{r[f'{tool}_mem_median']:.3g}"
+            elif r.get(f"{tool}_failed"):
+                row[f"{LABELS[tool]} time (s)"] = "failed"
+        if r.get("speedup") is not None:
+            row["speedup (95% CI)"] = f"{r['speedup']:.2f} ({r['speedup_ci_lo']:.2f}-{r['speedup_ci_hi']:.2f})"
+            row["memory ratio (95% CI)"] = f"{r['memory_ratio']:.2f} ({r['memory_ratio_ci_lo']:.2f}-{r['memory_ratio_ci_hi']:.2f})"
+            row["Mann-Whitney p"] = None if r["mannwhitney_p"] is None else f"{r['mannwhitney_p']:.2g}"
+        rows.append(row)
+    return pl.DataFrame(rows, infer_schema_length=None)
+
+
+def transpose_metrics(acc: pl.DataFrame) -> pl.DataFrame:
+    """Metric rows x dataset columns."""
+    ds = acc["dataset"].to_list()
+    cols = [c for c in acc.columns if c != "dataset"]
+    return pl.DataFrame({"metric": cols, **{d: [None if acc[c][i] is None else f"{acc[c][i]:.4g}"
+                                               if isinstance(acc[c][i], float) else str(acc[c][i]) for c in cols]
+                                           for i, d in enumerate(ds)}})
+
+
 def md(df: pl.DataFrame) -> str:
     if not df.height:
         return "_(no data)_\n"
@@ -386,12 +415,16 @@ def main():
         fh.write(f"# CREST benchmark report\n\n{env}\n\n## Wall time and memory\n\n")
         fh.write("Speedup = median scanpy time / median CREST time, 95% bootstrap CI; memory ratio likewise "
                  "(scanpy / CREST). Mann-Whitney U two-sided p-value; Hodges-Lehmann shift in seconds.\n\n")
-        fh.write(md(main_t))
-        fh.write("\n![time and memory](figures/fig1_time_memory.png)\n\n## Scaling with cells\n\n")
-        fh.write(md(pl.DataFrame(fits)) if fits else "_(needs >= 3 sizes)_\n")
-        fh.write("\n![scaling](figures/fig3_scaling.png)\n\n## Thread scaling\n\n" + md(th))
-        fh.write("\n![threads](figures/fig4_thread_scaling.png)\n\n## Per-step breakdown\n\n" + md(steps))
-        fh.write("\n## Agreement with scanpy\n\n" + md(acc_df))
+        fh.write(md(compact_main(main_t)) if main_t.height else "_(no data)_\n")
+        fh.write("\nMedian [IQR] over repeats; full statistics in `tables/main.csv`.\n")
+        fig = lambda name, alt: f"\n![{alt}](figures/{name}.png)\n" if (figs / f"{name}.png").exists() else ""  # noqa: E731
+        fh.write(fig("fig1_time_memory", "time and memory") + "\n## Scaling with cells\n\n")
+        fh.write(md(pl.DataFrame(fits)) if fits else "_(needs >= 3 dataset sizes of the synthetic series)_\n")
+        fh.write(fig("fig3_scaling", "scaling") + "\n## Thread scaling\n\n" + md(th))
+        fh.write(fig("fig4_thread_scaling", "threads") + "\n## Per-step breakdown\n\n" + md(steps))
+        for ds in df["dataset"].unique().to_list():
+            fh.write(fig(f"fig2_steps_{ds}", f"steps {ds}") + fig(f"fig5_timeline_{ds}", f"timeline {ds}"))
+        fh.write("\n## Agreement with scanpy\n\n" + (md(transpose_metrics(acc_df)) if acc_df.height else "_(no data)_\n"))
         for m in mods:
             fh.write(f"\n## Module: {m.stem}\n\n" + m.read_text())
         fails = df.filter(pl.col("status") != "ok").select("tool", "dataset", "threads", "repeat", "status")
