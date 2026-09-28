@@ -98,9 +98,22 @@ Rscript tests/data/make_lrt_fixtures.R                # regenerate the R LRT ref
 
 ## Next steps (in priority order)
 
-1. **Merge the PR into `dev`** once CI is green; run `scripts/crest_git_housekeeping.sh --apply`.
-2. **Run the paper benchmark locally**: `bash scripts/crest_paper_bench.sh --tier standard`
-   (then `--tier full` on a machine with >= 64 GB RAM for scanpy at 647k cells). Send back the tarball.
+1. **Standard-tier run in progress** on rinamochana (`/mnt/scratch/crest-bench`, started 2026-09-28 17:56,
+   160 runs, ~20-25 h). Housekeeping is done (stale branches archived as `archive/*` tags and deleted).
+   Findings so far, to act on **after** the run completes (don't change code mid-run):
+   * **Reporting (priority): honest, not cherry-picked.**
+     - Headline speedups use each tool's *best* thread count. Also report the matched-thread (64) numbers.
+       scanpy's pbmc68k core times: 152 s at 8 threads, 301 s at 64.
+     - Keep the `core` pipeline, which is what CREST optimises, as the main comparison.
+       Report the optional modules (scrublet, harmony, sweep, pseudobulk) in a separate table.
+     - Include the steps where CREST is not faster, plus its limited thread scaling on pbmc68k core
+       (63.5 s at 1 thread, 24 s at 64; roughly a third serial) and the step-level reason.
+   * `full` profile scaling is dominated by scrublet at ≥100k cells when there is no batch key:
+     approximate kNN with k ≈ 1.5·√n, cost ~n². Timings: 541 s at 100k, 2,633 s at 200k.
+     Scrublet is not a priority. Keep it out of the headline and treat it as an optional module.
+   * CPU governor was `powersave`; use `performance` for the final run.
+     Add `/mnt/scratch` (nvme0n1, UUID 51d51aa9-...) to `/etc/fstab` before rebooting.
+2. **Reporting changes in `bench/paper/summarize.py`** per the above, then the white paper.
 3. **Release 0.3.0**: bump `Cargo.toml` + `crest/__init__.py` + `CHANGELOG.md`, merge `dev → main`, tag `v0.3.0`.
    Needs a `PYPI_API_TOKEN` secret or trusted publishing on PyPI for `crest-sc`.
 4. **White paper**: results from step 2, plus `docs/deseq2.md` and `docs/downstream.md` validation tables.
