@@ -311,7 +311,8 @@ chunk_fn! {
 chunk_fn! {
     /// Accumulate per (group, var) sums, sums of squares and nnz (each (n_groups, n_vars)).
     fn group_gene_sums<'py>(py, v, nr, nv, group_of_row: Arr<'py, u32>, sum: PyReadwriteArrayDyn<'py, f64>,
-                            sumsq: PyReadwriteArrayDyn<'py, f64>, nnz: PyReadwriteArrayDyn<'py, f64>) -> PyResult<()> {
+                            sumsq: PyReadwriteArrayDyn<'py, f64>, nnz: PyReadwriteArrayDyn<'py, f64>,
+                            clip: Option<Arr<'py, f64>>) -> PyResult<()> {
         let (mut sum, mut sumsq, mut nnz) = (sum, sumsq, nnz);
         let gr = sl(&group_of_row, "group_of_row")?;
         let shape = sum.shape().to_vec();
@@ -321,8 +322,18 @@ chunk_fn! {
         if gr.iter().any(|&x| x != u32::MAX && x as usize >= shape[0]) {
             return Err(pyo3::exceptions::PyValueError::new_err("group id out of range"));
         }
+        let c = match &clip {
+            Some(c) => {
+                let c = sl(c, "clip")?;
+                if c.len() != shape[0] * shape[1] {
+                    return Err(pyo3::exceptions::PyValueError::new_err("clip must be (n_groups, n_vars)"));
+                }
+                Some(c)
+            }
+            None => None,
+        };
         let (s, q, z) = (sl_mut(&mut sum, "sum")?, sl_mut(&mut sumsq, "sumsq")?, sl_mut(&mut nnz, "nnz")?);
-        py.allow_threads(|| kernels::group_gene_sums(v, gr, nv, s, Some(q), Some(z)));
+        py.allow_threads(|| kernels::group_gene_sums(v, gr, nv, s, Some(q), Some(z), c));
         Ok(())
     }
 }
@@ -340,7 +351,7 @@ chunk_fn! {
             return Err(pyo3::exceptions::PyValueError::new_err("group id out of range"));
         }
         let s = sl_mut(&mut sum, "sum")?;
-        py.allow_threads(|| kernels::group_gene_sums(v, gr, nv, s, None, None));
+        py.allow_threads(|| kernels::group_gene_sums(v, gr, nv, s, None, None, None));
         Ok(())
     }
 }
@@ -428,12 +439,12 @@ fn normal_pvalues<'py>(py: Python<'py>, z: PyReadonlyArrayDyn<'py, f64>) -> PyRe
 /// model matrix. Returns a dict of numpy arrays (see `crest.tl.deseq2`).
 #[pyfunction]
 #[pyo3(signature = (counts, design, size_factors=None, sf_type="ratio", fit_type="parametric",
-                    min_replicates_for_replace=7.0, min_mu=0.5))]
+                    min_replicates_for_replace=7.0, min_mu=0.5, reduced=None))]
 #[allow(clippy::too_many_arguments)]
 fn deseq2_fit<'py>(
     py: Python<'py>, counts: PyReadonlyArray2<'py, f64>, design: PyReadonlyArray2<'py, f64>,
     size_factors: Option<PyReadonlyArrayDyn<'py, f64>>, sf_type: &str, fit_type: &str,
-    min_replicates_for_replace: f64, min_mu: f64,
+    min_replicates_for_replace: f64, min_mu: f64, reduced: Option<PyReadonlyArray2<'py, f64>>,
 ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
     use crate::deseq::{self, Design, FitType, Params};
     let err = pyo3::exceptions::PyValueError::new_err;
@@ -460,7 +471,19 @@ fn deseq2_fit<'py>(
     };
     let pa = Params { min_replicates_for_replace, min_mu, fit_type: ft, ..Params::default() };
     let d = Design::new(x, m, p).map_err(pyo3::exceptions::PyValueError::new_err)?;
-    let fit = py.allow_threads(|| deseq::deseq(c, g, &d, sf, poscounts, &pa)).map_err(pyo3::exceptions::PyValueError::new_err)?;
+    let dr = match &reduced {
+        Some(r) => {
+            if r.shape()[0] != m {
+                return Err(err("reduced design must have one row per sample"));
+            }
+            let xr = r.as_slice().map_err(|_| err("reduced must be C-contiguous"))?.to_vec();
+            Some(Design::new(xr, m, r.shape()[1]).map_err(pyo3::exceptions::PyValueError::new_err)?)
+        }
+        None => None,
+    };
+    let fit = py
+        .allow_threads(|| deseq::deseq(c, g, &d, sf, poscounts, &pa, dr.as_ref()))
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
     let out = pyo3::types::PyDict::new_bound(py);
     let v = |x: Vec<f64>| PyArray1::from_vec_bound(py, x);
     let b = |x: Vec<bool>| PyArray1::from_vec_bound(py, x);
@@ -490,6 +513,12 @@ fn deseq2_fit<'py>(
     out.set_item("dispPriorVar", fit.disp_prior_var)?;
     out.set_item("varLogDispEsts", fit.var_log_disp_ests)?;
     out.set_item("messages", fit.messages)?;
+    if let (Some(dv), Some(st), Some(pv), Some(bc)) = (fit.deviance_reduced, fit.lrt_stat, fit.lrt_pvalue, fit.beta_conv_reduced) {
+        out.set_item("devianceReduced", v(dv))?;
+        out.set_item("LRTStatistic", v(st))?;
+        out.set_item("LRTPvalue", v(pv))?;
+        out.set_item("betaConvReduced", b(bc))?;
+    }
     let cutoff = if m > p {
         use statrs::distribution::{ContinuousCDF, FisherSnedecor};
         FisherSnedecor::new(p as f64, (m - p) as f64).map(|f| f.inverse_cdf(0.99)).unwrap_or(f64::NAN)
@@ -514,6 +543,115 @@ fn lowess<'py>(py: Python<'py>, x: PyReadonlyArrayDyn<'py, f64>, y: PyReadonlyAr
     Ok(PyArray1::from_vec_bound(py, crate::deseq::lowess::lowess(x, y, f, iter, delta)))
 }
 
+/// Harmony batch integration of an (N, d) float32 embedding. `batch` is (n_cov, N)
+/// uint32 global level ids; `levels` the number of levels per covariate.
+#[pyfunction]
+#[pyo3(signature = (z, batch, levels, n_clusters, theta, lamb=None, sigma=0.1, alpha=0.2, block_size=0.05,
+                    max_iter_harmony=10, max_iter_kmeans=20, epsilon_cluster=1e-3, epsilon_harmony=1e-2,
+                    batch_prop_cutoff=1e-5, seed=0))]
+#[allow(clippy::too_many_arguments)]
+fn harmony<'py>(
+    py: Python<'py>,
+    z: PyReadonlyArray2<'py, f32>,
+    batch: PyReadonlyArray2<'py, u32>,
+    levels: Vec<usize>,
+    n_clusters: usize,
+    theta: Vec<f64>,
+    lamb: Option<Vec<f64>>,
+    sigma: f64,
+    alpha: f64,
+    block_size: f64,
+    max_iter_harmony: usize,
+    max_iter_kmeans: usize,
+    epsilon_cluster: f64,
+    epsilon_harmony: f64,
+    batch_prop_cutoff: f64,
+    seed: u64,
+) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    let (n, d) = (z.shape()[0], z.shape()[1]);
+    let zs = z.as_slice().map_err(|_| pyo3::exceptions::PyValueError::new_err("z must be C-contiguous"))?;
+    let bs = batch.as_slice().map_err(|_| pyo3::exceptions::PyValueError::new_err("batch must be C-contiguous"))?;
+    if batch.shape()[1] != n || batch.shape()[0] != levels.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err("batch must have shape (len(levels), N)"));
+    }
+    let p = crate::harmony::Params {
+        n_clusters, sigma, theta, lambda: lamb, alpha, block_size, max_iter_harmony, max_iter_kmeans,
+        epsilon_cluster, epsilon_harmony, batch_prop_cutoff, seed,
+    };
+    let out = py
+        .allow_threads(|| crate::harmony::harmony(zs, n, d, bs, &levels, &p))
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    let dict = pyo3::types::PyDict::new_bound(py);
+    dict.set_item("Z_corr", PyArray1::from_vec_bound(py, out.z_corr).reshape([n, d])?)?;
+    dict.set_item("R", PyArray1::from_vec_bound(py, out.r).reshape([n, n_clusters])?)?;
+    dict.set_item("Y", PyArray1::from_vec_bound(py, out.y).reshape([n_clusters, d])?)?;
+    dict.set_item("objective_harmony", out.objective_harmony)?;
+    dict.set_item("objective_kmeans", out.objective_kmeans)?;
+    dict.set_item("kmeans_rounds", out.kmeans_rounds)?;
+    dict.set_item("converged", out.converged)?;
+    Ok(dict)
+}
+
+/// Leiden for many (resolution, seed) pairs on one graph, the runs in parallel.
+/// Returns an (n_runs, n) uint32 array of labels.
+#[pyfunction]
+#[pyo3(signature = (n, rows, cols, weights, resolutions, seeds, n_iterations=2))]
+#[allow(clippy::too_many_arguments)]
+fn leiden_sweep<'py>(
+    py: Python<'py>,
+    n: usize,
+    rows: numpy::PyReadonlyArrayDyn<'py, u32>,
+    cols: numpy::PyReadonlyArrayDyn<'py, u32>,
+    weights: numpy::PyReadonlyArrayDyn<'py, f32>,
+    resolutions: Vec<f64>,
+    seeds: Vec<u64>,
+    n_iterations: usize,
+) -> PyResult<Bound<'py, PyArray2<u32>>> {
+    if resolutions.len() != seeds.len() || resolutions.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err("resolutions and seeds must be non-empty and of equal length"));
+    }
+    if resolutions.iter().any(|r| !(*r > 0.0 && r.is_finite())) {
+        return Err(pyo3::exceptions::PyValueError::new_err("resolutions must be positive and finite"));
+    }
+    let e = undirected(n, contiguous(&rows, "rows")?, contiguous(&cols, "cols")?, contiguous(&weights, "weights")?)?;
+    let runs = resolutions.len();
+    let flat = py.allow_threads(|| {
+        let edges: Vec<(usize, usize, f64)> = e.iter().map(|&(a, b, w)| (a, b, w as f64)).collect();
+        let g = crate::leiden::Graph::from_edges(n, &edges);
+        let labels: Vec<Vec<usize>> = resolutions
+            .par_iter()
+            .zip(seeds.par_iter())
+            .map(|(&r, &s)| crate::leiden::leiden_partition(&g, r, n_iterations, s))
+            .collect();
+        labels.into_iter().flatten().map(|c| c as u32).collect::<Vec<u32>>()
+    });
+    Ok(PyArray1::from_vec_bound(py, flat).reshape([runs, n])?)
+}
+
+/// k nearest rows of `reference` for each row of `query` (float32, same width).
+/// Returns (indices uint32 (n_query, k), distances float32 (n_query, k)).
+#[pyfunction]
+#[pyo3(signature = (reference, query, k, exact=None, seed=0))]
+fn knn_query<'py>(
+    py: Python<'py>,
+    reference: PyReadonlyArray2<'py, f32>,
+    query: PyReadonlyArray2<'py, f32>,
+    k: usize,
+    exact: Option<bool>,
+    seed: u64,
+) -> PyResult<(Bound<'py, PyArray2<u32>>, Bound<'py, PyArray2<f32>>)> {
+    let (nr, d) = (reference.shape()[0], reference.shape()[1]);
+    let nq = query.shape()[0];
+    if query.shape()[1] != d {
+        return Err(pyo3::exceptions::PyValueError::new_err("reference and query must have the same number of columns"));
+    }
+    let rs = reference.as_slice().map_err(|_| pyo3::exceptions::PyValueError::new_err("reference must be C-contiguous"))?;
+    let qs = query.as_slice().map_err(|_| pyo3::exceptions::PyValueError::new_err("query must be C-contiguous"))?;
+    let g = py.allow_threads(|| crate::knn::knn_query(Points::new(rs, nr, d), Points::new(qs, nq, d), k, exact, seed));
+    let kk = g.k;
+    Ok((PyArray1::from_vec_bound(py, g.indices).reshape([nq, kk])?, PyArray1::from_vec_bound(py, g.distances).reshape([nq, kk])?))
+}
+
 #[pymodule]
 fn crest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(knn_graph, m)?)?;
@@ -535,5 +673,8 @@ fn crest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(group_gene_totals, m)?)?;
     m.add_function(wrap_pyfunction!(deseq2_fit, m)?)?;
     m.add_function(wrap_pyfunction!(lowess, m)?)?;
+    m.add_function(wrap_pyfunction!(harmony, m)?)?;
+    m.add_function(wrap_pyfunction!(leiden_sweep, m)?)?;
+    m.add_function(wrap_pyfunction!(knn_query, m)?)?;
     Ok(())
 }

@@ -13,8 +13,6 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { version = "0.21.2", features = ["extension-module", "abi3-py310"] }
 numpy = "0.21"
-pyo3-polars = { version = "0.15.0", features = ["derive"] }
-polars = { version = "0.41.3", default-features = false, features = ["lazy"] }
 statrs = "0.16.1"
 nalgebra = "0.32.3"
 faer = "0.24.0"

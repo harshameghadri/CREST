@@ -4,7 +4,9 @@
 //! fuzzy union exactly, with the scanpy convention that `n_neighbors` counts
 //! the cell itself (so the kNN graph holds `n_neighbors - 1` true neighbours).
 
-use crate::knn::{knn, KnnGraph, Points};
+use crate::knn::KnnGraph;
+#[cfg(test)]
+use crate::knn::{knn, Points};
 use rayon::prelude::*;
 
 #[derive(Debug, Clone)]
@@ -106,6 +108,7 @@ pub fn fuzzy_simplicial_set(g: &KnnGraph, n_neighbors: usize) -> UmapGraph {
 
 /// kNN (via `crate::knn`) + fuzzy simplicial set from dense rows.
 /// `n_neighbors` includes the cell itself (scanpy convention).
+#[cfg(test)]
 pub fn build_fuzzy_simplicial_set(data: &[Vec<f32>], n_neighbors: usize) -> UmapGraph {
     let n = data.len();
     if n < 2 || n_neighbors < 2 {

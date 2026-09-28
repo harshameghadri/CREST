@@ -368,24 +368,6 @@ pub fn knn(pts: Points, k: usize, exact: Option<bool>, seed: u64) -> KnnGraph {
     KnnGraph { n, k, indices: topi, distances: topd }
 }
 
-/// Convenience wrapper for callers holding `Vec<Vec<f32>>` rows.
-pub fn hnsw_knn(data: &[Vec<f32>], k: usize) -> Vec<(Vec<usize>, Vec<f32>)> {
-    let n = data.len();
-    if n == 0 {
-        return Vec::new();
-    }
-    let d = data[0].len();
-    let flat: Vec<f32> = data.iter().flat_map(|r| r.iter().copied()).collect();
-    let g = knn(Points::new(&flat, n, d), k, None, 0);
-    (0..n)
-        .map(|i| {
-            (
-                g.indices[i * g.k..(i + 1) * g.k].iter().map(|&j| j as usize).collect(),
-                g.distances[i * g.k..(i + 1) * g.k].to_vec(),
-            )
-        })
-        .collect()
-}
 
 #[cfg(test)]
 mod tests {
@@ -442,5 +424,152 @@ mod tests {
         for w in g.distances.chunks(15) {
             assert!(w.windows(2).all(|p| p[0] <= p[1]));
         }
+    }
+}
+
+/// Top-k search of query rows against candidate rows of a second point set.
+#[allow(clippy::too_many_arguments)]
+fn search_block_ref(
+    qp: Points,
+    qnorms: &[f32],
+    queries: &[u32],
+    rp: Points,
+    rnorms: &[f32],
+    cands: &[u32],
+    k: usize,
+    topd: &mut [f32],
+    topi: &mut [u32],
+) {
+    let d = qp.d;
+    let mut qbuf = vec![0.0f32; queries.len() * d];
+    for (r, &q) in queries.iter().enumerate() {
+        qbuf[r * d..(r + 1) * d].copy_from_slice(qp.row(q as usize));
+    }
+    let mut cbuf = vec![0.0f32; TILE.min(cands.len()) * d];
+    let mut prod = vec![0.0f32; queries.len() * TILE.min(cands.len())];
+    for tile in cands.chunks(TILE) {
+        let m = tile.len();
+        for (r, &c) in tile.iter().enumerate() {
+            cbuf[r * d..(r + 1) * d].copy_from_slice(rp.row(c as usize));
+        }
+        let lhs = MatRef::from_row_major_slice(&qbuf, queries.len(), d);
+        let rhs = MatRef::from_row_major_slice(&cbuf[..m * d], m, d);
+        let dst = MatMut::from_row_major_slice_mut(&mut prod[..queries.len() * m], queries.len(), m);
+        matmul(dst, Accum::Replace, lhs, rhs.transpose(), 1.0f32, Par::Seq);
+        for (r, &q) in queries.iter().enumerate() {
+            let qn = qnorms[q as usize];
+            let row = &prod[r * m..(r + 1) * m];
+            let (td, ti) = (&mut topd[r * k..(r + 1) * k], &mut topi[r * k..(r + 1) * k]);
+            for (t, &c) in tile.iter().enumerate() {
+                let dist = (qn + rnorms[c as usize] - 2.0 * row[t]).max(0.0);
+                if dist < td[k - 1] {
+                    push_topk(td, ti, dist, c);
+                }
+            }
+        }
+    }
+}
+
+/// k nearest reference rows of each query row (reference-to-query mapping).
+/// `exact=None` is brute force when n_ref × n_query <= 2e8, otherwise an IVF
+/// index over the reference probing the 32 nearest buckets.
+pub fn knn_query(refp: Points, query: Points, k: usize, exact: Option<bool>, seed: u64) -> KnnGraph {
+    let (nr, nq) = (refp.n, query.n);
+    let k = k.min(nr);
+    if nq == 0 || k == 0 {
+        return KnnGraph { n: nq, k: 0, indices: vec![], distances: vec![] };
+    }
+    let rnorms: Vec<f32> = (0..nr).into_par_iter().map(|i| refp.row(i).iter().map(|x| x * x).sum()).collect();
+    let qnorms: Vec<f32> = (0..nq).into_par_iter().map(|i| query.row(i).iter().map(|x| x * x).sum()).collect();
+    let use_exact = exact.unwrap_or((nr as f64) * (nq as f64) <= 2e8);
+    let (lists, qlists, probes): (Vec<Vec<u32>>, Vec<Vec<u32>>, Vec<Vec<u32>>) = if use_exact {
+        (vec![(0..nr as u32).collect()], vec![(0..nq as u32).collect()], vec![vec![0]])
+    } else {
+        let nc = (nr / 512).clamp(8, 8192).min(nr);
+        let cent = kmeans(refp, nc, 8, seed);
+        let mut lists = vec![Vec::new(); nc];
+        for (i, &c) in assign(refp, &cent, nc).iter().enumerate() {
+            lists[c as usize].push(i as u32);
+        }
+        let mut qlists = vec![Vec::new(); nc];
+        for (i, &c) in assign(query, &cent, nc).iter().enumerate() {
+            qlists[c as usize].push(i as u32);
+        }
+        let cp = Points::new(&cent, nc, refp.d);
+        let probes = (0..nc)
+            .into_par_iter()
+            .map(|c| {
+                let mut ds: Vec<(f32, u32)> = (0..nc).map(|o| (sq_dist(cp.row(c), cp.row(o)), o as u32)).collect();
+                let p = 32.min(nc);
+                ds.select_nth_unstable_by(p - 1, |a, b| a.0.total_cmp(&b.0));
+                ds[..p].iter().map(|x| x.1).collect()
+            })
+            .collect();
+        (lists, qlists, probes)
+    };
+    let per: Vec<(Vec<u32>, Vec<f32>, Vec<u32>)> = qlists
+        .par_iter()
+        .enumerate()
+        .flat_map_iter(|(c, qs)| {
+            let cands: Vec<u32> = probes[c].iter().flat_map(|&o| lists[o as usize].iter().copied()).collect();
+            qs.chunks(256)
+                .map(|chunk| {
+                    let mut td = vec![f32::INFINITY; chunk.len() * k];
+                    let mut ti = vec![u32::MAX; chunk.len() * k];
+                    search_block_ref(query, &qnorms, chunk, refp, &rnorms, &cands, k, &mut td, &mut ti);
+                    (chunk.to_vec(), td, ti)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    crate::simd::clean_simd_state();
+    let mut topi = vec![u32::MAX; nq * k];
+    for (qs, _, ti) in &per {
+        for (r, &q) in qs.iter().enumerate() {
+            let q = q as usize;
+            topi[q * k..(q + 1) * k].copy_from_slice(&ti[r * k..(r + 1) * k]);
+        }
+    }
+    let mut topd = vec![0.0f32; nq * k];
+    topd.par_chunks_mut(k).zip(topi.par_chunks_mut(k)).enumerate().for_each(|(i, (td, ti))| {
+        let mut pairs: Vec<(f32, u32)> = ti
+            .iter()
+            .map(|&j| if j == u32::MAX { (f32::INFINITY, j) } else { (sq_dist(query.row(i), refp.row(j as usize)).sqrt(), j) })
+            .collect();
+        pairs.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        for (s, (dd, jj)) in pairs.into_iter().enumerate() {
+            td[s] = dd;
+            ti[s] = jj;
+        }
+    });
+    KnnGraph { n: nq, k, indices: topi, distances: topd }
+}
+
+#[cfg(test)]
+mod query_tests {
+    use super::*;
+    use rand::Rng;
+
+    #[test]
+    fn query_ivf_matches_brute() {
+        let (nr, nq, d, k) = (20_000usize, 2_000usize, 8usize, 10usize);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(3);
+        let r: Vec<f32> = (0..nr * d).map(|_| rng.gen::<f32>()).collect();
+        let q: Vec<f32> = (0..nq * d).map(|_| rng.gen::<f32>()).collect();
+        let (rp, qp) = (Points::new(&r, nr, d), Points::new(&q, nq, d));
+        let ex = knn_query(rp, qp, k, Some(true), 0);
+        let ap = knn_query(rp, qp, k, Some(false), 0);
+        // brute force against a direct scan for the first query
+        let mut all: Vec<(f32, u32)> = (0..nr).map(|j| (sq_dist(qp.row(0), rp.row(j)), j as u32)).collect();
+        all.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let want: Vec<u32> = all[..k].iter().map(|x| x.1).collect();
+        assert_eq!(&ex.indices[..k], &want[..]);
+        let mut hit = 0;
+        for i in 0..nq {
+            let e = &ex.indices[i * k..(i + 1) * k];
+            hit += ap.indices[i * k..(i + 1) * k].iter().filter(|j| e.contains(j)).count();
+        }
+        let recall = hit as f64 / (nq * k) as f64;
+        assert!(recall > 0.97, "recall {}", recall);
     }
 }

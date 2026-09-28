@@ -173,21 +173,6 @@ class BioFrame:
             raise ValueError(f"obs/var sizes {obs.height}/{var.height} do not match store {store.n_cells}/{store.n_genes}")
         return cls(store=store, obs=obs, var=var)
 
-    @classmethod
-    def from_slaf(cls, slaf_path: str) -> "BioFrame":
-        """Load a SLAF dataset (requires ``slafdb``)."""
-        try:
-            from slaf import SLAFArray
-        except ImportError as e:
-            raise ImportError("slafdb is required for SLAF integration: pip install slafdb") from e
-        slaf = SLAFArray(slaf_path)
-        slaf.wait_for_metadata()
-        n_cells, n_genes = slaf.shape
-        df = slaf.query(
-            "SELECT cell_integer_id AS cell_id, gene_integer_id AS gene_id, CAST(value AS FLOAT) AS count FROM expression"
-        )
-        return cls.from_triplets(df, n_cells, n_genes)
-
     # ---- shape / names
     @property
     def n_obs(self) -> int:
@@ -297,8 +282,7 @@ class BioFrame:
     def to_anndata(self, transform: bool = False):
         """Convert to AnnData (requires ``anndata``). ``X`` holds raw counts unless ``transform``."""
         import anndata as ad
-        obs = self.obs.to_pandas()
-        var = self.var.to_pandas()
+        obs, var = _to_pandas(self.obs), _to_pandas(self.var)
         obs.index = obs.get("barcode", obs["cell_id"]).astype(str).values
         var.index = np.array(self.var_names, dtype=str)
         a = ad.AnnData(X=self.to_scipy(transform), obs=obs, var=var)
@@ -319,8 +303,8 @@ class BioFrame:
         """From AnnData with a sparse (or dense) X of counts."""
         import scipy.sparse as sp
         X = adata.X if sp.issparse(adata.X) else sp.csr_matrix(adata.X)
-        obs = pl.from_pandas(adata.obs.reset_index(names="barcode"))
-        var = pl.from_pandas(adata.var.reset_index(names="gene_name"))
+        obs = _from_pandas(adata.obs, "barcode")
+        var = _from_pandas(adata.var, "gene_name")
         bf = cls.from_scipy(X, obs, var)
         for k in adata.obsm.keys():
             bf.obsm[k] = np.asarray(adata.obsm[k])
@@ -356,6 +340,24 @@ class BioFrame:
         flush()
         self.obs.with_columns(pl.Series("cell_id", np.arange(self.n_obs, dtype=np.uint32))).write_parquet(path / "obs.parquet")
         self.var.with_columns(pl.Series("gene_id", np.arange(self.n_vars, dtype=np.uint32))).write_parquet(path / "var.parquet")
+
+
+def _to_pandas(df: pl.DataFrame):
+    """polars -> pandas without pyarrow (column by column through numpy)."""
+    import pandas as pd
+    return pd.DataFrame({c: df[c].to_numpy() for c in df.columns})
+
+
+def _from_pandas(df, index_name: str) -> pl.DataFrame:
+    """pandas -> polars without pyarrow; the index becomes column ``index_name``."""
+    cols = {index_name: np.asarray(df.index.astype(str))}
+    for c in df.columns:
+        v = df[c]
+        if str(v.dtype) in ("category", "object", "string"):
+            cols[str(c)] = np.asarray(v.astype(str))
+        else:
+            cols[str(c)] = v.to_numpy()
+    return pl.DataFrame(cols)
 
 
 def read_parquet(path: Union[str, Path], chunk_nnz: int = DEFAULT_CHUNK_NNZ) -> BioFrame:
