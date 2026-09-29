@@ -45,8 +45,8 @@ merged. Check on GitHub that `dev` shows `.readthedocs.yaml` in the file list.
    then come back.
 3. Name: **crest-sc**. The name becomes the web address, so the docs will be at
    `https://crest-sc.readthedocs.io`. The plain name `crest` may already be taken.
-4. Default branch: **dev** for now, because the docs exist only there until the 0.3.0
-   release. Change it to `main` after the release (step 6).
+4. Default branch: **main** (the released code; the docs are on `main` since 0.3.0). If you
+   also want the development docs, activate the `dev` version in the **Versions** tab.
 5. Click **Next** / **Continue**. Read the Docs finds `.readthedocs.yaml` and starts the
    first build.
 
@@ -70,9 +70,9 @@ Open the project's **Builds** tab. The first build takes 1–2 minutes.
 Each pull request then gets a link to a preview of the docs, and a check on GitHub that goes
 red if the docs break.
 
-## Step 6: after the 0.3.0 release
+## Step 6: versions and the README badge
 
-1. **Settings → Default branch → `main`**. `latest` then shows the released code.
+1. **Settings → Default branch** should be `main`, so `latest` shows the released code.
 2. **Versions** tab: activate the tag `v0.3.0`, so that version stays readable forever.
    Activate `dev` too if you want a "development" version of the docs.
 3. Optional: add the badge to the top of `README.md`:

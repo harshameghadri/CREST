@@ -4,7 +4,7 @@ This file says where the project stands and what to do next. Read `CLAUDE.md` fi
 the code works, and the rules). Keep **Status** and **Next steps** current at the end of
 every session.
 
-_Last updated: 2026-09-29._
+_Last updated: 2026-09-29 (0.3.0 merged to main)._
 
 ## Status
 
@@ -16,19 +16,16 @@ _Last updated: 2026-09-29._
 | Modules after clustering | Harmony, Scrublet, `seurat_v3` HVG, `leiden_sweep`, `ingest`, `knn_query`; each validated (`docs/downstream.md`) |
 | Paper benchmark | `scripts/crest_paper_bench.sh` + `bench/paper/`. Quick tier done on rinamochana (30/30 ok). **Standard tier running** (see Next steps 1) |
 | Documentation | **New:** Sphinx + MyST site in `docs/`, `.readthedocs.yaml`, beginner setup guide `docs/readthedocs.md`, CI `docs` job. Not yet connected to Read the Docs (owner's step) |
-| Packaging | PyPI `crest-sc` 0.2.0 on `main`. 0.3.0 content is on `dev`, unreleased |
+| Packaging | Version **0.3.0** (`Cargo.toml`), merged `dev` → `main` on 2026-09-29. Tag `v0.3.0` + PyPI publish still to do (owner) |
 | CI | `test` (cargo + pytest), `docs` (sphinx `-W`), wheels for all platforms; publishes on tag |
 
 ### Git / GitHub state
 
-* `main` = 0.2.0 ([PR #1](https://github.com/harshameghadri/CREST/pull/1)).
-* `dev` = main + the 0.3.0 work ([PR #2](https://github.com/harshameghadri/CREST/pull/2)
-  and [PR #3](https://github.com/harshameghadri/CREST/pull/3), both merged).
-* Work branch `claude/awesome-lamport-dsvfv2`: carries the commits below, which aren't in
-  `dev` yet. Open a PR into `dev`.
-  - the benchmark-script fixes: a clear error for an unwritable workdir, and recording the
-    disk / filesystem;
-  - this documentation overhaul (Read the Docs, `CLAUDE.md`, `HANDOVER.md`, `work.md`).
+* `main` = 0.3.0: `dev` merged into `main` on 2026-09-29 (0.2.0 was
+  [PR #1](https://github.com/harshameghadri/CREST/pull/1); the 0.3.0 work came through
+  [PR #2](https://github.com/harshameghadri/CREST/pull/2), [#3](https://github.com/harshameghadri/CREST/pull/3),
+  [#4](https://github.com/harshameghadri/CREST/pull/4) and the rename/release PR into `dev`).
+* Work branch `claude/awesome-lamport-dsvfv2` is restarted from `dev` for each new piece of work.
 * Stale branches are archived as tags (`archive/feat-leiden-hnsw-faer`,
   `archive/fix-production-readiness`) and deleted.
 
@@ -49,13 +46,13 @@ _Last updated: 2026-09-29._
    - report CREST's weak spots: thread scaling on pbmc68k `core` is 63.5 s at 1 thread and
      24 s at 64 (~1/3 serial; find which steps from `steps.csv`); steps where CREST is not
      faster; failed runs.
-3. **Connect Read the Docs.** The owner follows `docs/readthedocs.md` after this branch is
-   merged into `dev`. Project name `crest-sc`, default branch `dev` until the release.
-4. **Release 0.3.0.**
-   - Bump `Cargo.toml` and `crest/__init__.py`, and date the CHANGELOG section.
-   - Merge `dev` → `main` and tag `v0.3.0`.
-   - This needs a `PYPI_API_TOKEN` secret or PyPI trusted publishing for `crest-sc`.
-   - Then switch the Read the Docs default branch to `main`.
+3. **Connect Read the Docs.** The owner follows `docs/readthedocs.md`: project name
+   `crest-sc`, default branch `main`.
+4. **Publish 0.3.0.** The version bump, CHANGELOG and `dev` → `main` merge are done. Left:
+   - tag `v0.3.0` on `main` (`git tag v0.3.0 origin/main && git push origin v0.3.0`); the
+     tag triggers the CI wheel builds and the PyPI upload;
+   - the upload needs a `PYPI_API_TOKEN` repository secret or PyPI trusted publishing for
+     `crest-sc`.
 5. **White paper**: results from step 2, plus the validation tables in `docs/deseq2.md` and
    `docs/downstream.md`.
 6. **Performance work, after the paper numbers exist** (measure first, from `steps.csv`):
@@ -87,7 +84,7 @@ Longer discussions are in `work.md`; search for the keywords.
 | `scanpy.external.pp.harmony_integrate` not used in benchmarks | broken with harmonypy 2.x (transposed output); harmonypy is called directly |
 | Benchmarks write only under `./crest-bench`, nothing in `$HOME` | the owner's `/home` is a small OS disk |
 | Honest reporting rules (CLAUDE.md §5) | owner's explicit requirement for the paper |
-| **Open:** the package name | "Columnar Rust Engine" describes the original Polars-plugin design. Today the engine is a *chunked, lazily transformed sparse streaming* engine; Polars only holds metadata and tables and reads Parquet. The cheapest honest fix keeps the acronym and changes the expansion (e.g. "Chunked Rust Engine for Single-cell Transcriptomics"). A full rename is optional. Owner to decide |
+| Acronym now "**Chunked** Rust Engine for Single-cell Transcriptomics" (0.3.0; was "Columnar") | the engine streams chunks of cells through fused Rust kernels; Polars is only the table / Parquet layer. Keeping the acronym and the `crest-sc` / `crest` names avoids breaking anyone |
 
 ## Known limitations
 

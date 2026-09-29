@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "crest"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "faer",
  "nalgebra 0.32.6",
