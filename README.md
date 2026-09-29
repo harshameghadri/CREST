@@ -7,6 +7,9 @@ API. It reproduces scanpy's results while being faster at every step and never
 materialising a normalised, scaled or dense copy of the count matrix — datasets
 can be streamed from disk (Parquet) with memory bounded by one chunk.
 
+**Documentation:** [crest-sc.readthedocs.io](https://crest-sc.readthedocs.io) (sources in
+[`docs/`](docs/): installation, quickstart, how it works, API reference, benchmarks).
+
 ```python
 import crest
 

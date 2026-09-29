@@ -45,10 +45,12 @@ class Pseudobulk:
         return f"Pseudobulk({self.counts.shape[0]} samples × {self.counts.shape[1]} genes)"
 
     def subset(self, mask: np.ndarray) -> "Pseudobulk":
+        """Keep the samples where ``mask`` is True."""
         mask = np.asarray(mask, bool)
         return Pseudobulk(self.counts[mask], self.obs.filter(pl.Series(mask)), self.var_names)
 
     def to_anndata(self):
+        """AnnData with samples as rows (for pydeseq2 or scanpy)."""
         import anndata as ad
         import pandas as pd
 
@@ -278,12 +280,15 @@ class DESeq2:
     # ---------------------------------------------------------------- accessors
     @property
     def size_factors(self) -> np.ndarray:
+        """Per-sample size factors (median of ratios, or those passed in)."""
         return self.fit["size_factors"]
 
     def results_names(self) -> List[str]:
+        """Coefficient names, as DESeq2's ``resultsNames()`` (e.g. ``condition_stim_vs_ctrl``)."""
         return list(self.coef_names)
 
     def dispersions(self) -> pl.DataFrame:
+        """Per-gene dispersion estimates: gene-wise, trend, MAP, final, and the outlier flag."""
         f = self.fit
         return pl.DataFrame({"gene": self.var_names, "baseMean": f["baseMean"], "dispGeneEst": f["dispGeneEst"],
                              "dispFit": f["dispFit"], "dispMAP": f["dispMAP"], "dispersion": f["dispersion"],

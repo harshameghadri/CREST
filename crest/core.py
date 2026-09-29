@@ -150,6 +150,7 @@ class BioFrame:
 
     @classmethod
     def from_csr(cls, indptr, indices, data, n_genes: int, obs=None, var=None) -> "BioFrame":
+        """From CSR arrays of raw counts (cells × genes); ``obs``/``var`` are optional Polars frames."""
         return cls._with_store(CSRStore(indptr, indices, data, n_genes), obs, var)
 
     @classmethod
@@ -264,6 +265,7 @@ class BioFrame:
         return self._subset(var_mask=np.asarray(mask, dtype=bool))
 
     def copy(self) -> "BioFrame":
+        """New BioFrame with copied metadata; the raw-count store is shared (it is never modified)."""
         return BioFrame(self.store, self.obs.clone(), self.var.clone(), dict(self.obsm), dict(self.varm),
                         dict(self.uns), list(self.ops), self.chunk_nnz)
 

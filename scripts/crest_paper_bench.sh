@@ -96,7 +96,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Keep every cache and install under the work directory (the home disk may be small).
-mkdir -p "$WORKDIR"
+if ! mkdir -p "$WORKDIR" 2>/dev/null || [[ ! -w "$WORKDIR" ]]; then
+  printf '\033[31mERROR: cannot write to %s\033[0m\n' "$WORKDIR" >&2
+  echo "  Run the script from a directory you own on a big disk, or pass --workdir DIR." >&2
+  echo "  Here: $(df -h "$(dirname "$WORKDIR")" 2>/dev/null | awk 'NR==2 {print $1" mounted on "$6", "$4" free"}')" >&2
+  echo "  (if this is a mount point, check that the disk is actually mounted: findmnt $(dirname "$WORKDIR"))" >&2
+  exit 1
+fi
 WORKDIR="$(cd "$WORKDIR" && pwd)"
 C="$WORKDIR/cache"
 mkdir -p "$C"/{uv,uv-python,cargo,numba,mpl,xdg,tmp}
@@ -195,7 +201,7 @@ if [[ "$OS" == "Linux" ]]; then
 else
   sysctl -a 2>/dev/null | grep -E '^(machdep\.cpu|hw\.)' > "$E/sysctl.txt" || true
 fi
-df -h "$WORKDIR" > "$E/disk_free.txt"
+{ df -h "$WORKDIR"; findmnt -T "$WORKDIR" -o SOURCE,FSTYPE,OPTIONS 2>/dev/null || true; } > "$E/disk_free.txt"
 { rustc -V; cargo -V; "$PY" -V; uv --version; } > "$E/toolchain.txt" 2>&1
 uv pip freeze --python "$PY" > "$E/pip_freeze.txt"
 echo "$COMMIT" > "$E/crest_commit.txt"
