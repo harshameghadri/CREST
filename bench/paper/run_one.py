@@ -96,7 +96,7 @@ def scanpy_pipeline(path: Path, mon, profile: str, warm: bool = False) -> dict:
     if warm:
         a = a[: min(20000, a.n_obs)].copy()
     with mon.track("qc_filter"):
-        sc.pp.filter_cells(a, min_genes=200)
+        sc.pp.filter_cells(a, min_genes=meta.get("min_genes", 200))
         sc.pp.filter_genes(a, min_cells=3)
     batch = meta.get("batch") if meta.get("batch") in a.obs else None
     if profile == "full":
@@ -162,7 +162,7 @@ def crest_pipeline(path: Path, mon, profile: str, backed=None, warm: bool = Fals
     if warm:
         b = b.filter_cells(np.arange(b.n_obs) < 20000)
     with mon.track("qc_filter"):
-        b = crest.pp.filter_cells(b, min_genes=200)
+        b = crest.pp.filter_cells(b, min_genes=meta.get("min_genes", 200))
         b = crest.pp.filter_genes(b, min_cells=3)
     batch = meta.get("batch") if meta.get("batch") in b.obs.columns else None
     if profile == "full":
