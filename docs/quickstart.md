@@ -14,40 +14,78 @@ curl -LO https://cf.10xgenomics.com/samples/cell-exp/3.0.0/pbmc_10k_v3/pbmc_10k_
 
 ```python
 import crest
-import polars as pl
 
 bf = crest.read_10x_h5("pbmc_10k_v3_filtered_feature_bc_matrix.h5")
 print(bf)
-# BioFrame 11769 cells × 33538 genes (CSRStore; raw counts)
+```
 
-crest.pp.calculate_qc_metrics(bf)                       # adds obs/var QC columns
+```text
+BioFrame 11769 cells × 33538 genes (CSRStore; raw counts)
+    obs: ['barcode', 'cell_id']
+    var: ['gene_ids', 'gene_name', 'feature_types', 'gene_id']
+    obsm: []  uns: []
+```
+
+The object is a {class}`~crest.core.BioFrame`, CREST's counterpart of AnnData. `CSRStore`
+means the counts are held in memory as a sparse matrix; `raw counts` means no transform has
+been recorded yet. `cell_id` and `gene_id` are the row and column of each cell and gene in
+that matrix (see {doc}`concepts`).
+
+```python
+crest.pp.calculate_qc_metrics(bf)     # adds obs n_genes_by_counts, total_counts, pct_counts_mt
 bf = crest.pp.filter_cells(bf, min_genes=200, max_pct_mt=20)
 bf = crest.pp.filter_genes(bf, min_cells=3)
 ```
 
-The object is a {class}`~crest.core.BioFrame`. `bf.obs` (cells) and `bf.var` (genes) are
-**Polars** DataFrames, so any Polars expression works for custom filters:
+Unlike scanpy, the filters **return** a new `BioFrame`, so assign the result. The new object
+shares the count matrix with the old one (it is not copied); only the tables of kept cells
+and genes are new.
+
+### Why `polars`?
+
+`bf.obs` (cells) and `bf.var` (genes) are [Polars](https://pola.rs) DataFrames, not pandas.
+Polars is installed with CREST, and you only need to import it yourself to write a Polars
+*expression*, for example a custom filter:
 
 ```python
+import polars as pl
+
 bf = bf.filter_cells(pl.col("total_counts") < 30_000)
 ```
 
-The filters return a new `BioFrame` that **shares** the raw counts. Nothing is copied: the
-kept cells and genes are recorded as index maps.
+A NumPy boolean mask does the same without Polars:
+
+```python
+bf = bf.filter_cells(bf.obs["total_counts"].to_numpy() < 30_000)
+```
+
+To work in pandas instead, convert a table with `bf.obs.to_pandas()` (needs `pyarrow`), or
+hand the whole object over with `bf.to_anndata()`.
 
 ## 3. Normalise, select genes, reduce
 
 ```python
-crest.pp.normalize_total(bf, target_sum=1e4)  # recorded, not applied yet
-crest.pp.log1p(bf)                            # recorded, not applied yet
+crest.pp.normalize_total(bf, target_sum=1e4)  # lazy: noted in bf.ops, nothing computed yet
+crest.pp.log1p(bf)                            # lazy: noted in bf.ops, nothing computed yet
+print(bf.ops)                                 # [('normalize_total', 10000.0), ('log1p',)]
+
 crest.pp.highly_variable_genes(bf, n_top_genes=2000, flavor="seurat")
-crest.pp.scale(bf, max_value=10)              # recorded; PCA applies it exactly
+crest.pp.scale(bf, max_value=10)              # lazy: noted in bf.uns["scale"]; used by PCA only
 crest.tl.pca(bf, n_comps=50)                  # obsm["X_pca"], varm["PCs"], uns["pca"]
 ```
 
-`normalize_total`, `log1p` and `scale` return immediately: they only append to `bf.ops` /
-`bf.uns`. Each later step applies them to one chunk of raw counts at a time, inside the Rust
-kernel. See {doc}`concepts`.
+**What "lazy" means here.** In scanpy, `sc.pp.normalize_total` and `sc.pp.log1p` rewrite
+`adata.X` immediately. In CREST these two calls finish instantly: they only add an entry to
+the list `bf.ops`, and the count matrix is left untouched. Every later step that needs
+normalised values (`highly_variable_genes`, `pca`, `rank_genes_groups`, `score_genes`) reads the
+raw counts chunk by chunk and applies the operations in `bf.ops` on the fly, inside its Rust
+kernel, so it sees exactly the values scanpy would have in `adata.X`. Nothing normalised is
+ever stored.
+
+`scale` works the same way but only affects PCA, which applies the centring, scaling and
+clipping exactly inside its own computation. Other steps keep using the log-normalised
+values, as scanpy workflows do through `adata.raw`. See {doc}`concepts` for why this gives
+identical results.
 
 ## 4. Graph, clusters, embedding
 
@@ -93,11 +131,17 @@ adata = bf.to_anndata()          # AnnData with raw counts in X, obs/var/obsm/un
 ## 7. Out of core: the same code for a dataset larger than RAM
 
 ```python
-bf = crest.read_10x_h5("big.h5", backed="big_parquet/")    # streams to Parquet once
-# ... identical calls from step 2 on; memory stays ~1 GB whatever the size
+bf = crest.read_10x_h5("big.h5", backed="big_parquet/")    # converts to Parquet files once
+# ... identical calls from step 2 on
 
 bf = crest.read_parquet("big_parquet/")                    # reopen later without the .h5
 ```
+
+With `backed=`, the counts stay on disk and are read one file at a time, so the count matrix
+never has to fit in memory. Per-cell results (the table of cells, PCA, the neighbour graph,
+UMAP) are still held in memory and grow with the number of cells. Each step re-reads the
+files, which makes it up to about 2× slower than working in memory; on data that fits in RAM
+comfortably, in-memory is the better choice.
 
 ## Differences from scanpy to know about
 

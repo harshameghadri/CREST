@@ -6,6 +6,16 @@ Reads RESULTS_DIR/raw/*.json (+ timelines, accuracy.json, env/) and writes
 RESULTS_DIR/tables/*.csv|.tex, RESULTS_DIR/figures/*.pdf|.png and
 RESULTS_DIR/report.md.
 
+Reporting rules (CLAUDE.md, "honest benchmarks"):
+  * the headline compares the CORE workflow (read ... Wilcoxon); optional modules
+    (seurat_v3 HVG, Scrublet, resolution sweep, Harmony, pseudobulk DESeq2) are a
+    separate table;
+  * each speedup is given at matched thread counts and at each tool's best measured
+    thread count; the headline is the smaller of the two, and a row is flagged when
+    only one thread count was measured (the matched number can then be an upper bound);
+  * a table lists every step where CREST is not clearly faster (< 1.2x);
+  * failed runs are listed.
+
 Statistics (per dataset, tool pair CREST vs scanpy, n = repeats):
   median, IQR and coefficient of variation of wall time and peak RSS;
   speedup = median(scanpy) / median(CREST) with a 95% percentile bootstrap CI
@@ -26,6 +36,9 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+CORE_STEPS = ["read", "qc_filter", "normalize_log1p", "hvg", "scale_pca", "neighbors", "leiden", "umap",
+              "de_ttest", "de_wilcoxon"]
+MODULE_STEPS = ["hvg_seurat_v3", "scrublet", "leiden_sweep", "harmony", "pseudobulk_deseq2"]
 COLORS = {"crest": "#2a78d6", "scanpy": "#eb6834", "crest-ooc": "#1baf7a"}  # validated categorical slots 1-3
 LABELS = {"crest": "CREST", "scanpy": "scanpy", "crest-ooc": "CREST (out-of-core)"}
 TOOLS = ["crest", "crest-ooc", "scanpy"]
@@ -43,11 +56,19 @@ def load_runs(raw: Path) -> pl.DataFrame:
                                      "n_cells", "total_seconds", "peak_rss_gb")}
         u = r.get("usage") or {}
         row["cpu_seconds"] = (u.get("ru_utime_s") or 0) + (u.get("ru_stime_s") or 0)
+        row["skipped_steps"] = ",".join(r.get("skipped_steps") or []) or None
         row["energy_j"] = sum(s.get("energy_j", 0) for s in r.get("steps", {}).values()) or None
         for step, s in (r.get("steps") or {}).items():
             row[f"step:{step}"] = s["seconds"]
             row[f"par:{step}"] = s.get("parallelism")
             row[f"mem:{step}"] = s.get("peak_rss_gb")
+        steps = r.get("steps") or {}
+        row["core_seconds"] = (sum(steps[s]["seconds"] for s in CORE_STEPS)
+                               if all(s in steps for s in CORE_STEPS) else None)
+        # memory of the core workflow is only clean in core-profile runs (in full runs the
+        # optional modules run first and the allocator keeps their memory)
+        row["core_peak_rss_gb"] = (max(steps[s].get("peak_rss_gb") or 0 for s in CORE_STEPS)
+                                   if r.get("profile") == "core" and row["core_seconds"] is not None else None)
         rows.append(row)
     return pl.DataFrame(rows, infer_schema_length=None) if rows else pl.DataFrame()
 
@@ -99,41 +120,108 @@ def amdahl(p, s):
 
 
 def _main_runs(df: pl.DataFrame) -> pl.DataFrame:
-    """Runs of the main comparison: the richest profile, all cores."""
+    """Runs used for the per-step breakdown: the richest profile, all cores."""
     prof = "full" if "full" in df["profile"].drop_nulls().to_list() else "core"
     d = df.filter(pl.col("profile") == prof)
     return d.filter(pl.col("threads") == d["threads"].max())
 
 
+def _core_samples(df: pl.DataFrame) -> dict:
+    """{(dataset, tool, threads): (core times, core memory or None, source profile)}.
+
+    Core-profile runs are used where they exist; otherwise the core steps of full-profile
+    runs (time only: their memory includes the optional modules)."""
+    ok = df.filter((pl.col("status") == "ok") & pl.col("core_seconds").is_not_null())
+    out = {}
+    for (ds, tool, th), g in ok.group_by(["dataset", "tool", "threads"], maintain_order=True):
+        core = g.filter(pl.col("profile") == "core")
+        use = core if core.height else g
+        mem = core["core_peak_rss_gb"].drop_nulls().to_numpy() if core.height else None
+        out[(ds, tool, int(th))] = (use["core_seconds"].to_numpy(), mem if mem is not None and len(mem) else None,
+                                    "core" if core.height else "full")
+    return out
+
+
 def main_table(df: pl.DataFrame) -> pl.DataFrame:
-    ok = _main_runs(df).filter(pl.col("status") == "ok")
-    df = _main_runs(df)
-    all_threads = ok
-    out = []
-    for ds in all_threads["dataset"].unique(maintain_order=True).to_list():
-        sub = all_threads.filter(pl.col("dataset") == ds)
-        row = {"dataset": ds, "n_cells": int(sub["n_cells"].drop_nulls().max() or 0)}
+    """Headline: core workflow, CREST vs scanpy, matched and best thread counts."""
+    samp = _core_samples(df)
+    rows = []
+    datasets = df.group_by("dataset").agg(pl.col("n_cells").max()).sort("n_cells")
+    for ds, n in datasets.iter_rows():
+        row = {"dataset": ds, "n_cells": int(n or 0)}
+        th = {t: sorted(k[2] for k in samp if k[0] == ds and k[1] == t) for t in TOOLS}
         for t in TOOLS:
-            x = sub.filter(pl.col("tool") == t)
             fail = df.filter((pl.col("dataset") == ds) & (pl.col("tool") == t) & (pl.col("status") != "ok")).height
-            if x.height:
-                tt, mm = x["total_seconds"].to_numpy(), x["peak_rss_gb"].to_numpy()
-                row.update({f"{t}_n": x.height, f"{t}_time_median": float(np.median(tt)), f"{t}_time_iqr": iqr(tt),
-                            f"{t}_time_cv": float(np.std(tt, ddof=1) / np.mean(tt)) if len(tt) > 1 else None,
-                            f"{t}_mem_median": float(np.median(mm)), f"{t}_mem_iqr": iqr(mm)})
             row[f"{t}_failed"] = fail
-        a = sub.filter(pl.col("tool") == "crest")["total_seconds"].to_numpy()
-        b = sub.filter(pl.col("tool") == "scanpy")["total_seconds"].to_numpy()
-        if len(a) and len(b):
-            s, lo, hi = boot_ratio(a, b)
-            row.update({"speedup": s, "speedup_ci_lo": lo, "speedup_ci_hi": hi,
-                        "mannwhitney_p": mann_whitney(a, b), "hodges_lehmann_s": hodges_lehmann(a, b)})
-            ma = sub.filter(pl.col("tool") == "crest")["peak_rss_gb"].to_numpy()
-            mb = sub.filter(pl.col("tool") == "scanpy")["peak_rss_gb"].to_numpy()
+            if not th[t]:
+                continue
+            med = {p: float(np.median(samp[(ds, t, p)][0])) for p in th[t]}
+            best = min(med, key=med.get)
+            top = max(th[t])
+            x, mem, src = samp[(ds, t, top)]
+            row.update({f"{t}_n": len(x), f"{t}_threads_measured": " ".join(map(str, th[t])),
+                        f"{t}_time_median": med[top], f"{t}_time_iqr": iqr(x),
+                        f"{t}_best_threads": best, f"{t}_best_time": med[best],
+                        f"{t}_mem_median": float(np.median(mem)) if mem is not None else None, f"{t}_source": src})
+        common = sorted(set(th["crest"]) & set(th["scanpy"]))
+        if not common:
+            rows.append(row)
+            continue
+        pm = max(common)
+        a, b = samp[(ds, "crest", pm)][0], samp[(ds, "scanpy", pm)][0]
+        s, lo, hi = boot_ratio(a, b)
+        row.update({"matched_threads": pm, "speedup_matched": s, "speedup_matched_lo": lo, "speedup_matched_hi": hi,
+                    "mannwhitney_p": mann_whitney(a, b), "hodges_lehmann_s": hodges_lehmann(a, b)})
+        ba = samp[(ds, "crest", row["crest_best_threads"])][0]
+        bb = samp[(ds, "scanpy", row["scanpy_best_threads"])][0]
+        s2, lo2, hi2 = boot_ratio(ba, bb)
+        row.update({"speedup_best": s2, "speedup_best_lo": lo2, "speedup_best_hi": hi2})
+        if s2 <= s:
+            row.update({"speedup": s2, "speedup_ci_lo": lo2, "speedup_ci_hi": hi2, "speedup_basis": "best vs best"})
+        else:
+            row.update({"speedup": s, "speedup_ci_lo": lo, "speedup_ci_hi": hi, "speedup_basis": f"matched ({pm} threads)"})
+        row["single_thread_count"] = len(th["crest"]) < 2 or len(th["scanpy"]) < 2
+        ma, mb = samp[(ds, "crest", pm)][1], samp[(ds, "scanpy", pm)][1]
+        if ma is not None and mb is not None:
             m, mlo, mhi = boot_ratio(ma, mb)
             row.update({"memory_ratio": m, "memory_ratio_ci_lo": mlo, "memory_ratio_ci_hi": mhi})
-        out.append(row)
-    return pl.DataFrame(out, infer_schema_length=None).sort("n_cells") if out else pl.DataFrame()
+        rows.append(row)
+    return pl.DataFrame(rows, infer_schema_length=None) if rows else pl.DataFrame()
+
+
+def module_table(df: pl.DataFrame) -> pl.DataFrame:
+    """Optional modules, from full-profile runs at the highest thread count."""
+    ok = df.filter((pl.col("status") == "ok") & (pl.col("profile") == "full"))
+    if not ok.height:
+        return pl.DataFrame()
+    ok = ok.filter(pl.col("threads") == ok["threads"].max())
+    rows = []
+    for ds in ok.sort("n_cells")["dataset"].unique(maintain_order=True).to_list():
+        for s in MODULE_STEPS:
+            col = f"step:{s}"
+            if col not in ok.columns:
+                continue
+            v = {t: ok.filter((pl.col("dataset") == ds) & (pl.col("tool") == t))[col].drop_nulls().to_numpy()
+                 for t in ("crest", "scanpy")}
+            if not len(v["crest"]):
+                continue
+            c = float(np.median(v["crest"]))
+            sc = float(np.median(v["scanpy"])) if len(v["scanpy"]) else None
+            rows.append({"dataset": ds, "module": s, "crest_s": c, "scanpy_s": sc,
+                         "speedup": sc / c if sc else None, "n": len(v["crest"])})
+    return pl.DataFrame(rows, infer_schema_length=None)
+
+
+def not_faster_table(steps: pl.DataFrame, threshold: float = 1.2) -> pl.DataFrame:
+    """Every (dataset, step) where CREST is not clearly faster than scanpy."""
+    rows = []
+    for (ds, st), g in steps.group_by(["dataset", "step"], maintain_order=True):
+        c = g.filter(pl.col("tool") == "crest")["median_s"].to_numpy()
+        s = g.filter(pl.col("tool") == "scanpy")["median_s"].to_numpy()
+        if len(c) and len(s) and c[0] > 0.005 and s[0] / c[0] < threshold:
+            rows.append({"dataset": ds, "step": st, "crest_s": float(c[0]), "scanpy_s": float(s[0]),
+                         "speedup": float(s[0] / c[0])})
+    return pl.DataFrame(rows).sort(["speedup"]) if rows else pl.DataFrame()
 
 
 def step_table(df: pl.DataFrame) -> pl.DataFrame:
@@ -157,7 +245,7 @@ def thread_table(df: pl.DataFrame) -> pl.DataFrame:
     ok = df.filter((pl.col("status") == "ok") & (pl.col("profile") == "core"))
     rows = []
     for (ds, tool), g in ok.group_by(["dataset", "tool"], maintain_order=True):
-        med = g.group_by("threads").agg(pl.col("total_seconds").median()).sort("threads")
+        med = g.group_by("threads").agg(pl.col("core_seconds").median().alias("total_seconds")).sort("threads")
         if med.height < 2 or 1 not in med["threads"].to_list():
             continue
         t1 = med.filter(pl.col("threads") == 1)["total_seconds"][0]
@@ -188,14 +276,19 @@ def _save(fig, figs: Path, name: str):
 
 def fig_totals(df, figs):
     plt = _style()
-    ok = _main_runs(df).filter(pl.col("status") == "ok")
+    ok = df.filter((pl.col("status") == "ok") & pl.col("core_seconds").is_not_null())
+    ok = ok.filter(pl.col("threads") == ok["threads"].max())
+    # prefer core-profile runs; fall back to the core steps of full runs
+    ok = ok.filter((pl.col("profile") == "core") | ~pl.struct("dataset", "tool").is_in(
+        ok.filter(pl.col("profile") == "core").select(pl.struct("dataset", "tool")).to_series().implode()))
     ds = ok.group_by("dataset").agg(pl.col("n_cells").max()).sort("n_cells")["dataset"].to_list()
     fig, axes = plt.subplots(1, 2, figsize=(10, 3.6))
-    for ax, col, lab in ((axes[0], "total_seconds", "wall time (s, log)"), (axes[1], "peak_rss_gb", "peak memory (GB, log)")):
+    for ax, col, lab in ((axes[0], "core_seconds", "core workflow time (s, log)"),
+                         (axes[1], "core_peak_rss_gb", "core workflow peak memory (GB, log)")):
         w = 0.8 / len(TOOLS)
         for k, t in enumerate(TOOLS):
             for i, d in enumerate(ds):
-                v = ok.filter((pl.col("dataset") == d) & (pl.col("tool") == t))[col].to_numpy()
+                v = ok.filter((pl.col("dataset") == d) & (pl.col("tool") == t))[col].drop_nulls().to_numpy()
                 if not len(v):
                     continue
                 x = i + (k - (len(TOOLS) - 1) / 2) * w
@@ -241,15 +334,16 @@ def fig_steps(steps: pl.DataFrame, figs, dataset: str):
 
 def fig_scaling(df, figs) -> list[dict]:
     plt = _style()
-    ok = _main_runs(df).filter(pl.col("status") == "ok")
+    ok = df.filter((pl.col("status") == "ok") & pl.col("core_seconds").is_not_null())
+    ok = ok.filter(pl.col("threads") == ok["threads"].max())
     fits = []
     fig, ax = plt.subplots(figsize=(5, 3.6))
     for t in TOOLS:
-        g = ok.filter(pl.col("tool") == t).group_by("dataset").agg(pl.col("n_cells").max(), pl.col("total_seconds").median())
+        g = ok.filter(pl.col("tool") == t).group_by("dataset").agg(pl.col("n_cells").max(), pl.col("core_seconds").median())
         g = g.filter(pl.col("dataset").str.starts_with("synth_") | (pl.col("dataset") == "pbmc68k")).sort("n_cells")
         if g.height < 2:
             continue
-        n, y = g["n_cells"].to_numpy(), g["total_seconds"].to_numpy()
+        n, y = g["n_cells"].to_numpy(), g["core_seconds"].to_numpy()
         ax.plot(n, y, "o-", color=COLORS[t], lw=2, ms=6, label=LABELS[t], zorder=3)
         if g.height >= 3:
             f = loglog_fit(n, y)
@@ -262,7 +356,7 @@ def fig_scaling(df, figs) -> list[dict]:
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("cells (log)")
-    ax.set_ylabel("wall time (s, log)")
+    ax.set_ylabel("core workflow time (s, log)")
     ax.legend()
     _save(fig, figs, "fig3_scaling")
     plt.close(fig)
@@ -342,19 +436,22 @@ def to_latex(df: pl.DataFrame, path: Path, caption: str):
 
 
 def compact_main(t: pl.DataFrame) -> pl.DataFrame:
-    """Readable summary: median [IQR] per tool, speedup and memory ratio with CIs."""
+    """Readable headline: core workflow time per tool, speedups with CIs, memory ratio."""
     rows = []
     for r in t.iter_rows(named=True):
         row = {"dataset": r["dataset"], "cells": r["n_cells"]}
         for tool in TOOLS:
             if r.get(f"{tool}_time_median") is not None:
-                row[f"{LABELS[tool]} time (s)"] = f"{r[f'{tool}_time_median']:.3g} [{r[f'{tool}_time_iqr']:.2g}]"
-                row[f"{LABELS[tool]} memory (GB)"] = f"{r[f'{tool}_mem_median']:.3g}"
+                row[f"{LABELS[tool]} (s)"] = f"{r[f'{tool}_time_median']:.3g} [{r[f'{tool}_time_iqr']:.2g}]"
+                row[f"{LABELS[tool]} best (s @ threads)"] = f"{r[f'{tool}_best_time']:.3g} @ {r[f'{tool}_best_threads']}"
             elif r.get(f"{tool}_failed"):
-                row[f"{LABELS[tool]} time (s)"] = "failed"
+                row[f"{LABELS[tool]} (s)"] = "failed"
         if r.get("speedup") is not None:
-            row["speedup (95% CI)"] = f"{r['speedup']:.2f} ({r['speedup_ci_lo']:.2f}-{r['speedup_ci_hi']:.2f})"
-            row["memory ratio (95% CI)"] = f"{r['memory_ratio']:.2f} ({r['memory_ratio_ci_lo']:.2f}-{r['memory_ratio_ci_hi']:.2f})"
+            row["matched"] = f"{r['speedup_matched']:.2f} ({r['speedup_matched_lo']:.2f}-{r['speedup_matched_hi']:.2f})"
+            row["best vs best"] = f"{r['speedup_best']:.2f} ({r['speedup_best_lo']:.2f}-{r['speedup_best_hi']:.2f})"
+            row["headline speedup"] = f"**{r['speedup']:.2f}**" + (" †" if r.get("single_thread_count") else "")
+            row["memory ratio"] = (f"{r['memory_ratio']:.2f} ({r['memory_ratio_ci_lo']:.2f}-{r['memory_ratio_ci_hi']:.2f})"
+                                   if r.get("memory_ratio") is not None else "n/a ‡")
             row["Mann-Whitney p"] = None if r["mannwhitney_p"] is None else f"{r['mannwhitney_p']:.2g}"
         rows.append(row)
     return pl.DataFrame(rows, infer_schema_length=None)
@@ -411,23 +508,49 @@ def main():
         acc_df.write_csv(tables / "accuracy.csv")
     mods = sorted((res / "modules").glob("*.md")) if (res / "modules").exists() else []
     env = (res / "env" / "summary.md").read_text() if (res / "env" / "summary.md").exists() else ""
+    mods_t = module_table(df)
+    slow = not_faster_table(steps)
+    for name, t in (("modules", mods_t), ("not_faster", slow)):
+        if t.height:
+            t.write_csv(tables / f"{name}.csv")
     with open(res / "report.md", "w") as fh:
-        fh.write(f"# CREST benchmark report\n\n{env}\n\n## Wall time and memory\n\n")
-        fh.write("Speedup = median scanpy time / median CREST time, 95% bootstrap CI; memory ratio likewise "
-                 "(scanpy / CREST). Mann-Whitney U two-sided p-value; Hodges-Lehmann shift in seconds.\n\n")
+        fh.write(f"# CREST benchmark report\n\n{env}\n\n## Core workflow: CREST vs scanpy\n\n")
+        fh.write("Core workflow = read, QC filter, normalize + log1p, HVG, scale + PCA, neighbours, Leiden, UMAP, "
+                 "t-test and Wilcoxon marker genes (the sum of these steps; interpreter start-up and JIT warm-up "
+                 "excluded). Times are medians [IQR] over repeats at the highest thread count; *best* is each tool's "
+                 "fastest measured thread count. Speedup = scanpy / CREST with a 95% bootstrap CI, at matched "
+                 "threads and best vs best; the **headline** is the smaller of the two.\n\n")
         fh.write(md(compact_main(main_t)) if main_t.height else "_(no data)_\n")
-        fh.write("\nMedian [IQR] over repeats; full statistics in `tables/main.csv`.\n")
+        if main_t.height and "single_thread_count" in main_t.columns and main_t["single_thread_count"].any():
+            fh.write("\n† only one thread count was measured for this dataset, so *best vs best* equals *matched*. "
+                     "Where a thread scan exists, scanpy is typically slower at high thread counts than at its "
+                     "best, so this headline can overstate CREST's advantage (see *Thread scaling*).\n")
+        if main_t.height and "speedup" in main_t.columns and (
+                "memory_ratio" not in main_t.columns
+                or main_t.filter(pl.col("speedup").is_not_null() & pl.col("memory_ratio").is_null()).height):
+            fh.write("\n‡ memory not reported: these times come from full-profile runs, whose peak memory includes "
+                     "the optional modules. Clean core-workflow memory needs core-profile runs.\n")
+        fh.write("\nFull statistics (Hodges-Lehmann shifts, CV, failures) in `tables/main.csv`.\n")
         fig = lambda name, alt: f"\n![{alt}](figures/{name}.png)\n" if (figs / f"{name}.png").exists() else ""  # noqa: E731
-        fh.write(fig("fig1_time_memory", "time and memory") + "\n## Scaling with cells\n\n")
+        fh.write(fig("fig1_time_memory", "time and memory") + "\n## Where CREST is not clearly faster (< 1.2x)\n\n")
+        fh.write(md(slow) if slow.height else "none\n")
+        fh.write("\n## Optional modules\n\nFrom full-profile runs at the highest thread count; scanpy has no pseudobulk "
+                 "DESeq2 (see the DESeq2 module benchmark for R and pydeseq2).\n\n")
+        fh.write(md(mods_t) if mods_t.height else "_(no full-profile runs)_\n")
+        fh.write("\n## Scaling with cells (core workflow)\n\n")
         fh.write(md(pl.DataFrame(fits)) if fits else "_(needs >= 3 dataset sizes of the synthetic series)_\n")
-        fh.write(fig("fig3_scaling", "scaling") + "\n## Thread scaling\n\n" + md(th))
+        fh.write(fig("fig3_scaling", "scaling") + "\n## Thread scaling (core workflow)\n\n" + md(th))
         fh.write(fig("fig4_thread_scaling", "threads") + "\n## Per-step breakdown\n\n" + md(steps))
         for ds in df["dataset"].unique().to_list():
             fh.write(fig(f"fig2_steps_{ds}", f"steps {ds}") + fig(f"fig5_timeline_{ds}", f"timeline {ds}"))
         fh.write("\n## Agreement with scanpy\n\n" + (md(transpose_metrics(acc_df)) if acc_df.height else "_(no data)_\n"))
         for m in mods:
             fh.write(f"\n## Module: {m.stem}\n\n" + m.read_text())
-        fails = df.filter(pl.col("status") != "ok").select("tool", "dataset", "threads", "repeat", "status")
+        if "skipped_steps" in df.columns:
+            sk = (df.filter(pl.col("skipped_steps").is_not_null())
+                  .group_by("dataset", "tool", "skipped_steps").agg(pl.len().alias("runs")).sort("dataset", "tool"))
+            fh.write("\n## Skipped steps\n\n" + (md(sk) if sk.height else "none\n"))
+        fails = df.filter(pl.col("status") != "ok").select("tool", "dataset", "profile", "threads", "repeat", "status")
         fh.write("\n## Failed runs\n\n" + (md(fails) if fails.height else "none\n"))
     print(f"report: {res / 'report.md'}")
 

@@ -44,10 +44,14 @@ dense reference.
 
 * Each step is one (or two, for PCA) pass over the raw counts, recomputing the
   normalisation. The fused kernels make this cheaper than scanpy's single
-  materialised pass: every step is still 3–17× faster.
+  materialised pass: at 100k cells in the 0.2.0 benchmark every step was 1.9–17×
+  faster. On very small data (PBMC 3k) two steps have a fixed cost that makes them
+  slower than scanpy: PCA (~1 s, mostly the 2,000 × 2,000 eigendecomposition) and
+  UMAP (~3 s, 500 epochs below 10k cells); see {doc}`benchmarks`.
 * Out-of-core mode re-reads Parquet from disk on every pass (≈ 10 passes for the
   full pipeline, more for Wilcoxon, which processes genes in memory-bounded
-  blocks). That is the time you trade for flat ~1 GB memory: 109 s vs 57 s
-  in-memory at 100k, 283 s vs 120 s at 200k.
+  blocks). That is the time you trade for ~1 GB memory at these sizes (per-cell
+  results still grow with the number of cells): 109 s vs 57 s in-memory at 100k,
+  283 s vs 120 s at 200k (0.2.0, 4 cores).
 * There is no stored normalised matrix to hand to other tools; `to_scipy()` /
   `to_anndata(transform=True)` materialise it on demand.

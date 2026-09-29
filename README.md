@@ -98,8 +98,13 @@ The 100k/200k datasets are generated from the real 10k PBMC v3 matrix by
 binomial thinning), so sparsity, library size and cluster structure are realistic.
 
 The figures above come from the 0.2.0 run on a 4-core cloud VM
-(`bench/whitepaper/results/`); numbers on a 64-core workstation, reported at each
-tool's best thread count as well as at matched thread counts, will replace them. The
+(`bench/whitepaper/results/`). On a 64-thread workstation (0.3.0, 5 repeats), the core
+workflow on PBMC 68k took 10.6 s with CREST vs 94.3 s with scanpy at its best thread
+count (8 threads): **8.9× faster** (95% CI 8.7–9.0), with 3.4× less memory. Comparing both
+at 64 threads would give 19.8×, which flatters CREST because scanpy slows down at high
+thread counts. CREST is *not* faster for `seurat_v3` HVG selection (about 2× slower) or
+for PCA and UMAP on very small datasets (PBMC 3k). Full tables, including every step
+where CREST loses: [docs/benchmarks.md](docs/benchmarks.md). The
 paper benchmark (six real datasets plus a synthetic scaling series, 5 repeats,
 thread scaling, per-core CPU/clock/memory timelines, accuracy against scanpy,
 bootstrap confidence intervals) runs on your own machine with one command:

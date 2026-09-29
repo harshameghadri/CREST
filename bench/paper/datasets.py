@@ -71,6 +71,21 @@ REGISTRY: dict[str, dict] = {
         "batch": "donor_id", "sample": ["donor_id"], "condition": "disease", "contrast": ["disease", "COVID-19", "normal"],
         "celltype": "cell_type",
     },
+    "parse_pbmc": {
+        # Parse Biosciences "10 million human PBMCs" (12 donors x 90 cytokines + PBS), the
+        # processed subset distributed with CellFlow. Figshare may refuse scripted downloads
+        # (bot check); then download it in a browser and put it in the data directory under
+        # any of `local_names`, it is picked up from there.
+        "files": {"parse_pbmc.h5ad": ("https://figshare.com/ndownloader/files/53372768", 13101592422)},
+        "local_names": ["Parse_1M_adata_for_cellflow_datasets_with_embeddings.h5ad",
+                        "adata_for_cellflow_datasets_with_embeddings.h5ad"],
+        "md5": "d89559875a6c75ab37e0adf84c6e177d",
+        "cells": 1_000_000, "tier": "full", "chemistry": "Parse Evercode WT v3 (split-pool)",
+        "description": "Parse 10M PBMC cytokine atlas, ~1M-cell CellFlow subset (figshare 28589774)",
+        "citation": "Parse Biosciences (2024), 10 million human PBMCs; figshare 28589774",
+        # batch / sample / condition / cell type columns are detected at conversion
+        # (written to parse_pbmc.meta.json), since the file's obs schema is not fixed here
+    },
     "neurons_1m": {
         "files": {"neurons_1m.h5": (f"{TENX}/1.3.0/1M_neurons/1M_neurons_filtered_gene_bc_matrices_h5.h5", 4216018749)},
         "cells": 1306127, "tier": "full", "chemistry": "10x 3' v2",
@@ -247,6 +262,176 @@ def _build_h5ad(src: Path, out: Path) -> None:
     obs.select([pl.col(c).cast(pl.Utf8) for c in keep]).write_parquet(out.with_suffix(".obs.parquet"))
 
 
+# --------------------------------------------------------------------------- generic h5ad
+def _h5_str(a) -> list:
+    return [x.decode() if isinstance(x, bytes) else str(x) for x in a]
+
+
+def _obs_column(node) -> list | None:
+    """A string / categorical obs column in either anndata encoding, or None."""
+    if isinstance(node, h5py.Group) and "categories" in node and "codes" in node:
+        cats = _h5_str(node["categories"][:])
+        codes = node["codes"][:]
+        return [cats[c] if c >= 0 else None for c in codes]
+    if isinstance(node, h5py.Dataset) and node.dtype.kind in ("S", "O", "U") and node.ndim == 1:
+        return _h5_str(node[:])
+    return None
+
+
+def read_h5ad_obs(group, max_levels: int = 20_000) -> dict:
+    """obs index + every string/categorical column with at most ``max_levels`` levels."""
+    key = group.attrs.get("_index", "_index")
+    key = key.decode() if isinstance(key, bytes) else key
+    cols = {"barcode": _h5_str(group[key][:])}
+    order = group.attrs.get("column-order", list(group.keys()))
+    for c in [x.decode() if isinstance(x, bytes) else str(x) for x in order]:
+        if c == key or c not in group:
+            continue
+        v = _obs_column(group[c])
+        if v is not None and len(set(v)) <= max_levels:
+            cols[c] = v
+    return cols
+
+
+def _counts_node(f):
+    """(path, group) of the raw-count matrix: layers/counts, raw/X, then X; the first CSR
+    matrix whose first million values are non-negative integers."""
+    for path in ("layers/counts", "layers/raw_counts", "raw/X", "X"):
+        if path not in f or not isinstance(f[path], h5py.Group):
+            continue
+        g = f[path]
+        enc = g.attrs.get("encoding-type", "csr_matrix")
+        enc = enc.decode() if isinstance(enc, bytes) else enc
+        sample = g["data"][: 1 << 20]
+        if len(sample) and np.all(sample >= 0) and np.all(np.mod(sample, 1) == 0):
+            if not enc.startswith("csr"):
+                raise RuntimeError(f"raw counts at {path} are stored as {enc}; CSR (cells x genes) is required")
+            return path, g
+        print(f"  [skip]     {path}: not raw counts (non-integer or negative values)")
+    raise RuntimeError("no raw-count matrix found (looked at layers/counts, layers/raw_counts, raw/X, X)")
+
+
+def inspect_h5ad(path: Path) -> None:
+    """Print the layout of an .h5ad: matrices, obs columns and their levels."""
+    with h5py.File(path, "r") as f:
+        def show(name, obj):
+            if isinstance(obj, h5py.Dataset) and not name.startswith(("obs/", "var/")):
+                print(f"  {name:45s} {str(obj.shape):>18s} {obj.dtype}")
+            elif isinstance(obj, h5py.Group) and "encoding-type" in obj.attrs and not name.startswith(("obs/", "var/")):
+                shape = obj.attrs.get("shape")
+                print(f"  {name + '/':45s} {obj.attrs['encoding-type']} shape={None if shape is None else tuple(shape)}")
+        f.visititems(show)
+        try:
+            print(f"counts: {_counts_node(f)[0]}")
+        except RuntimeError as e:
+            print(f"counts: {e}")
+        obs = read_h5ad_obs(f["obs"])
+        print(f"obs: {len(obs['barcode'])} cells")
+        for c, v in obs.items():
+            if c == "barcode":
+                continue
+            levels = {}
+            for x in v:
+                levels[x] = levels.get(x, 0) + 1
+            top = sorted(levels.items(), key=lambda kv: -kv[1])[:6]
+            print(f"  {c:30s} {len(levels):6d} levels  e.g. " + ", ".join(f"{k} ({n})" for k, n in top))
+
+
+def _pick(cols, names):
+    low = {c.lower(): c for c in cols}
+    return next((low[n.lower()] for n in names if n.lower() in low), None)
+
+
+def _resolve_meta(obs: dict) -> dict:
+    """Batch / sample / condition / cell-type columns and a treated-vs-control contrast."""
+    import re
+    cols = [c for c in obs if c != "barcode"]
+    donor = _pick(cols, ["donor", "donor_id", "Donor", "individual", "patient"])
+    cond = _pick(cols, ["cytokine", "cytokines", "treatment", "condition", "stim", "perturbation"])
+    ctype = _pick(cols, ["cell_type", "celltype", "cell_type_annotation", "cell_type_label", "annotation"])
+    meta = {"detected_columns": {"donor": donor, "condition": cond, "celltype": ctype}}
+    if donor:
+        meta["batch"] = donor
+    if ctype:
+        meta["celltype"] = ctype
+    if donor and cond:
+        counts = {}
+        for x in obs[cond]:
+            counts[x] = counts.get(x, 0) + 1
+        ctrl = next((k for k in counts if k and re.fullmatch(r"(?i)pbs|control|ctrl|untreated|none|unstim(ulated)?", k)), None)
+        if ctrl:
+            treated = max((k for k in counts if k not in (ctrl, None)), key=counts.get)
+            meta.update({"sample": [donor, cond], "condition": cond, "contrast": [cond, treated, ctrl],
+                         "pb_levels_only": True})
+    return meta
+
+
+def _build_generic_h5ad(src: Path, out: Path) -> None:
+    """Any .h5ad with CSR raw counts -> 10x h5 (streamed) + obs sidecar + meta sidecar."""
+    import polars as pl
+    with h5py.File(src, "r") as f:
+        path, X = _counts_node(f)
+        print(f"  [counts]   {path}")
+        var_group = f["raw/var"] if path == "raw/X" and "raw/var" in f else f["var"]
+        vkey = var_group.attrs.get("_index", "_index")
+        vkey = vkey.decode() if isinstance(vkey, bytes) else vkey
+        names = _h5_str(var_group[vkey][:])
+        gid = next((c for c in ("gene_ids", "gene_id", "ensembl_id", "gene_ids-0") if c in var_group), None)
+        ids = (_obs_column(var_group[gid]) if gid else None) or names
+        obs = read_h5ad_obs(f["obs"])
+        shape = X.attrs.get("shape")
+        n_cells, n_genes = int(shape[0]), int(shape[1])
+        if len(names) != n_genes or len(obs["barcode"]) != n_cells:
+            raise RuntimeError(f"shape {n_cells} x {n_genes} does not match obs/var ({len(obs['barcode'])}/{len(names)})")
+        indptr = X["indptr"][:].astype(np.int64)
+        tmp = out.with_suffix(".tmp.h5")
+        with h5py.File(tmp, "w") as g:
+            m = g.create_group("matrix")
+            nnz = int(indptr[-1])
+            dd = m.create_dataset("data", (nnz,), np.int32, compression="gzip", compression_opts=1, chunks=(1 << 20,))
+            di = m.create_dataset("indices", (nnz,), np.int32, compression="gzip", compression_opts=1, chunks=(1 << 20,))
+            step = 1 << 26
+            for lo in range(0, nnz, step):
+                hi = min(lo + step, nnz)
+                vals = X["data"][lo:hi]
+                if not np.all(np.mod(vals, 1) == 0):
+                    raise RuntimeError(f"{src.name}: non-integer values in {path}")
+                dd[lo:hi] = vals.astype(np.int32)
+                di[lo:hi] = X["indices"][lo:hi].astype(np.int32)
+                print(f"             {hi / nnz:6.1%} of {nnz:,} non-zeros", flush=True)
+            m.create_dataset("indptr", data=indptr)
+            m.create_dataset("shape", data=np.array([n_genes, n_cells], np.int32))
+            m.create_dataset("barcodes", data=_enc(obs["barcode"]))
+            ft = m.create_group("features")
+            ft.create_dataset("id", data=_enc(ids))
+            ft.create_dataset("name", data=_enc(names))
+            ft.create_dataset("feature_type", data=_enc(["Gene Expression"] * n_genes))
+            ft.create_dataset("genome", data=_enc(["GRCh38"] * n_genes))
+        tmp.rename(out)
+    meta = _resolve_meta(obs)
+    keep = ["barcode"] + [c for c in dict.fromkeys([meta.get("batch"), meta.get("condition"), meta.get("celltype")]) if c]
+    pl.DataFrame({c: obs[c] for c in keep}).write_parquet(out.with_suffix(".obs.parquet"))
+    meta.update({"source": src.name, "counts_path": path, "cells": n_cells, "genes": n_genes})
+    out.with_suffix(".meta.json").write_text(json.dumps(meta, indent=1))
+    print(f"  [meta]     {json.dumps({k: meta.get(k) for k in ('batch', 'sample', 'condition', 'contrast', 'celltype')})}")
+
+
+def _find_local(spec: dict, data_dir: Path, dest: Path) -> None:
+    """Link a manually downloaded copy (any of spec['local_names']) into the source folder."""
+    if dest.exists():
+        return
+    for n in spec.get("local_names", []):
+        for d in (data_dir, dest.parent, Path.cwd()):
+            p = d / n
+            if p.exists():
+                size = spec["files"][dest.name][1]
+                if size and p.stat().st_size != size:
+                    print(f"  [note]     {p} is {p.stat().st_size:,} bytes, figshare's copy {size:,}; using it anyway")
+                dest.symlink_to(p.resolve())
+                print(f"  [local]    {dest.name} -> {p}")
+                return
+
+
 def build(name: str, data_dir: Path) -> Path:
     """Download (if needed) and convert; returns the path of ``<name>.h5``."""
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -262,7 +447,16 @@ def build(name: str, data_dir: Path) -> Path:
     src_dir = data_dir / "src" / name
     src_dir.mkdir(parents=True, exist_ok=True)
     for fname, (url, size) in spec["files"].items():
-        download(url, src_dir / fname, size)
+        _find_local(spec, data_dir, src_dir / fname)
+        if (src_dir / fname).is_symlink():
+            continue
+        try:
+            download(url, src_dir / fname, size)
+        except RuntimeError:
+            if spec.get("local_names"):
+                raise RuntimeError(f"could not download {name}. Download {url} in a browser and put it in "
+                                   f"{data_dir} as {spec['local_names'][0]}") from None
+            raise
     record_checksums(data_dir, [src_dir / f for f in spec["files"]])
     if out.exists():
         return out
@@ -281,6 +475,8 @@ def build(name: str, data_dir: Path) -> Path:
         _build_kang(src_dir, out)
     elif name == "covid_stephenson":
         _build_h5ad(src_dir / "covid_stephenson.h5ad", out)
+    elif name == "parse_pbmc":
+        _build_generic_h5ad(src_dir / "parse_pbmc.h5ad", out)
     else:
         raise KeyError(name)
     return out
@@ -292,7 +488,11 @@ def main():
     ap.add_argument("--datasets", nargs="*")
     ap.add_argument("--tier", choices=["quick", "standard", "full"])
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--inspect", metavar="H5AD", help="print the layout of an .h5ad and exit")
     a = ap.parse_args()
+    if a.inspect:
+        inspect_h5ad(Path(a.inspect))
+        return
     if a.list:
         for k, v in REGISTRY.items():
             print(f"{k:18s} {v['cells']:>9,d} cells  tier={v['tier']:8s} {v['description']}")
