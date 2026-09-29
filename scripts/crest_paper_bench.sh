@@ -17,8 +17,9 @@
 #   3. runs the test suites (cargo test, pytest incl. scanpy and R-DESeq2 parity); stops if they fail
 #   4. records the machine: CPU model/cache/governor/turbo, cores, RAM, OS, compilers, BLAS, every package
 #   5. downloads and converts the datasets (resumable, size-checked, SHA-256 recorded)
-#   6. runs every (dataset x tool x repeat) in its own process, interleaved and shuffled, plus a thread
-#      scan; per step: wall and CPU time, parallelism, peak/timeline memory, per-core utilisation and
+#   6. runs every (dataset x tool x repeat) in its own process, interleaved and shuffled: the core
+#      workflow at --main-threads (for matched and best-thread comparisons), separate runs of the
+#      optional modules, and a thread scan; per step: wall and CPU time, parallelism, peak/timeline memory, per-core utilisation and
 #      clock, context switches, I/O, energy (RAPL, if readable); OOM/timeouts recorded as failures
 #   7. agreement with scanpy (ARI/NMI, kNN, PCA subspace, HVG, DE markers, UMAP trustworthiness, ...)
 #   8. module benchmarks: DESeq2 vs R/pydeseq2, Harmony vs harmonypy, Scrublet vs scanpy (demuxlet truth),
@@ -36,10 +37,13 @@
 #   --threads "1 2 4 8"    thread counts for the strong-scaling scan (default: powers of two up to all cores;
 #                          quick tier: 1, 8 and all cores)
 #   --thread-dataset NAME  dataset for the thread scan               (default: pbmc68k; pbmc10k in the quick tier)
+#   --main-threads "8 64"  thread counts for the main core-workflow runs (default: 8 and all cores)
+#   --module-repeats K     repeats of the optional-module runs       (default: 3; 2 in the quick tier)
+#   --scrublet-max-cells N skip Scrublet in module runs above N cells (default: 150000; 0 = never skip)
 #   --scanpy-max-cells N   skip scanpy above N cells (0 = never; default: from RAM, ~12.5k cells per GB)
 #   --timeout SEC          per-run limit                             (default: 7200)
 #   --python X.Y           Python for the venv                       (default: 3.11)
-#   --profile P            core | full pipeline steps                (default: full)
+#   --profile P            full = core workflow + separate module runs; core = core only (default: full)
 #   --no-pin               do not pin thread-scan runs to cores
 #   --skip-tests / --skip-modules / --skip-thread-scan / --skip-build
 #   --install-uv           install uv if missing (https://astral.sh/uv)
@@ -47,7 +51,13 @@
 #   --list-datasets        print the dataset registry and exit
 #   --dry-run              print the run plan and exit
 #
-# Requirements: Linux or macOS, git, curl, a C toolchain (for Rust), ~10 GB disk (standard) or ~60 GB (full).
+# Parse 1M PBMCs (--datasets parse_pbmc, or part of --tier full): put the h5ad from
+# https://figshare.com/articles/dataset/pbmc_parse/28589774 in <workdir>/data/ (as
+# Parse_1M_adata_for_cellflow_datasets_with_embeddings.h5ad or its original name); it is used from
+# there. Its layout can be checked with: python bench/paper/datasets.py --inspect FILE.h5ad
+#
+# Requirements: Linux or macOS, git, curl, a C toolchain (for Rust), ~10 GB disk (standard) or ~60 GB (full;
+# +~20 GB for the converted Parse data).
 # Optional: R with DESeq2 (for the R comparison): R -e 'BiocManager::install("DESeq2")' + jsonlite.
 
 set -euo pipefail
@@ -64,6 +74,9 @@ SCANPY_MAX=""
 TIMEOUT=7200
 PYVER="3.11"
 PROFILE="full"
+MAIN_THREADS=""
+MODULE_REPEATS=""
+SCRUBLET_MAX=150000
 NO_PIN=0; SKIP_TESTS=0; SKIP_MODULES=0; SKIP_SCAN=0; SKIP_BUILD=0; INSTALL_UV=0; INSTALL_RUST=0
 LIST=0; DRY=0
 
@@ -81,6 +94,9 @@ while [[ $# -gt 0 ]]; do
     --timeout) TIMEOUT="$2"; shift 2 ;;
     --python) PYVER="$2"; shift 2 ;;
     --profile) PROFILE="$2"; shift 2 ;;
+    --main-threads) MAIN_THREADS="$2"; shift 2 ;;
+    --module-repeats) MODULE_REPEATS="$2"; shift 2 ;;
+    --scrublet-max-cells) SCRUBLET_MAX="$2"; shift 2 ;;
     --no-pin) NO_PIN=1; shift ;;
     --skip-tests) SKIP_TESTS=1; shift ;;
     --skip-modules) SKIP_MODULES=1; shift ;;
@@ -90,7 +106,7 @@ while [[ $# -gt 0 ]]; do
     --install-rust) INSTALL_RUST=1; shift ;;
     --list-datasets) LIST=1; shift ;;
     --dry-run) DRY=1; shift ;;
-    -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,60p' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (see --help)"; exit 2 ;;
   esac
 done
@@ -146,6 +162,8 @@ echo "  free disk in $WORKDIR: ${FREE_GB} GB (tier '$TIER' needs ~${NEED_GB} GB)
 [[ $FREE_GB -ge $NEED_GB ]] || die "not enough disk space"
 if [[ -z "$SCANPY_MAX" ]]; then SCANPY_MAX=$(( RAM_GB * 12500 )); fi
 if [[ -z "$REPEATS" ]]; then REPEATS=$([[ "$TIER" == "quick" ]] && echo 2 || echo 5); fi
+if [[ -z "$MODULE_REPEATS" ]]; then MODULE_REPEATS=$([[ "$TIER" == "quick" ]] && echo 2 || echo 3); fi
+if [[ -z "$MAIN_THREADS" ]]; then MAIN_THREADS="$(echo 8 "$NCPU" | tr ' ' '\n' | awk -v n="$NCPU" '$1<=n' | sort -nu | xargs)"; fi
 echo "  scanpy is skipped above $SCANPY_MAX cells (--scanpy-max-cells 0 disables the cap)"
 
 STAMP="$(hostname -s 2>/dev/null || hostname)-$(date +%Y%m%d-%H%M)"
@@ -216,7 +234,7 @@ CPU_MODEL="$( (grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2) ||
 cat > "$E/summary.md" <<EOF
 **Machine** $(echo $CPU_MODEL | xargs), $NCPU logical cores, ${RAM_GB} GB RAM, $OS ($(uname -r)); governor: $(cat "$E/governor.txt" 2>/dev/null || echo n/a).
 **Software** CREST $COMMIT ($REF), Python $("$PY" -c 'import platform;print(platform.python_version())'), $(rustc -V).
-**Protocol** $REPEATS repeats per configuration, interleaved in shuffled order, fresh process per run, JIT warm-up excluded; profile '$PROFILE'.
+**Protocol** core workflow at $MAIN_THREADS threads, $REPEATS repeats per configuration; optional modules in separate runs ($([[ "$PROFILE" == "full" ]] && echo "$MODULE_REPEATS repeats, Scrublet skipped above $SCRUBLET_MAX cells" || echo "not run")); interleaved in shuffled order, fresh process per run, JIT warm-up excluded.
 EOF
 cat "$E/summary.md"
 
@@ -248,7 +266,9 @@ SCAN_ARGS=(--threads-scan $THREADS --thread-dataset "$THREAD_DS")
 [[ $SKIP_SCAN -eq 1 ]] && SCAN_ARGS=()
 PIN_ARGS=(); [[ $NO_PIN -eq 1 ]] && PIN_ARGS=(--no-pin)
 "$PY" bench/paper/run_all.py --data-dir "$DATA" --out "$OUT" --datasets $DATASETS --repeats "$REPEATS" \
-  --profile "$PROFILE" --scanpy-max-cells "$SCANPY_MAX" --timeout "$TIMEOUT" "${SCAN_ARGS[@]}" "${PIN_ARGS[@]}" \
+  --profile "$PROFILE" --main-threads $MAIN_THREADS --module-repeats "$MODULE_REPEATS" \
+  --scrublet-max-cells "$SCRUBLET_MAX" \
+  --scanpy-max-cells "$SCANPY_MAX" --timeout "$TIMEOUT" "${SCAN_ARGS[@]}" "${PIN_ARGS[@]}" \
   $([[ $DRY -eq 1 ]] && echo --dry-run)
 [[ $DRY -eq 1 ]] && exit 0
 

@@ -4,19 +4,19 @@ This file says where the project stands and what to do next. Read `CLAUDE.md` fi
 the code works, and the rules). Keep **Status** and **Next steps** current at the end of
 every session.
 
-_Last updated: 2026-09-29 (0.3.0 merged to main)._
+_Last updated: 2026-09-29 (0.3.0 on PyPI; standard benchmark analysed)._
 
 ## Status
 
 | Area | State |
 |---|---|
-| Core workflow (QC → HVG → scale / PCA → kNN → Leiden → UMAP → t-test / Wilcoxon → `score_genes`) | Done; validated against scanpy 1.11 in `tests/`. 0.2.0 run (4-core cloud VM): 6–7× faster, 4–10× less memory |
-| Out-of-core (Parquet) | Done; ~1 GB peak regardless of size, ~2× slower than in-memory |
-| Pseudobulk DESeq2 (Rust) | Done: Wald + LRT; matches R DESeq2 1.42 (`docs/deseq2.md`) |
+| Core workflow (QC → HVG → scale / PCA → kNN → Leiden → UMAP → t-test / Wilcoxon → `score_genes`) | Done; validated against scanpy 1.11. 0.3.0 on the 64-thread workstation: PBMC 68k core workflow **8.9× faster best-vs-best** (19.8× at matched 64 threads), 3.4× less memory (`docs/benchmarks.md`) |
+| Out-of-core (Parquet) | Done; count matrix never in RAM; ~0.7–1.1 GB peak up to 200k cells (per-cell results still grow with cells); up to ~2× slower |
+| Pseudobulk DESeq2 (Rust) | Done: Wald + LRT; matches R DESeq2 1.42; ~50× faster than R on rinamochana |
 | Modules after clustering | Harmony, Scrublet, `seurat_v3` HVG, `leiden_sweep`, `ingest`, `knn_query`; each validated (`docs/downstream.md`) |
-| Paper benchmark | `scripts/crest_paper_bench.sh` + `bench/paper/`. Quick tier done on rinamochana (30/30 ok). **Standard tier running** (see Next steps 1) |
-| Documentation | **New:** Sphinx + MyST site in `docs/`, `.readthedocs.yaml`, beginner setup guide `docs/readthedocs.md`, CI `docs` job. Not yet connected to Read the Docs (owner's step) |
-| Packaging | Version **0.3.0** (`Cargo.toml`), merged `dev` → `main` on 2026-09-29. Tag `v0.3.0` + PyPI publish still to do (owner) |
+| Paper benchmark | Quick + standard tiers done on rinamochana (190 runs, 0 failures). Harness now runs core at 8 + 64 threads, modules separately, Scrublet capped; supports the Parse ~1M PBMC dataset (`parse_pbmc`). **Next: the Parse run** |
+| Documentation | Sphinx site in `docs/`, checked claim by claim against the code (2026-09-29). Read the Docs connection: owner's step |
+| Packaging | **0.3.0 published on PyPI** (tag `v0.3.0`, release job green, 2026-09-29) |
 | CI | `test` (cargo + pytest), `docs` (sphinx `-W`), wheels for all platforms; publishes on tag |
 
 ### Git / GitHub state
@@ -31,41 +31,29 @@ _Last updated: 2026-09-29 (0.3.0 merged to main)._
 
 ## Next steps (in priority order)
 
-1. **Let the standard-tier benchmark finish** on rinamochana.
-   - It runs in `/mnt/scratch/crest-bench`, started 2026-09-28 17:56 (160 runs, ~20–25 h;
-     39/160 done at 2026-09-29 morning).
-   - Don't change benchmark code while it runs. It can be resumed: re-running the same
-     command skips finished runs.
-   - The owner sends back `crest-bench/results/crest-bench-rinamochana-<date>.tar.gz`.
-2. **Write the results tables with the honest-reporting rules** (`CLAUDE.md` §5, and
-   `docs/benchmarks.md`). The changes go in `bench/paper/summarize.py`:
-   - headline = `core` pipeline, at each tool's best thread count **and** at matched
-     threads. In the thread scan, scanpy's pbmc68k `core` time is 152 s at 8 threads but
-     301 s at 64, so a 64-vs-64 comparison flatters CREST 2×;
-   - a separate table for the optional modules (Scrublet, Harmony, sweep, pseudobulk);
-   - report CREST's weak spots: thread scaling on pbmc68k `core` is 63.5 s at 1 thread and
-     24 s at 64 (~1/3 serial; find which steps from `steps.csv`); steps where CREST is not
-     faster; failed runs.
-3. **Connect Read the Docs.** The owner follows `docs/readthedocs.md`: project name
-   `crest-sc`, default branch `main`.
-4. **Publish 0.3.0.** The version bump, CHANGELOG and `dev` → `main` merge are done. Left:
-   - tag `v0.3.0` on `main` (`git tag v0.3.0 origin/main && git push origin v0.3.0`); the
-     tag triggers the CI wheel builds and the PyPI upload;
-   - the upload needs a `PYPI_API_TOKEN` repository secret or PyPI trusted publishing for
-     `crest-sc`.
-5. **White paper**: results from step 2, plus the validation tables in `docs/deseq2.md` and
-   `docs/downstream.md`.
-6. **Performance work, after the paper numbers exist** (measure first, from `steps.csv`):
-   - the serial fraction of the core pipeline (candidates: 10x HDF5 gzip reading, Leiden
-     local moving, Python glue);
-   - Scrublet at ≥ 100k cells with no batch key is ~quadratic, because the approximate kNN
-     is run with k ≈ 1.5·√n (541 s at 100k, 2,633 s at 200k). Low priority: Scrublet is an
-     optional module, and users may prefer scDblFinder. A cheap fix is exact tiled search at
-     any size.
-7. **Possible extensions:**
-   - DESeq2: `lfcShrink` (apeglm), `lfcThreshold`, interaction formulas;
-   - UMAP transform optimisation in `ingest`;
-   - `pearson_residuals` HVG.
+1. **Parse 1M benchmark on rinamochana.** The file is already at
+   `/mnt/scratch/crest-bench/data/Parse_1M_adata_for_cellflow_datasets_with_embeddings.h5ad`.
+   - First check the layout: `python bench/paper/datasets.py --inspect <file>`. It needs a
+     raw-count matrix (`layers/counts`, `raw/X` or `X` with integers) and donor / cytokine /
+     cell-type columns; the detected choice is written to `data/parse_pbmc.meta.json`.
+   - Run: `bash crest_paper_bench.sh --ref dev --datasets "pbmc68k parse_pbmc" --timeout 21600`
+     (scanpy at 1M cells: Wilcoxon took 388 s at 200k and grows with cells; the whole
+     workflow may need over 2 h per run).
+   - The report now follows the honest-reporting rules by construction (`summarize.py`).
+2. **Connect Read the Docs** (`docs/readthedocs.md`): project `crest-sc`, default branch `main`.
+3. **White paper**: headline from the core workflow best-vs-best; "not faster" table;
+   modules table; accuracy table (all in `report.md`). Use 5 repeats and the new protocol.
+   Set the CPU governor to `performance` for the final run.
+4. **Performance work, measured first:**
+   - `seurat_v3` HVG is 2× slower than scanpy at ≥ 10k cells: the loess fit runs in Python
+     (`crest/_loess.py`); port it to Rust or vectorise it.
+   - PCA has a ~1 s fixed cost: the full eigendecomposition of the 2,000 × 2,000 Gram matrix
+     (measured 1.16 of 1.31 s on PBMC 3k). A partial eigensolver for the top 50 would remove it.
+   - UMAP fixed cost on small data (500 epochs below 10k cells, as umap-learn).
+   - Serial fraction ~24% (reading HDF5, Leiden, glue).
+   - Scrublet at ≥ 100k cells without a batch key is ~quadratic (k ≈ 1.5·√n); low priority.
+5. **Possible extensions:** DESeq2 `lfcShrink` / `lfcThreshold` / interactions; UMAP transform
+   optimisation in `ingest`; `pearson_residuals` HVG.
 
 ## Decisions (and why)
 
