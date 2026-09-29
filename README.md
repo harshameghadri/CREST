@@ -1,14 +1,15 @@
-# CREST — Columnar Rust Engine for Single-cell Transcriptomics
+# CREST — Chunked Rust Engine for Single-cell Transcriptomics
 
 CREST runs the standard single-cell RNA-seq workflow (QC → normalisation →
 highly variable genes → scaling + PCA → neighbours → Leiden → UMAP →
 differential expression) with native Rust kernels behind a scanpy-style Python
-API. It reproduces scanpy's results while being faster at every step and never
-materialising a normalised, scaled or dense copy of the count matrix — datasets
-can be streamed from disk (Parquet) with memory bounded by one chunk.
+API. It reproduces scanpy's results, was faster at every step in our 0.2.0 benchmark,
+and never materialises a normalised, scaled or dense copy of the count matrix:
+the raw counts are streamed through the kernels **one chunk of cells at a time**
+(hence the name), from memory or from disk (Parquet), with memory bounded by one chunk.
 
-**Documentation:** [crest-sc.readthedocs.io](https://crest-sc.readthedocs.io) (sources in
-[`docs/`](docs/): installation, quickstart, how it works, API reference, benchmarks).
+**Documentation:** [crest-sc.readthedocs.io](https://crest-sc.readthedocs.io): installation,
+quickstart, how it works, API reference, benchmarks (sources in [`docs/`](docs/)).
 
 ```python
 import crest
@@ -40,17 +41,19 @@ transfer (`crest.tl.ingest`) and the DESeq2 likelihood-ratio test
 ## Installation
 
 ```bash
-pip install crest-sc            # import name: crest
+pip install crest-sc            # import name: crest (the PyPI name `crest` is taken)
 pip install "crest-sc[anndata]" # AnnData / scipy interop
 ```
 
+Needs Python ≥ 3.10; runtime dependencies are only `numpy`, `polars` and `h5py`.
 Building from source needs a Rust toolchain and [maturin](https://www.maturin.rs):
-`maturin develop --release`.
+`maturin develop --release` (see [docs/installation.md](docs/installation.md)).
 
 ## What is validated against scanpy
 
-Every step is checked against scanpy 1.11 (`tests/test_crest.py`, and
-`bench/whitepaper/`). On PBMC3k with the scanpy tutorial parameters:
+Every step is checked against its reference implementation in the test suite
+(`tests/test_crest.py`, run by CI on every change) and on real data in the module
+benchmarks (`bench/<module>/`). On PBMC3k with the scanpy tutorial parameters:
 
 | step | agreement with scanpy |
 |---|---|
@@ -94,7 +97,9 @@ The 100k/200k datasets are generated from the real 10k PBMC v3 matrix by
 `make_dataset.py` (each cell mixes a real cell with a nearest neighbour after
 binomial thinning), so sparsity, library size and cluster structure are realistic.
 
-The figures above come from the 0.2.0 run (`bench/whitepaper/results/`). The
+The figures above come from the 0.2.0 run on a 4-core cloud VM
+(`bench/whitepaper/results/`); numbers on a 64-core workstation, reported at each
+tool's best thread count as well as at matched thread counts, will replace them. The
 paper benchmark (six real datasets plus a synthetic scaling series, 5 repeats,
 thread scaling, per-core CPU/clock/memory timelines, accuracy against scanpy,
 bootstrap confidence intervals) runs on your own machine with one command:
@@ -128,7 +133,7 @@ PDF/PNG figures and a `.tar.gz`. The pieces live in `bench/paper/`
 * **kNN.** Exact search with tiled GEMM (the FAISS "flat" trick) for small data;
   above 20k cells an inverted-file index — cells bucketed by k-means, each bucket
   searched against its 20 nearest buckets, like cell lists in molecular dynamics —
-  polished by NN-descent. ≥99.5% recall.
+  polished by NN-descent (99.7% recall on 108k PBMC cells).
 * **UMAP.** umap-learn's objective and defaults, optimised in parallel by domain
   decomposition: each thread owns a range of cells, writes only those, and reads
   the rest from a snapshot refreshed 16× per epoch.
@@ -142,7 +147,7 @@ PDF/PNG figures and a `.tar.gz`. The pieces live in `bench/paper/`
 * **Harmony in Rust.** The harmony2 algorithm with cells sorted by batch, so the
   per-batch sums and the ridge correction are GEMMs; per-cell updates in parallel.
 
-Details: [docs/memory_model.md](docs/memory_model.md).
+Details: [docs/concepts.md](docs/concepts.md) and [docs/memory_model.md](docs/memory_model.md).
 
 ## Data formats
 
@@ -159,6 +164,15 @@ from_anndata`, `write_parquet` / `read_parquet`, `to_anndata`, `to_scipy`.
 * `ingest` places query cells in the reference UMAP by umap-learn's transform
   initialisation (no further optimisation).
 * UMAP layouts are deterministic for a fixed thread count, not across thread counts.
+
+## Why "Chunked"?
+
+CREST started as Polars expression plugins ("columnar"). That design could not
+compute per-cell quantities correctly and was replaced by the engine described above:
+raw counts stored once, filters and transforms recorded, and every step a fused
+Rust pass over chunks of cells. Polars remains the table layer (`obs`, `var`,
+results) and the Parquet reader. The acronym stays; the "C" now says what the
+engine does.
 
 ## License
 

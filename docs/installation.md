@@ -15,9 +15,9 @@ Runtime dependencies are small: `numpy`, `polars` and `h5py`. scanpy, anndata an
 only needed to hand results over to the scverse ecosystem (`BioFrame.to_anndata()`).
 
 :::{note}
-The analysis tools added in 0.3.0 are on the `dev` branch until the 0.3.0 release: Harmony,
-Scrublet, `seurat_v3` HVGs, `leiden_sweep`, `ingest` and the DESeq2 likelihood-ratio test.
-To use them now, install from source (below).
+Harmony, Scrublet, `seurat_v3` HVGs, `leiden_sweep`, `ingest` and the DESeq2
+likelihood-ratio test were added in 0.3.0. If `pip` gives you an older version, install from
+source (below).
 :::
 
 ## From source

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.3.0 (2026-09-29)
+
+### Changed
+- The acronym now reads **Chunked** Rust Engine for Single-cell Transcriptomics (was
+  "Columnar"): the engine streams chunks of cells through fused Rust kernels; Polars is only
+  the table and Parquet layer. Package and import names are unchanged (`crest-sc`, `crest`).
+
 ### New
 - **Pseudobulk DESeq2 in Rust.** `crest.tl.DESeq2` ports DESeq2 1.42 `DESeq()` +
   `results()`: median-of-ratios size factors, Cox-Reid gene-wise dispersions,

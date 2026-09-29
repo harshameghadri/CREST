@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "crest-sc"
-description = "CREST: Columnar Rust Engine for Single-cell Transcriptomics - scanpy-compatible, out-of-core single-cell analysis with native Rust kernels"
+description = "CREST: Chunked Rust Engine for Single-cell Transcriptomics - scanpy-compatible, out-of-core single-cell analysis with native Rust kernels"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "harshameghadri" }]

@@ -28,9 +28,9 @@ History in one paragraph: the project began (Feb 2026) as "biopolars", Polars ex
 plugins for single-cell data. That design was wrong (per-cell sums over partial batches,
 broken kNN id mapping, a fake Leiden). In Sept 2026 it was rebuilt around a `BioFrame` with
 lazy transforms and fused Rust kernels, validated step by step against scanpy, and released
-as 0.2.0. Downstream modules followed (0.3.0, unreleased on `dev`). The Polars plugin layer
-was deleted. Polars remains only as the metadata / table / Parquet layer. Whether the name
-"Columnar Rust Engine" still fits is an open question (see HANDOVER, Decisions).
+as 0.2.0. Downstream modules followed in 0.3.0. The Polars plugin layer was deleted; Polars
+remains only as the metadata / table / Parquet layer. Hence the acronym now reads **Chunked**
+Rust Engine for Single-cell Transcriptomics (it was "Columnar" until 0.3.0).
 
 ## 2. The mental model (read before touching code)
 
