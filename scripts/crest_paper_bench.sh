@@ -51,7 +51,8 @@
 #   --list-datasets        print the dataset registry and exit
 #   --dry-run              print the run plan and exit
 #
-# Parse 1M PBMCs (--datasets parse_pbmc, or part of --tier full): put the h5ad from
+# Parse PBMCs (--datasets "parse_pbmc_1m parse_pbmc", or --tier full; 9.7M cells, and a 1M random
+# subset for the scanpy comparison): put the h5ad from
 # https://figshare.com/articles/dataset/pbmc_parse/28589774 in <workdir>/data/ (as
 # Parse_1M_adata_for_cellflow_datasets_with_embeddings.h5ad or its original name); it is used from
 # there. Its layout can be checked with: python bench/paper/datasets.py --inspect FILE.h5ad

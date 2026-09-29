@@ -52,15 +52,19 @@ The script:
 
 Datasets: PBMC 3k, PBMC 10k, Kang 2018 (29k, 8 donors × 2 conditions), PBMC 68k, the
 Stephenson 2021 COVID atlas (647k), 10x 1.3M neurons, the Parse Biosciences PBMC cytokine
-atlas (~1M-cell subset, 12 donors × 90 cytokines + PBS; `parse_pbmc`), and synthetic
-100k–1M sets derived from PBMC 68k.
+atlas (12 donors × 90 cytokines + PBS: `parse_pbmc`, all 9.7M cells × 2,000 genes, and
+`parse_pbmc_1m`, a seeded random 1M-cell subset of it), and synthetic 100k–1M sets derived
+from PBMC 68k. At 9.7M cells scanpy cannot run in 128 GB (its dense scaled matrix alone would
+be 78 GB), so the tool comparison uses `parse_pbmc_1m` and the full atlas shows CREST alone
+at scale. The Parse matrix holds only 2,000 genes, so its QC threshold is scaled to the same
+fraction of genes (`min_genes` 20 of 2,000 instead of 200 of ~20,000), for both tools.
 
 The Parse file (13 GB, [figshare 28589774](https://figshare.com/articles/dataset/pbmc_parse/28589774))
 cannot always be downloaded by a script. Download it in a browser, put it in
-`crest-bench/data/`, and run with `--datasets parse_pbmc` (or `--tier full`). The raw counts
+`crest-bench/data/`, and run with `--datasets "parse_pbmc_1m parse_pbmc"` (or `--tier full`). The raw counts
 are taken from `layers/counts`, `raw/X` or `X` (the first that holds integer counts), and the
 donor, cytokine and cell-type columns are detected automatically. The pseudobulk DESeq2 step
-compares the most frequent cytokine with PBS. To check what will be used before a long run:
+compares IFN-beta with PBS (or, if absent, the most frequent condition with the control). To check what will be used before a long run:
 
 ```bash
 python bench/paper/datasets.py --inspect crest-bench/data/Parse_1M_adata_for_cellflow_datasets_with_embeddings.h5ad

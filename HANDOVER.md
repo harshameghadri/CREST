@@ -31,15 +31,14 @@ _Last updated: 2026-09-29 (0.3.0 on PyPI; standard benchmark analysed)._
 
 ## Next steps (in priority order)
 
-1. **Parse 1M benchmark on rinamochana.** The file is already at
-   `/mnt/scratch/crest-bench/data/Parse_1M_adata_for_cellflow_datasets_with_embeddings.h5ad`.
-   - First check the layout: `python bench/paper/datasets.py --inspect <file>`. It needs a
-     raw-count matrix (`layers/counts`, `raw/X` or `X` with integers) and donor / cytokine /
-     cell-type columns; the detected choice is written to `data/parse_pbmc.meta.json`.
-   - Run: `bash crest_paper_bench.sh --ref dev --datasets "pbmc68k parse_pbmc" --timeout 21600`
-     (scanpy at 1M cells: Wilcoxon took 388 s at 200k and grows with cells; the whole
-     workflow may need over 2 h per run).
-   - The report now follows the honest-reporting rules by construction (`summarize.py`).
+1. **Parse benchmark on rinamochana.** The file
+   (`/mnt/scratch/crest-bench/data/Parse_1M_adata_for_cellflow_datasets_with_embeddings.h5ad`)
+   is the **full 9.7M-cell** atlas with raw counts of **2,000 genes** in `X` (checked with
+   `--inspect`). Two datasets are built from it: `parse_pbmc` (all 9.7M cells; scanpy cannot fit
+   in 128 GB, so CREST only) and `parse_pbmc_1m` (seeded random 1M cells; the scanpy
+   comparison). QC uses `min_genes` 20 (200 scaled to 2,000 genes); DESeq2 contrast IFN-beta
+   vs PBS. Run from `/mnt/scratch`:
+   `bash crest_paper_bench.sh --ref <branch with this change> --datasets "parse_pbmc_1m parse_pbmc" --repeats 3 --timeout 21600 --skip-thread-scan`
 2. **Connect Read the Docs** (`docs/readthedocs.md`): project `crest-sc`, default branch `main`.
 3. **White paper**: headline from the core workflow best-vs-best; "not faster" table;
    modules table; accuracy table (all in `report.md`). Use 5 repeats and the new protocol.
