@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Changed
+- Benchmark protocol (`bench/paper/`, `crest_paper_bench.sh`): the headline is the core workflow,
+  run at 8 and all threads so every speed-up is reported at matched threads **and** best vs
+  best (the smaller is the headline); optional modules run separately so their time and memory
+  never mix into the headline; Scrublet is skipped above `--scrublet-max-cells` (150,000);
+  the report adds a "where CREST is not faster" table, a modules table and skipped steps.
+- New benchmark dataset `parse_pbmc`: the Parse ~1M PBMC cytokine atlas (figshare 28589774),
+  used from a local copy; raw counts and donor / cytokine / cell-type columns detected
+  automatically; `datasets.py --inspect FILE.h5ad` shows the layout.
+
+### Fixed
+- Documentation checked claim by claim against the code: what each function returns, what
+  the stores hold, out-of-core memory (per-cell results still grow with the number of cells),
+  thread scaling, reproducibility; the quickstart explains the Polars import and what "lazy"
+  means; honest 0.3.0 benchmark results with the steps where CREST is slower.
+
 ## 0.3.0 (2026-09-29)
 
 ### Changed

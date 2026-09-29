@@ -51,11 +51,30 @@ The script:
    and a `.tar.gz`.
 
 Datasets: PBMC 3k, PBMC 10k, Kang 2018 (29k, 8 donors × 2 conditions), PBMC 68k, the
-Stephenson 2021 COVID atlas (647k), 10x 1.3M neurons, and synthetic 100k–1M sets derived
-from PBMC 68k.
+Stephenson 2021 COVID atlas (647k), 10x 1.3M neurons, the Parse Biosciences PBMC cytokine
+atlas (~1M-cell subset, 12 donors × 90 cytokines + PBS; `parse_pbmc`), and synthetic
+100k–1M sets derived from PBMC 68k.
+
+The Parse file (13 GB, [figshare 28589774](https://figshare.com/articles/dataset/pbmc_parse/28589774))
+cannot always be downloaded by a script. Download it in a browser, put it in
+`crest-bench/data/`, and run with `--datasets parse_pbmc` (or `--tier full`). The raw counts
+are taken from `layers/counts`, `raw/X` or `X` (the first that holds integer counts), and the
+donor, cytokine and cell-type columns are detected automatically. The pseudobulk DESeq2 step
+compares the most frequent cytokine with PBS. To check what will be used before a long run:
+
+```bash
+python bench/paper/datasets.py --inspect crest-bench/data/Parse_1M_adata_for_cellflow_datasets_with_embeddings.h5ad
+```
 
 ### Protocol (why the numbers can be trusted)
 
+* **Three kinds of runs.** The *core workflow* of every dataset × tool runs at each of
+  `--main-threads` (default: 8 and all cores), so every speed-up can be compared at matched
+  thread counts and at each tool's best. The *optional modules* run separately, so their time
+  and memory never leak into the headline. Scrublet is skipped there above
+  `--scrublet-max-cells` (150,000), because its neighbour search grows roughly with the square
+  of the number of cells. A *thread scan* runs the core workflow at 1, 2, 4, … threads on one
+  dataset.
 * **Fresh process per run.** No cache, JIT or allocator state leaks between runs. scanpy's
   numba JIT is warmed up before timing.
 * **Interleaved, shuffled repeats.** Repeat *r* of every configuration runs before repeat
@@ -85,6 +104,54 @@ These rules apply to every number CREST publishes:
 * Steps where CREST is **not** faster, CREST's limited thread scaling, and every failed run
   are reported, not hidden.
 * Every speed-up has a confidence interval and the number of repeats.
+
+## Results: 0.3.0, standard tier
+
+Threadripper PRO 3975WX (32 cores / 64 threads, 128 GB), Ubuntu 26.04, CPU governor
+`powersave`, 5 repeats. The code measured (commit `3db58a8`) is identical to the 0.3.0
+release except for docstrings and version strings. This run used the earlier protocol: the
+main runs were full-profile runs at 64 threads only, so the core-workflow times below are the
+sum of the core steps inside those runs, and scanpy's best thread count was measured only on
+pbmc68k.
+
+**Core workflow**, median seconds at 64 threads (read → Wilcoxon markers):
+
+| dataset | cells | CREST | scanpy | speed-up, matched threads | speed-up, best vs best |
+|---|---|---|---|---|---|
+| PBMC 3k | 2,700 | 4.44 | 5.38 | 1.2× | not measured |
+| PBMC 10k | 11,537 | 5.10 | 30.5 | 6.0× | not measured |
+| Kang 2018 | 28,871 | 5.79 | 80.9 | 14.0× | not measured |
+| PBMC 68k | 68,551 | 10.6 | 211 (94.3 at 8 threads) | 19.8× | **8.9×** (8.7–9.0) |
+| synthetic 100k | 99,779 | 13.6 | 305 | 22.4× | not measured |
+| synthetic 200k | 199,531 | 26.2 | 555 | 21.2× | not measured |
+
+On PBMC 68k, the only dataset with a thread scan, scanpy was 2.2× faster on 8 threads than on
+64. The matched-thread speed-ups on the other datasets are therefore upper bounds, and the
+defensible headline is the best-vs-best **8.9×** on PBMC 68k. Core-workflow peak memory
+(clean only in the PBMC 68k thread-scan runs) was 3.4× lower with CREST. The current protocol
+(core runs at 8 and 64 threads) measures best-vs-best on every dataset.
+
+**Where CREST is not faster:**
+
+| step | CREST vs scanpy |
+|---|---|
+| `seurat_v3` HVG (10k–200k cells) | 0.49–0.55×: **2× slower** (the loess fit runs in Python) |
+| UMAP, PBMC 3k | 0.81× (fixed cost: 500 epochs below 10k cells) |
+| scale + PCA, PBMC 3k | 0.90× (fixed cost: ~1 s eigendecomposition of the 2,000 × 2,000 matrix) |
+| reading the file | 1.06–1.17× (both are limited by HDF5 decompression) |
+
+**Thread scaling** (PBMC 68k, core workflow): CREST 45.6 s on 1 thread → 10.6 s on 64 (4.3×;
+Amdahl serial fraction 0.24). scanpy 193 s → 94.3 s at 8 threads (its best), 211 s at 64.
+
+**Optional modules** (64 threads): resolution sweep 11–15× faster, Harmony 2.5× (Kang),
+Scrublet 21–50× on 10k–29k cells but only 1.2–2.7× at 68k–200k (both tools' neighbour
+search grows roughly with cells²; 2,590 s vs 3,020 s at 200k).
+
+**Agreement with scanpy:** PCA subspaces identical (cosine 1.000000), 15-NN graphs identical
+(Jaccard ≥ 0.99999), HVG sets 99.4–100% identical (Jaccard), Leiden ARI 0.80–0.94 with the
+same number of clusters on 4 of 6 datasets (57 vs 59 and 64 vs 62 on the synthetic sets), UMAP
+trustworthiness equal or slightly higher (0.862–0.959 vs 0.863–0.957), top-50 marker overlap
+0.92–0.99.
 
 ## Module benchmarks
 

@@ -32,7 +32,13 @@ DEFAULT_CHUNK_NNZ = 1 << 24  # ~16.8M non-zeros (~200 MB of working buffers)
 
 # --------------------------------------------------------------------------- stores
 class CSRStore:
-    """In-memory CSR: row i holds entries ``indptr[i]:indptr[i+1]``."""
+    """Raw counts in memory as CSR (cells × genes).
+
+    Row ``i`` holds entries ``indptr[i]:indptr[i+1]`` of ``indices`` (gene ids, ``uint32``)
+    and ``data`` (counts, ``float32``); ``indptr`` is ``int64``. About 8 bytes per non-zero.
+    Chunks are views of these arrays (no copy). Made by :func:`crest.read_10x_h5`,
+    :func:`crest.read_h5ad` and :meth:`BioFrame.from_csr` / ``from_scipy`` / ``from_anndata``.
+    """
 
     def __init__(self, indptr: np.ndarray, indices: np.ndarray, data: np.ndarray, n_genes: int):
         self.indptr = np.asarray(indptr, dtype=np.int64)
@@ -61,7 +67,12 @@ class CSRStore:
 
 
 class FrameStore:
-    """Polars DataFrame of triplets, sorted by ``cell_id``."""
+    """Raw counts in memory as a Polars DataFrame of ``(cell_id, gene_id, count)`` triplets.
+
+    Columns are ``uint32``, ``uint32``, ``float32`` (about 12 bytes per non-zero), sorted by
+    ``cell_id`` (sorted on construction if needed). Made by :func:`crest.read_10x_mtx`,
+    :func:`crest.read_h5ad` for a dense ``X``, and :meth:`BioFrame.from_triplets`.
+    """
 
     def __init__(self, df: pl.DataFrame, n_cells: int, n_genes: int,
                  cell_col: str = "cell_id", gene_col: str = "gene_id", value_col: str = "count"):
@@ -95,7 +106,14 @@ class FrameStore:
 
 
 class ParquetStore:
-    """Directory of ``part-*.parquet`` files, each holding whole cells, streamed one part at a time."""
+    """Raw counts on disk (out-of-core): a directory of ``part-*.parquet`` files.
+
+    Each file holds ``(cell_id, gene_id, count)`` triplets for a range of whole cells (about
+    8.4 M non-zeros per file by default). Analysis steps read one file at a time, so the count
+    matrix never has to fit in memory; ``BioFrame.chunk_nnz`` is ignored (one chunk = one
+    file). Made by ``crest.read_10x_h5(path, backed=dir)`` or :meth:`BioFrame.write_parquet`,
+    reopened with :func:`crest.read_parquet`.
+    """
 
     def __init__(self, path: Union[str, Path], n_cells: int, n_genes: int):
         self.path = Path(path)
@@ -122,10 +140,31 @@ Store = Union[CSRStore, FrameStore, ParquetStore]
 # --------------------------------------------------------------------------- BioFrame
 @dataclass
 class BioFrame:
-    """Annotated single-cell matrix processed chunk-wise (AnnData-like).
+    """A single-cell dataset: raw counts plus annotations (CREST's counterpart of AnnData).
 
-    ``obs`` has one row per kept cell and a ``cell_id`` column (index into the
-    store); ``var`` has one row per kept gene and a ``gene_id`` column.
+    The raw counts in ``store`` are never modified. Filtering creates a new BioFrame with
+    smaller ``obs``/``var`` tables over the same store; ``normalize_total``/``log1p`` are
+    recorded in ``ops`` and applied on the fly by every step that reads the counts. There
+    is no ``X``: use :meth:`to_scipy` or :meth:`to_anndata` to materialise the matrix.
+
+    Parameters
+    ----------
+    store : CSRStore, FrameStore or ParquetStore
+        The raw counts (in memory, or on disk for :class:`ParquetStore`).
+    obs : polars.DataFrame
+        One row per kept cell. ``cell_id`` is the cell's row in ``store``.
+    var : polars.DataFrame
+        One row per kept gene. ``gene_id`` is the gene's column in ``store``.
+    obsm : dict
+        Per-cell arrays (``X_pca``, ``X_umap``, ``X_pca_harmony``), rows aligned with ``obs``.
+    varm : dict
+        Per-gene arrays (``PCs``), rows aligned with ``var``.
+    uns : dict
+        Everything else: parameters, the neighbour graph, result tables.
+    ops : list of tuple
+        Recorded transforms in order, e.g. ``[("normalize_total", 10000.0), ("log1p",)]``.
+    chunk_nnz : int
+        Target non-zeros per chunk for the in-memory stores (default 2**24).
     """
 
     store: Store

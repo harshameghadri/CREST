@@ -7,7 +7,8 @@ Pipeline (scanpy tutorial defaults), each step timed and monitored:
 
   core : read, qc_filter, normalize_log1p, hvg (seurat, 2000), scale_pca (50 PCs),
          neighbors (15), leiden, umap, de_ttest, de_wilcoxon
-  full : core + hvg_seurat_v3 and scrublet (on raw counts), leiden_sweep
+  full : core + hvg_seurat_v3 and scrublet (on raw counts; skipped above
+         --scrublet-max-cells), leiden_sweep
          (5 resolutions), harmony (if the dataset has a batch column),
          pseudobulk_deseq2 (CREST only; if it has sample + condition columns)
 
@@ -51,8 +52,25 @@ class Null:
         return False
 
 
-def _meta(name: str) -> dict:
-    return REGISTRY.get(name, {})
+SCRUBLET_MAX = 0  # set from --scrublet-max-cells; 0 = no limit
+SKIPPED: list = []
+
+
+def _meta(name: str, path: Path | None = None) -> dict:
+    """Registry metadata, overridden by a ``<data>.meta.json`` sidecar written at conversion
+    (datasets whose obs columns are only known after reading the file, e.g. parse_pbmc)."""
+    meta = dict(REGISTRY.get(name, {}))
+    if path is not None and path.with_suffix(".meta.json").exists():
+        meta.update(json.loads(path.with_suffix(".meta.json").read_text()))
+    return meta
+
+
+def _run_scrublet(n: int) -> bool:
+    if SCRUBLET_MAX and n > SCRUBLET_MAX:
+        if "scrublet" not in SKIPPED:
+            SKIPPED.append("scrublet")
+        return False
+    return True
 
 
 def _obs_sidecar(path: Path):
@@ -66,7 +84,7 @@ def _obs_sidecar(path: Path):
 # --------------------------------------------------------------------------- scanpy
 def scanpy_pipeline(path: Path, mon, profile: str, warm: bool = False) -> dict:
     import scanpy as sc
-    meta, out = _meta(path.stem), {}
+    meta, out = _meta(path.stem, path), {}
     side = _obs_sidecar(path)
     with mon.track("read"):
         a = sc.read_10x_h5(path)
@@ -85,9 +103,10 @@ def scanpy_pipeline(path: Path, mon, profile: str, warm: bool = False) -> dict:
         with mon.track("hvg_seurat_v3"):
             v3 = sc.pp.highly_variable_genes(a, flavor="seurat_v3", n_top_genes=2000, inplace=False)
         out["hvg_v3"] = np.asarray(a.var_names[v3["highly_variable"].to_numpy()], dtype=str)
-        with mon.track("scrublet"):
-            sc.pp.scrublet(a, batch_key=batch, random_state=0, verbose=False)
-        out["doublet_score"] = a.obs["doublet_score"].to_numpy(float)
+        if _run_scrublet(a.n_obs):
+            with mon.track("scrublet"):
+                sc.pp.scrublet(a, batch_key=batch, random_state=0, verbose=False)
+            out["doublet_score"] = a.obs["doublet_score"].to_numpy(float)
     with mon.track("normalize_log1p"):
         sc.pp.normalize_total(a, target_sum=1e4)
         sc.pp.log1p(a)
@@ -134,7 +153,7 @@ def scanpy_pipeline(path: Path, mon, profile: str, warm: bool = False) -> dict:
 def crest_pipeline(path: Path, mon, profile: str, backed=None, warm: bool = False) -> dict:
     import crest
     import polars as pl
-    meta, out = _meta(path.stem), {}
+    meta, out = _meta(path.stem, path), {}
     side = _obs_sidecar(path)
     with mon.track("read"):
         b = crest.read_10x_h5(path, backed=backed)
@@ -152,9 +171,10 @@ def crest_pipeline(path: Path, mon, profile: str, backed=None, warm: bool = Fals
             crest.pp.highly_variable_genes(v3, flavor="seurat_v3", n_top_genes=2000)
         out["hvg_v3"] = np.asarray(v3.var_names, dtype=str)[v3.var["highly_variable"].to_numpy()]
         del v3
-        with mon.track("scrublet"):
-            crest.pp.scrublet(b, batch_key=batch, random_state=0)
-        out["doublet_score"] = b.obs["doublet_score"].fill_null(np.nan).to_numpy()
+        if _run_scrublet(b.n_obs):
+            with mon.track("scrublet"):
+                crest.pp.scrublet(b, batch_key=batch, random_state=0)
+            out["doublet_score"] = b.obs["doublet_score"].fill_null(np.nan).to_numpy()
     with mon.track("normalize_log1p"):
         crest.pp.normalize_total(b, 1e4)
         crest.pp.log1p(b)
@@ -189,7 +209,10 @@ def crest_pipeline(path: Path, mon, profile: str, backed=None, warm: bool = Fals
         if samp and con and all(c in b.obs.columns for c in samp + [cond]) and meta.get("celltype") in b.obs.columns:
             with mon.track("pseudobulk_deseq2"):
                 design = "~ " + " + ".join(dict.fromkeys([s for s in samp if s != cond] + [cond]))
-                crest.tl.pseudobulk_de(b, samp, design=design, contrast=tuple(con),
+                pb_bf = b
+                if meta.get("pb_levels_only"):  # many conditions: test only the contrast's two levels
+                    pb_bf = b.filter_cells(pl.col(cond).cast(pl.Utf8).is_in([str(con[1]), str(con[2])]))
+                crest.tl.pseudobulk_de(pb_bf, samp, design=design, contrast=tuple(con),
                                        groupby=meta["celltype"], min_cells=10, quiet=True)
     out.update({"pca": b.obsm["X_pca"], "umap": b.obsm["X_umap"], "leiden": b.obs["leiden"].cast(int).to_numpy(),
                 "barcodes": b.obs["barcode"].to_numpy().astype(str)})
@@ -231,7 +254,10 @@ def main():
     ap.add_argument("--repeat", type=int, default=0)
     ap.add_argument("--no-warmup", action="store_true")
     ap.add_argument("--save-outputs", action="store_true")
+    ap.add_argument("--scrublet-max-cells", type=int, default=0, help="skip Scrublet above this many cells")
     a = ap.parse_args()
+    global SCRUBLET_MAX
+    SCRUBLET_MAX = a.scrublet_max_cells
     path, out = Path(a.data), Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     if a.pin and a.threads and hasattr(os, "sched_setaffinity"):
@@ -266,7 +292,7 @@ def main():
     report = {"tool": a.tool, "dataset": path.stem, "profile": a.profile, "threads": a.threads, "pinned": a.pin,
               "repeat": a.repeat, "status": status, "error": err, "n_cells": int(len(res["leiden"])) if res else None,
               "total_seconds": total, "peak_rss_gb": max((s["peak_rss_gb"] for s in mon.steps.values()), default=None),
-              "usage": usage, "steps": mon.steps, "env": environment()}
+              "usage": usage, "steps": mon.steps, "skipped_steps": SKIPPED, "env": environment()}
     (out / f"{tag}.json").write_text(json.dumps(report, indent=1, default=float))
     print(json.dumps({k: report[k] for k in ("tool", "dataset", "threads", "repeat", "status", "total_seconds", "peak_rss_gb")}))
     sys.exit(0 if status == "ok" else 1)

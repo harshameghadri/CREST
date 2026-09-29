@@ -1,7 +1,16 @@
 """Plan and execute every benchmark run, each in its own process.
 
     python bench/paper/run_all.py --data-dir bench_data --out RESULTS --datasets pbmc3k kang \
-        --repeats 5 --threads-scan 1 2 4 8 --thread-dataset pbmc68k
+        --repeats 5 --main-threads 8 64 --threads-scan 1 2 4 8 --thread-dataset pbmc68k
+
+Three kinds of runs (all in fresh processes, interleaved):
+
+* main: the core workflow of every (dataset, tool) at each of --main-threads, so the
+  report can compare both at matched threads and at each tool's best thread count;
+* modules: one full-profile run per (dataset, tool) at all cores (--module-repeats times),
+  for the optional modules; kept apart so their time and memory never mix into the
+  headline. Scrublet is skipped above --scrublet-max-cells (its kNN cost grows ~cells^2);
+* thread scan: the core workflow of --thread-dataset at each of --threads-scan, pinned.
 
 Design choices for publishable numbers:
 
@@ -44,25 +53,40 @@ def n_cells(name: str) -> int:
 
 def plan(a) -> list[dict]:
     ncpu = os.cpu_count() or 1
-    base = []
+    main_threads = sorted({min(p, ncpu) for p in (a.main_threads or [ncpu])})
+    modules = a.profile == "full"
+    base, seen = [], set()
+
+    def add(job, reps):
+        key = (job["dataset"], job["tool"], job["profile"], job["threads"])
+        if key not in seen:
+            seen.add(key)
+            base.append((job, reps))
+
     for ds in a.datasets:
         for tool in a.tools:
             if tool == "scanpy" and a.scanpy_max_cells and n_cells(ds) > a.scanpy_max_cells:
                 continue
-            base.append({"dataset": ds, "tool": tool, "threads": ncpu, "pin": False, "profile": a.profile,
-                         "save": True})
+            for p in main_threads:
+                # outputs for the accuracy comparison: from the module run if there is one
+                save = (not modules) and p == main_threads[-1]
+                add({"dataset": ds, "tool": tool, "threads": p, "pin": p < ncpu and not a.no_pin,
+                     "profile": "core", "save": save}, a.repeats)
+            if modules:
+                add({"dataset": ds, "tool": tool, "threads": ncpu, "pin": False, "profile": "full", "save": True},
+                    a.module_repeats if a.module_repeats is not None else a.repeats)
     if a.thread_dataset and a.threads_scan:
         for tool in ("crest", "scanpy"):
             if tool not in a.tools:
                 continue
             for p in sorted(set(a.threads_scan) | {ncpu}):
                 if p <= ncpu:
-                    base.append({"dataset": a.thread_dataset, "tool": tool, "threads": p, "pin": not a.no_pin,
-                                 "profile": "core", "save": False})
+                    add({"dataset": a.thread_dataset, "tool": tool, "threads": p, "pin": p < ncpu and not a.no_pin,
+                         "profile": "core", "save": False}, a.repeats)
     runs = []
     rng = random.Random(a.seed)
-    for r in range(a.repeats):
-        block = [dict(x, repeat=r) for x in base]
+    for r in range(max(reps for _, reps in base) if base else 0):
+        block = [dict(job, repeat=r) for job, reps in base if r < reps]
         rng.shuffle(block)
         runs += block
     return runs
@@ -84,6 +108,8 @@ def run(job: dict, a, log_dir: Path) -> str:
         cmd.append("--pin")
     if job["save"] and job["repeat"] == 0:
         cmd.append("--save-outputs")
+    if job["profile"] == "full" and a.scrublet_max_cells:
+        cmd += ["--scrublet-max-cells", str(a.scrublet_max_cells)]
     t0 = time.time()
     with open(log_dir / f"{tag}.log", "w") as lf:
         p = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, env=env, start_new_session=True)
@@ -109,8 +135,14 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--datasets", nargs="+", required=True)
     ap.add_argument("--tools", nargs="+", default=["crest", "crest-ooc", "scanpy"])
-    ap.add_argument("--profile", choices=["core", "full"], default="full")
+    ap.add_argument("--profile", choices=["core", "full"], default="full",
+                    help="full = also run the optional modules (separate runs); core = headline only")
     ap.add_argument("--repeats", type=int, default=5)
+    ap.add_argument("--main-threads", nargs="*", type=int, default=[],
+                    help="thread counts for the main core-workflow runs (default: all cores)")
+    ap.add_argument("--module-repeats", type=int, default=None, help="repeats of the module runs (default: --repeats)")
+    ap.add_argument("--scrublet-max-cells", type=int, default=150_000,
+                    help="skip Scrublet in module runs above this many cells (0 = never skip)")
     ap.add_argument("--threads-scan", nargs="*", type=int, default=[])
     ap.add_argument("--thread-dataset", default=None)
     ap.add_argument("--scanpy-max-cells", type=int, default=0)
