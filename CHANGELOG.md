@@ -27,6 +27,9 @@
 - `scripts/crest_paper_bench.sh` + `bench/paper/`: one-command publication benchmark
   (datasets, per-core CPU/clock/memory monitoring, statistics, figures).
 - `scripts/crest_git_housekeeping.sh`: repository housekeeping (dev branch, stale branches).
+- **Documentation site** (Sphinx + MyST, Read the Docs): installation, quickstart, concepts,
+  full API reference, benchmarks, developer guide; `.readthedocs.yaml`; CI `docs` job.
+- `work.md`: the development history; `CLAUDE.md` / `HANDOVER.md` rewritten for new sessions.
 
 ### Removed
 - The `.bio` Polars expression namespace and its Rust plugin code (duplicated the
@@ -39,6 +42,8 @@
 
 ### Fixed
 - `BioFrame.to_anndata()` / `from_anndata()` no longer need pyarrow.
+- `crest_paper_bench.sh` stops with a clear message when the work directory is not writable,
+  and records the work directory's device and filesystem.
 
 ## 0.2.0
 

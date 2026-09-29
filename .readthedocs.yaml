@@ -1,0 +1,20 @@
+# Read the Docs build configuration: https://docs.readthedocs.io/en/stable/config-file/v2.html
+#
+# The docs are built with Sphinx from docs/. The package is NOT installed: CREST's
+# compiled Rust extension would need a Rust build on Read the Docs. Instead docs/conf.py
+# puts the repository on sys.path and mocks the native module, so autodoc can read every
+# docstring from the pure-Python layer. See docs/readthedocs.md for the step-by-step setup.
+version: 2
+
+build:
+  os: ubuntu-24.04
+  tools:
+    python: "3.12"
+
+sphinx:
+  configuration: docs/conf.py
+  fail_on_warning: false
+
+python:
+  install:
+    - requirements: docs/requirements.txt
