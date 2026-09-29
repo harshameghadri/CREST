@@ -45,10 +45,12 @@ class Pseudobulk:
         return f"Pseudobulk({self.counts.shape[0]} samples × {self.counts.shape[1]} genes)"
 
     def subset(self, mask: np.ndarray) -> "Pseudobulk":
+        """Keep the samples where ``mask`` is True."""
         mask = np.asarray(mask, bool)
         return Pseudobulk(self.counts[mask], self.obs.filter(pl.Series(mask)), self.var_names)
 
     def to_anndata(self):
+        """AnnData with samples as rows (for pydeseq2 or scanpy)."""
         import anndata as ad
         import pandas as pd
 
@@ -216,13 +218,17 @@ class DESeq2:
     sf_type : ``"ratio"`` (DESeq2 default) or ``"poscounts"`` (for data where every gene has a zero)
     fit_type : ``"parametric"`` (default) or ``"mean"``
     min_replicates_for_replace : replace Cook's outliers in cells with at least this many samples (7)
+    test : ``"Wald"`` (default) or ``"LRT"``; the LRT compares ``design`` with ``reduced``
+    reduced : reduced formula for the LRT (e.g. ``"~ batch"``, or ``"~ 1"``), or a numeric
+        model matrix when ``design_matrix`` is used
     """
 
     def __init__(self, counts, obs: Optional[pl.DataFrame] = None, design: str = "~ condition", *,
                  design_matrix: Optional[np.ndarray] = None, coef_names: Optional[Sequence[str]] = None,
                  ref_levels: Optional[Dict[str, str]] = None, var_names: Optional[Sequence[str]] = None,
                  size_factors: Optional[np.ndarray] = None, sf_type: str = "ratio", fit_type: str = "parametric",
-                 min_replicates_for_replace: float = 7, min_mu: float = 0.5, quiet: bool = False):
+                 min_replicates_for_replace: float = 7, min_mu: float = 0.5, quiet: bool = False,
+                 test: str = "Wald", reduced: Union[None, str, np.ndarray] = None):
         if isinstance(counts, Pseudobulk):
             obs = counts.obs if obs is None else obs
             var_names = counts.var_names if var_names is None else var_names
@@ -248,8 +254,25 @@ class DESeq2:
         self.X = X
         self.counts = counts  # samples × genes, original
         sf = None if size_factors is None else np.ascontiguousarray(size_factors, dtype=np.float64)
+        if test not in ("Wald", "LRT"):
+            raise ValueError('test must be "Wald" or "LRT"')
+        self.test = test
+        Xr = None
+        if test == "LRT":
+            if reduced is None:
+                raise ValueError('test="LRT" needs a reduced design, e.g. reduced="~ 1"')
+            if isinstance(reduced, str):
+                if obs is None:
+                    raise ValueError("a reduced formula needs obs")
+                Xr, self.reduced_names, _ = model_matrix(obs, reduced, ref_levels)
+            else:
+                Xr = np.ascontiguousarray(reduced, dtype=np.float64)
+                self.reduced_names = [f"x{i}" for i in range(Xr.shape[1])]
+            if Xr.shape[1] >= X.shape[1]:
+                raise ValueError("the reduced design must have fewer coefficients than the full design")
+            self.reduced = reduced
         self.fit = _native.deseq2_fit(np.ascontiguousarray(counts.T), X, sf, sf_type, fit_type,
-                                      float(min_replicates_for_replace), float(min_mu))
+                                      float(min_replicates_for_replace), float(min_mu), Xr)
         if not quiet:
             for msg in self.fit["messages"]:
                 warnings.warn(msg, stacklevel=2)
@@ -257,12 +280,15 @@ class DESeq2:
     # ---------------------------------------------------------------- accessors
     @property
     def size_factors(self) -> np.ndarray:
+        """Per-sample size factors (median of ratios, or those passed in)."""
         return self.fit["size_factors"]
 
     def results_names(self) -> List[str]:
+        """Coefficient names, as DESeq2's ``resultsNames()`` (e.g. ``condition_stim_vs_ctrl``)."""
         return list(self.coef_names)
 
     def dispersions(self) -> pl.DataFrame:
+        """Per-gene dispersion estimates: gene-wise, trend, MAP, final, and the outlier flag."""
         f = self.fit
         return pl.DataFrame({"gene": self.var_names, "baseMean": f["baseMean"], "dispGeneEst": f["dispGeneEst"],
                              "dispFit": f["dispFit"], "dispMAP": f["dispMAP"], "dispersion": f["dispersion"],
@@ -316,10 +342,15 @@ class DESeq2:
             if not (np.all(c >= 0) or np.all(c <= 0)):
                 which = (self.X @ (c != 0).astype(float)) != 0
                 zero = counts[:, which].sum(axis=1) == 0
+        zero &= ~f["allZero"]
+        if self.test == "LRT":  # LFC from the contrast, statistic and p-value from the LRT
+            stat, p = f["LRTStatistic"].copy(), f["LRTPvalue"].copy()
+            lfc = lfc.copy()
+            lfc[zero] = 0.0
+            return lfc, se, stat, p
         with np.errstate(divide="ignore", invalid="ignore"):
             stat = lfc / se
         p = _native.normal_pvalues(np.ascontiguousarray(stat))
-        zero &= ~f["allZero"]
         lfc, stat, p = lfc.copy(), stat.copy(), p.copy()
         lfc[zero], stat[zero], p[zero] = 0.0, 0.0, 1.0
         return lfc, se, stat, p
@@ -332,6 +363,9 @@ class DESeq2:
         ``(factor, numerator, denominator)`` tuple, or a numeric vector over the
         coefficients. Default: the last coefficient. Returns gene, baseMean,
         log2FoldChange, lfcSE, stat, pvalue, padj (null where DESeq2 gives NA).
+        With ``test="LRT"``, stat/pvalue are the likelihood-ratio test of the full
+        against the reduced design (whatever the contrast); the contrast only picks
+        the reported fold change, as in DESeq2.
         """
         f = self.fit
         m, p = self.X.shape
@@ -358,7 +392,9 @@ class DESeq2:
         if f["replace"].any():
             now_zero = f["replace"] & (f["baseMean"] == 0)
             lfc, se, stat = lfc.copy(), se.copy(), stat.copy()
-            lfc[now_zero], se[now_zero], stat[now_zero], pvalue[now_zero] = 0.0, 0.0, 0.0, 1.0
+            lfc[now_zero], se[now_zero] = 0.0, 0.0
+            if self.test == "Wald":
+                stat[now_zero], pvalue[now_zero] = 0.0, 1.0
         base_mean = f["baseMean"]
         if independent_filtering:
             padj, filt_info = _independent_filtering(pvalue, base_mean, alpha)

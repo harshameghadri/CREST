@@ -23,7 +23,7 @@
 //! Every gene is independent after steps 1, 3 and 4, so each step is one
 //! parallel pass over genes.
 
-mod linalg;
+pub(crate) mod linalg;
 pub mod lowess;
 
 use linalg::{xb, xtwx, xtwz, Lu};
@@ -262,6 +262,12 @@ pub struct Fit {
     pub replace: Vec<bool>,
     /// counts after outlier replacement (only when replacement happened)
     pub replace_counts: Option<Vec<f64>>,
+    /// LRT (with a reduced design): deviance of the reduced fit, its convergence,
+    /// the statistic (deviance_reduced - deviance) and its chi-squared p-value
+    pub deviance_reduced: Option<Vec<f64>>,
+    pub beta_conv_reduced: Option<Vec<bool>>,
+    pub lrt_stat: Option<Vec<f64>>,
+    pub lrt_pvalue: Option<Vec<f64>>,
     pub fit_type: FitType,
     pub trend: Vec<f64>,
     pub disp_prior_var: f64,
@@ -947,8 +953,16 @@ fn fit_genes(
 }
 
 /// Run DESeq2 on a genes × samples count matrix.
-pub fn deseq(counts: &[f64], g: usize, d: &Design, sf: Option<Vec<f64>>, poscounts: bool, pa: &Params) -> Result<Fit, String> {
+/// With `reduced`, also runs DESeq2's likelihood-ratio test (`nbinomLRT`): the
+/// reduced model is fitted with the full model's dispersions.
+pub fn deseq(counts: &[f64], g: usize, d: &Design, sf: Option<Vec<f64>>, poscounts: bool, pa: &Params,
+             reduced: Option<&Design>) -> Result<Fit, String> {
     let (m, p) = (d.m, d.p);
+    if let Some(r) = reduced {
+        if r.m != m || r.p >= p {
+            return Err("the reduced design must have the same samples and fewer coefficients than the full design".into());
+        }
+    }
     if counts.len() != g * m {
         return Err("counts must be (n_genes, n_samples)".into());
     }
@@ -1050,6 +1064,8 @@ pub fn deseq(counts: &[f64], g: usize, d: &Design, sf: Option<Vec<f64>>, poscoun
         disp_outlier: vec![false; g], beta: vec![f64::NAN; g * p], beta_cov: vec![f64::NAN; g * p * p],
         beta_conv: vec![false; g], beta_iter: nan_g(), deviance: nan_g(), cooks: vec![f64::NAN; g * m],
         max_cooks: nan_g(), replace: vec![false; g], replace_counts: None,
+        deviance_reduced: reduced.map(|_| nan_g()), beta_conv_reduced: reduced.map(|_| vec![false; g]),
+        lrt_stat: None, lrt_pvalue: None,
         fit_type, trend: trend_coefs, disp_prior_var: prior_var, var_log_disp_ests: var_log, messages,
     };
     let write_stage = |out: &mut Fit, genes: &[usize], st: &Stage| {
@@ -1073,6 +1089,33 @@ pub fn deseq(counts: &[f64], g: usize, d: &Design, sf: Option<Vec<f64>>, poscoun
         }
     };
     write_stage(&mut out, &nz, &stage);
+    // reduced-model fits for the LRT, with the full model's dispersions
+    let fit_reduced = |out: &mut Fit, cnts: &[f64], genes: &[usize]| {
+        if let Some(dr) = reduced {
+            // DESeq2 fitNbinomGLMs: an intercept-only model is not iterated; its
+            // coefficient is log(baseMean), so mu = sizeFactor * baseMean
+            let just_intercept = dr.p == 1 && dr.x.iter().all(|&v| v == 1.0);
+            let res: Vec<(f64, bool)> = genes
+                .par_iter()
+                .map(|&i| {
+                    let y = &cnts[i * m..(i + 1) * m];
+                    if just_intercept {
+                        let bm = y.iter().zip(&sf).map(|(y, s)| y / s).sum::<f64>() / m as f64;
+                        let r = 1.0 / out.dispersion[i];
+                        let dev = -2.0 * y.iter().zip(&sf).map(|(&y, &s)| dnbinom_log(y, s * bm, r)).sum::<f64>();
+                        return (dev, true);
+                    }
+                    let f = fit_beta(y, &sf, dr, out.dispersion[i], pa);
+                    (f.deviance, f.conv)
+                })
+                .collect();
+            for (k, &i) in genes.iter().enumerate() {
+                out.deviance_reduced.as_mut().unwrap()[i] = res[k].0;
+                out.beta_conv_reduced.as_mut().unwrap()[i] = res[k].1;
+            }
+        }
+    };
+    fit_reduced(&mut out, counts, &nz);
 
     // Cook's distances
     let cooks_rows: Vec<Vec<f64>> = nz
@@ -1141,11 +1184,15 @@ pub fn deseq(counts: &[f64], g: usize, d: &Design, sf: Option<Vec<f64>>, poscoun
                 out.messages.push(format!("replacing outliers and refitting for {} genes (min_replicates_for_replace = {})", nrefit, pa.min_replicates_for_replace));
                 let (st, _, _) = fit_genes(&new_counts, &refit, &sf, d, pa, xim, &trend, &base_mean);
                 write_stage(&mut out, &refit, &st);
+                fit_reduced(&mut out, &new_counts, &refit);
                 for &i in &new_zero {
                     for a in 0..p {
                         out.beta[i * p + a] = f64::NAN;
                     }
                     out.deviance[i] = f64::NAN;
+                    if let Some(dr) = out.deviance_reduced.as_mut() {
+                        dr[i] = f64::NAN;
+                    }
                 }
                 if replaceable.iter().all(|&b| b) {
                     out.max_cooks.iter_mut().for_each(|v| *v = f64::NAN);
@@ -1165,6 +1212,13 @@ pub fn deseq(counts: &[f64], g: usize, d: &Design, sf: Option<Vec<f64>>, poscoun
             }
             out.replace_counts = Some(new_counts);
         }
+    }
+    if let (Some(r), Some(dr)) = (reduced, out.deviance_reduced.as_ref()) {
+        let chi = ChiSquared::new((p - r.p) as f64).unwrap();
+        let stat: Vec<f64> = dr.iter().zip(&out.deviance).map(|(a, b)| a - b).collect();
+        let pv = stat.iter().map(|&s| if s.is_finite() { chi.sf(s.max(0.0)) } else { f64::NAN }).collect();
+        out.lrt_stat = Some(stat);
+        out.lrt_pvalue = Some(pv);
     }
     Ok(out)
 }

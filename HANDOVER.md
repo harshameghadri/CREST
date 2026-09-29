@@ -1,114 +1,124 @@
 # CREST handover
 
-Where the project stands and how to continue on a local machine. Keep this
-file current: update **Status** and **Next steps** at the end of every work
-session, cloud or local.
+This file says where the project stands and what to do next. Read `CLAUDE.md` first (how
+the code works, and the rules). Keep **Status** and **Next steps** current at the end of
+every session.
 
-_Last updated: 2026-09-28._
+_Last updated: 2026-09-29 (0.3.0 merged to main)._
 
 ## Status
 
 | Area | State |
 |---|---|
-| Core pipeline (QC → HVG → scale/PCA → kNN → Leiden → UMAP → t-test/Wilcoxon) | Done, validated against scanpy 1.11 (`tests/`), 6–7× faster, 4–10× less memory |
-| Out-of-core (Parquet) mode | Done, ~1 GB peak regardless of dataset size |
-| White-paper benchmark (68k / 100k / 200k) | Done, `bench/whitepaper/results/` |
-| **Pseudobulk DESeq2 in Rust** | **New this session**: `crest.tl.DESeq2` / `pseudobulk` / `pseudobulk_de`. Matches R DESeq2 1.42 to ~1e-9 on simulated data and ≤1e-7 on 5 of 8 Kang cell types; ~18× faster than R and ~28× faster than pydeseq2. See `docs/deseq2.md` |
-| Packaging | PyPI name `crest-sc`, import name `crest`, version 0.2.0 (DESeq2 not yet in a release) |
-| CI | `.github/workflows/CI.yml`: `cargo test` + `pytest`, then maturin wheels for all platforms (release on tag) |
+| Core workflow (QC → HVG → scale / PCA → kNN → Leiden → UMAP → t-test / Wilcoxon → `score_genes`) | Done; validated against scanpy 1.11 in `tests/`. 0.2.0 run (4-core cloud VM): 6–7× faster, 4–10× less memory |
+| Out-of-core (Parquet) | Done; ~1 GB peak regardless of size, ~2× slower than in-memory |
+| Pseudobulk DESeq2 (Rust) | Done: Wald + LRT; matches R DESeq2 1.42 (`docs/deseq2.md`) |
+| Modules after clustering | Harmony, Scrublet, `seurat_v3` HVG, `leiden_sweep`, `ingest`, `knn_query`; each validated (`docs/downstream.md`) |
+| Paper benchmark | `scripts/crest_paper_bench.sh` + `bench/paper/`. Quick tier done on rinamochana (30/30 ok). **Standard tier running** (see Next steps 1) |
+| Documentation | **New:** Sphinx + MyST site in `docs/`, `.readthedocs.yaml`, beginner setup guide `docs/readthedocs.md`, CI `docs` job. Not yet connected to Read the Docs (owner's step) |
+| Packaging | Version **0.3.0** (`Cargo.toml`), merged `dev` → `main` on 2026-09-29. Tag `v0.3.0` + PyPI publish still to do (owner) |
+| CI | `test` (cargo + pytest), `docs` (sphinx `-W`), wheels for all platforms; publishes on tag |
 
 ### Git / GitHub state
 
-* Working branch: `claude/awesome-lamport-dsvfv2` (all work is here and pushed).
-* [PR #1](https://github.com/harshameghadri/CREST/pull/1) `claude/awesome-lamport-dsvfv2 → main` is open. It fast-forwards
-  `main` to 0.2.0 and now also carries the DESeq2 work.
-* Remote branches to clean up once PR #1 is merged:
-  `feat/leiden-hnsw-faer` and `fix/production-readiness`. Both are superseded; tag them
-  first if you want an archive (`git tag archive/<name> origin/<name>`).
-* Planned workflow: create a `dev` branch from `main` after PR #1 merges, open
-  feature PRs into `dev`, and merge `dev → main` for releases.
-* In the cloud session, pushing straight to `main`, creating shared branches and tags,
-  and deleting branches were blocked by Claude Code's safety check, which needs
-  explicit confirmation for such actions. They are not GitHub permission
-  problems. Locally, run them yourself or confirm them when Claude asks.
+* `main` = 0.3.0: `dev` merged into `main` on 2026-09-29 (0.2.0 was
+  [PR #1](https://github.com/harshameghadri/CREST/pull/1); the 0.3.0 work came through
+  [PR #2](https://github.com/harshameghadri/CREST/pull/2), [#3](https://github.com/harshameghadri/CREST/pull/3),
+  [#4](https://github.com/harshameghadri/CREST/pull/4) and the rename/release PR into `dev`).
+* Work branch `claude/awesome-lamport-dsvfv2` is restarted from `dev` for each new piece of work.
+* Stale branches are archived as tags (`archive/feat-leiden-hnsw-faer`,
+  `archive/fix-production-readiness`) and deleted.
+
+## Next steps (in priority order)
+
+1. **Let the standard-tier benchmark finish** on rinamochana.
+   - It runs in `/mnt/scratch/crest-bench`, started 2026-09-28 17:56 (160 runs, ~20–25 h;
+     39/160 done at 2026-09-29 morning).
+   - Don't change benchmark code while it runs. It can be resumed: re-running the same
+     command skips finished runs.
+   - The owner sends back `crest-bench/results/crest-bench-rinamochana-<date>.tar.gz`.
+2. **Write the results tables with the honest-reporting rules** (`CLAUDE.md` §5, and
+   `docs/benchmarks.md`). The changes go in `bench/paper/summarize.py`:
+   - headline = `core` pipeline, at each tool's best thread count **and** at matched
+     threads. In the thread scan, scanpy's pbmc68k `core` time is 152 s at 8 threads but
+     301 s at 64, so a 64-vs-64 comparison flatters CREST 2×;
+   - a separate table for the optional modules (Scrublet, Harmony, sweep, pseudobulk);
+   - report CREST's weak spots: thread scaling on pbmc68k `core` is 63.5 s at 1 thread and
+     24 s at 64 (~1/3 serial; find which steps from `steps.csv`); steps where CREST is not
+     faster; failed runs.
+3. **Connect Read the Docs.** The owner follows `docs/readthedocs.md`: project name
+   `crest-sc`, default branch `main`.
+4. **Publish 0.3.0.** The version bump, CHANGELOG and `dev` → `main` merge are done. Left:
+   - tag `v0.3.0` on `main` (`git tag v0.3.0 origin/main && git push origin v0.3.0`); the
+     tag triggers the CI wheel builds and the PyPI upload;
+   - the upload needs a `PYPI_API_TOKEN` repository secret or PyPI trusted publishing for
+     `crest-sc`.
+5. **White paper**: results from step 2, plus the validation tables in `docs/deseq2.md` and
+   `docs/downstream.md`.
+6. **Performance work, after the paper numbers exist** (measure first, from `steps.csv`):
+   - the serial fraction of the core pipeline (candidates: 10x HDF5 gzip reading, Leiden
+     local moving, Python glue);
+   - Scrublet at ≥ 100k cells with no batch key is ~quadratic, because the approximate kNN
+     is run with k ≈ 1.5·√n (541 s at 100k, 2,633 s at 200k). Low priority: Scrublet is an
+     optional module, and users may prefer scDblFinder. A cheap fix is exact tiled search at
+     any size.
+7. **Possible extensions:**
+   - DESeq2: `lfcShrink` (apeglm), `lfcThreshold`, interaction formulas;
+   - UMAP transform optimisation in `ingest`;
+   - `pearson_residuals` HVG.
+
+## Decisions (and why)
+
+Longer discussions are in `work.md`; search for the keywords.
+
+| decision | reason |
+|---|---|
+| Rebuild around `BioFrame` + fused kernels instead of Polars expression plugins | Polars plugins compute per batch, which gave wrong per-cell sums; the plugin ABI tied wheels to Polars versions; nothing was validated |
+| Delete the `.bio` namespace, SLAF support, notebooks, Docker, legacy benches | unvalidated duplicates of the real API; maintenance weight |
+| PyPI name `crest-sc`, import name `crest` | the `crest` name was unavailable |
+| Our own DESeq2 port instead of an existing crate | existing crates were immature or needed a newer Rust; a port on the streamed group sums could be validated line by line against R |
+| DESeq2: Newton refinement instead of L-BFGS-B; exact integration for ≤ 3 residual df | deterministic and at least as accurate; documented in `docs/deseq2.md` |
+| Harmony `nclust = min(round(N/30), 100)`, harmonypy defaults | parity with harmonypy 2.x / R harmony ≥ 1.2 |
+| `ingest` centres the query on its own mean | what `scanpy.tl.ingest` does (accuracy 90.7% vs 86% otherwise) |
+| Scrublet uses exact kNN up to 150k points | NN-descent is slow at Scrublet's large k |
+| `scanpy.external.pp.harmony_integrate` not used in benchmarks | broken with harmonypy 2.x (transposed output); harmonypy is called directly |
+| Benchmarks write only under `./crest-bench`, nothing in `$HOME` | the owner's `/home` is a small OS disk |
+| Honest reporting rules (CLAUDE.md §5) | owner's explicit requirement for the paper |
+| Acronym now "**Chunked** Rust Engine for Single-cell Transcriptomics" (0.3.0; was "Columnar") | the engine streams chunks of cells through fused Rust kernels; Polars is only the table / Parquet layer. Keeping the acronym and the `crest-sc` / `crest` names avoids breaking anyone |
+
+## Known limitations
+
+* HVG flavours: no `pearson_residuals`.
+* Batch integration: Harmony only.
+* DESeq2: additive formulas only (pass `design_matrix=` for interactions); no `lfcShrink`.
+* UMAP is deterministic per thread count, not across thread counts.
+* Leiden agrees with scanpy's clusterings at ARI 0.87–0.89, with the same number of clusters
+  and equal or higher modularity.
+* PCA needs ≤ 20k genes (the Gram matrix is genes²), so select HVGs first.
+* CREST has no plotting: use `bf.to_anndata()` and scanpy's `sc.pl`.
 
 ## Setting up locally
 
 ```bash
-git clone https://github.com/harshameghadri/CREST && cd CREST
-git checkout claude/awesome-lamport-dsvfv2     # or main once PR #1 is merged
-
-# toolchain: Rust (stable >= 1.80), Python >= 3.10
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-python3 -m venv .venv && source .venv/bin/activate
-pip install maturin
-maturin develop --release -E test,bench          # builds the Rust extension in place
-
-cargo test --release                              # Rust unit tests (~33)
-pytest -q                                         # Python tests incl. scanpy + R-DESeq2 parity (~18)
+git clone https://github.com/harshameghadri/CREST && cd CREST && git checkout dev
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y     # if no Rust
+conda deactivate 2>/dev/null || true                                         # maturin + conda clash
+uv venv .venv --python 3.11 && source .venv/bin/activate && uv pip install maturin
+maturin develop --release -E test,bench
+cargo test --release && pytest -q
 ```
 
-Optional, needed only to re-run the R comparison (the tests don't need R):
+Optional, only to regenerate the R comparisons:
 
-```bash
-# Debian/Ubuntu:  sudo apt install r-bioc-deseq2 r-cran-jsonlite
-# macOS / other:  R -e 'install.packages(c("BiocManager","jsonlite")); BiocManager::install("DESeq2")'
-pip install pydeseq2                              # only for the speed comparison
-```
-
-On macOS use `--scanpy-max-cells` in the benchmark runner (macOS swaps
-instead of OOM-killing).
+* Debian / Ubuntu: `sudo apt install r-bioc-deseq2 r-cran-jsonlite`
+* anywhere else: `R -e 'BiocManager::install("DESeq2")'`
 
 ## Reproducing the results
 
 ```bash
-# white-paper pipeline benchmark (downloads data into ./bench_data)
-bash bench/whitepaper/run_local_benchmark.sh --sizes "100000 200000" --repeats 3
-
-# DESeq2 vs R on simulated designs            -> bench/deseq2/results/comparison.{md,csv}
-python bench/deseq2/compare_r.py --genes 5000
-# DESeq2 on real pseudobulk (Kang 2018, GEO)  -> bench/deseq2/results/kang_pseudobulk.{md,csv}
-python bench/deseq2/kang_pseudobulk.py        # add --skip-r / --skip-pydeseq2 if not installed
+cd /mnt/scratch                                    # a roomy disk; never $HOME on rinamochana
+curl -LO https://raw.githubusercontent.com/harshameghadri/CREST/dev/scripts/crest_paper_bench.sh
+bash crest_paper_bench.sh --tier quick             # ~35 min
+bash crest_paper_bench.sh --tier standard          # ~1 day on 64 cores
+python bench/harmony/compare_harmonypy.py          # module comparisons: see docs/benchmarks.md
 ```
-
-## Code map
-
-| Path | What |
-|---|---|
-| `src/kernels.rs` | Fused chunk kernels (QC, gene stats, Gram/PCA, projection, group sums, Wilcoxon) over a `ChunkView` |
-| `src/knn.rs`, `src/leiden.rs`, `src/umap/` | kNN (GEMM / IVF + NN-descent), Leiden, UMAP |
-| `src/deseq/mod.rs` | DESeq2 pipeline: size factors, dispersions, trend, MAP, IRLS/Newton, Cook's, outlier refit |
-| `src/deseq/linalg.rs`, `src/deseq/lowess.rs` | Small dense LU; port of R's `clowess` |
-| `src/py.rs` | PyO3 bindings (numpy in/out, GIL released) |
-| `src/nb_glm.rs`, `src/lib.rs` | Legacy Polars expression plugins (`.bio` namespace) |
-| `crest/core.py` | `BioFrame` and the stores (CSR, Polars frame, Parquet) |
-| `crest/pp.py`, `crest/tl.py` | scanpy-style API |
-| `crest/deseq2.py` | `pseudobulk`, `DESeq2` (design formulas, `results()`, independent filtering), `pseudobulk_de` |
-| `tests/test_crest.py`, `tests/data/` | Test suite; stored R DESeq2 reference outputs |
-| `bench/whitepaper/`, `bench/deseq2/` | Benchmarks used in the paper |
-| `docs/memory_model.md`, `docs/deseq2.md` | Design notes |
-| `docs/dev/` | Old planning notes from March–April 2026; historical only, superseded by this file |
-| `bench/*.py` (top level) | Old exploratory scripts, many using the removed `biopolars` API; candidates for deletion |
-
-## Next steps (in priority order)
-
-1. **Merge PR #1** once CI is green, create `dev`, and delete or archive the stale branches (see above).
-2. **Release 0.3.0** with DESeq2: bump `Cargo.toml` and `CHANGELOG.md`, then tag `v0.3.0`; CI builds and publishes the wheels.
-   Needs a `PYPI_API_TOKEN` secret or trusted publishing set up on PyPI for `crest-sc`.
-3. **White paper**: add a DESeq2 section from `bench/deseq2/results/` and `docs/deseq2.md`
-   (accuracy table + speed vs R/pydeseq2 + the known-differences paragraph).
-4. DESeq2 extensions, if reviewers ask: LRT (`test="LRT"`), `lfcShrink` (apeglm is
-   the usual request), `lfcThreshold`, interaction terms in the formula parser.
-5. DESeq2 speed: ~0.3 ms/gene at p = 9. Per-call allocations in
-   `log_posterior` / `fit_beta` (`Vec`s, the LU copy) are the obvious next win, if needed.
-6. HVG `seurat_v3`, and Harmony batch integration (listed under README "Scope and limitations").
-7. Housekeeping: delete the legacy `bench/*.py` scripts and `docs/dev/`.
-
-## Conventions
-
-* Every numerical method is validated against its reference implementation
-  (scanpy, R DESeq2). Add a test that pins the agreement before optimising.
-* Keep memory bounded: kernels take one chunk at a time. Never materialise
-  cells × genes dense arrays.
-* Commit messages: `feat:`, `fix:`, `bench:`, `docs:`, `chore:` prefixes.
-* Before pushing, run `cargo test --release && pytest -q`.

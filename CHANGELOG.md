@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.3.0 (2026-09-29)
+
+### Changed
+- The acronym now reads **Chunked** Rust Engine for Single-cell Transcriptomics (was
+  "Columnar"): the engine streams chunks of cells through fused Rust kernels; Polars is only
+  the table and Parquet layer. Package and import names are unchanged (`crest-sc`, `crest`).
+
 ### New
 - **Pseudobulk DESeq2 in Rust.** `crest.tl.DESeq2` ports DESeq2 1.42 `DESeq()` +
   `results()`: median-of-ratios size factors, Cox-Reid gene-wise dispersions,
@@ -12,6 +19,38 @@
 - `crest.tl.pseudobulk` (streamed raw-count sums per sample × group) and
   `crest.tl.pseudobulk_de` (per-cell-type DESeq2 in one call).
 - `bench/deseq2/`: R comparison on simulated designs and on Kang et al. 2018.
+- **Harmony** batch integration in Rust (`crest.tl.harmony`), the harmony2 algorithm of
+  R harmony >= 1.2 / harmonypy 2.x; 3.5x faster than harmonypy at equal integration quality.
+- **Scrublet** doublet detection (`crest.pp.scrublet`), sparse and streamed; 12x faster
+  than `scanpy.pp.scrublet` with the same AUROC on demuxlet-labelled doublets.
+- `highly_variable_genes(flavor="seurat_v3" | "seurat_v3_paper", batch_key=...)`, with a
+  port of netlib loess (`crest._loess`); identical to scanpy.
+- `crest.tl.leiden_sweep`: many resolutions/seeds on one graph in parallel, with
+  ARI-based stability; `crest.tl.adjusted_rand_index`.
+- `crest.tl.ingest`: project a query onto a reference PCA, transfer labels and UMAP.
+  `uns['pca']['projection']` now stores what the projection needs.
+- DESeq2 likelihood-ratio test: `DESeq2(test="LRT", reduced="~ ...")`, matching R.
+- Native `knn_query` (reference -> query kNN, exact or IVF).
+- `scripts/crest_paper_bench.sh` + `bench/paper/`: one-command publication benchmark
+  (datasets, per-core CPU/clock/memory monitoring, statistics, figures).
+- `scripts/crest_git_housekeeping.sh`: repository housekeeping (dev branch, stale branches).
+- **Documentation site** (Sphinx + MyST, Read the Docs): installation, quickstart, concepts,
+  full API reference, benchmarks, developer guide; `.readthedocs.yaml`; CI `docs` job.
+- `work.md`: the development history; `CLAUDE.md` / `HANDOVER.md` rewritten for new sessions.
+
+### Removed
+- The `.bio` Polars expression namespace and its Rust plugin code (duplicated the
+  validated API, was not validated itself, and tied the wheel to Polars' plugin ABI).
+  The `polars`/`pyo3-polars` Rust dependencies go with it.
+- SLAF support (`BioFrame.from_slaf`, `crest/slaf_io.py`, the `slaf` extra).
+- Legacy scripts: `bench/*.py` from the biopolars era, `notebooks/`, the Docker setup,
+  `docs/dev/`, and `bench/whitepaper/`'s scripts (superseded by `bench/paper/`; its
+  0.2.0 results stay).
+
+### Fixed
+- `BioFrame.to_anndata()` / `from_anndata()` no longer need pyarrow.
+- `crest_paper_bench.sh` stops with a clear message when the work directory is not writable,
+  and records the work directory's device and filesystem.
 
 ## 0.2.0
 

@@ -1,0 +1,9 @@
+# What Read the Docs (and a local `make docs`) needs to build the documentation.
+# The CREST package itself is not installed: docs/conf.py imports it from the source tree
+# and mocks its compiled Rust module.
+sphinx>=7.2,<10
+myst-parser>=3.0
+furo>=2024.1.29
+sphinx-copybutton>=0.5
+numpy>=1.24
+polars>=1.0

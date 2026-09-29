@@ -1,11 +1,15 @@
-# CREST — Columnar Rust Engine for Single-cell Transcriptomics
+# CREST — Chunked Rust Engine for Single-cell Transcriptomics
 
 CREST runs the standard single-cell RNA-seq workflow (QC → normalisation →
 highly variable genes → scaling + PCA → neighbours → Leiden → UMAP →
 differential expression) with native Rust kernels behind a scanpy-style Python
-API. It reproduces scanpy's results while being faster at every step and never
-materialising a normalised, scaled or dense copy of the count matrix — datasets
-can be streamed from disk (Parquet) with memory bounded by one chunk.
+API. It reproduces scanpy's results, was faster at every step in our 0.2.0 benchmark,
+and never materialises a normalised, scaled or dense copy of the count matrix:
+the raw counts are streamed through the kernels **one chunk of cells at a time**
+(hence the name), from memory or from disk (Parquet), with memory bounded by one chunk.
+
+**Documentation:** [crest-sc.readthedocs.io](https://crest-sc.readthedocs.io): installation,
+quickstart, how it works, API reference, benchmarks (sources in [`docs/`](docs/)).
 
 ```python
 import crest
@@ -27,20 +31,29 @@ de = crest.tl.pseudobulk_de(bf, ["donor", "condition"], "~ donor + condition",  
 adata = bf.to_anndata()                                            # hand over to scanpy / scverse
 ```
 
+Downstream tools ([docs/downstream.md](docs/downstream.md)): Harmony batch
+integration (`crest.tl.harmony`), Scrublet doublet detection
+(`crest.pp.scrublet`), `seurat_v3` HVGs, a parallel Leiden resolution sweep
+with stability scores (`crest.tl.leiden_sweep`), reference mapping / label
+transfer (`crest.tl.ingest`) and the DESeq2 likelihood-ratio test
+(`DESeq2(test="LRT", reduced=...)`).
+
 ## Installation
 
 ```bash
-pip install crest-sc            # import name: crest
+pip install crest-sc            # import name: crest (the PyPI name `crest` is taken)
 pip install "crest-sc[anndata]" # AnnData / scipy interop
 ```
 
+Needs Python ≥ 3.10; runtime dependencies are only `numpy`, `polars` and `h5py`.
 Building from source needs a Rust toolchain and [maturin](https://www.maturin.rs):
-`maturin develop --release`.
+`maturin develop --release` (see [docs/installation.md](docs/installation.md)).
 
 ## What is validated against scanpy
 
-Every step is checked against scanpy 1.11 (`tests/test_crest.py`, and
-`bench/whitepaper/`). On PBMC3k with the scanpy tutorial parameters:
+Every step is checked against its reference implementation in the test suite
+(`tests/test_crest.py`, run by CI on every change) and on real data in the module
+benchmarks (`bench/<module>/`). On PBMC3k with the scanpy tutorial parameters:
 
 | step | agreement with scanpy |
 |---|---|
@@ -52,7 +65,11 @@ Every step is checked against scanpy 1.11 (`tests/test_crest.py`, and
 | `umap` | equal kNN preservation / silhouette (stochastic layout) |
 | `rank_genes_groups` t-test, Wilcoxon | scores within 1e-4 (1e-7 on identical input), same p-values and log fold-changes |
 | `score_genes` | identical, including scanpy's control-gene sampling (within 3e-7) |
-| `DESeq2` (pseudobulk) | R DESeq2 1.42: size factors, dispersions, log2FC, p-values within ~1e-9 on simulated designs; identical calls on 5 of 8 Kang 2018 cell types, >99% on the rest ([docs/deseq2.md](docs/deseq2.md)) |
+| `DESeq2` (pseudobulk) | R DESeq2 1.42: size factors, dispersions, log2FC, p-values within ~1e-9 on simulated designs; identical calls on 5 of 8 Kang 2018 cell types, >99% on the rest ([docs/deseq2.md](docs/deseq2.md)); LRT statistics within 1e-6 |
+| `highly_variable_genes(flavor="seurat_v3")` | identical gene sets and ranks, `variances_norm` within 1e-14 (loess port matches `skmisc` to 1e-14) |
+| `harmony` | same integration quality as harmonypy 2.0 (iLISI 1.81 vs 1.81, cLISI 1.01, ARI 0.82) at 3.5× the speed; neighbourhoods as close to harmonypy's as two harmonypy seeds are to each other |
+| `scrublet` | AUROC 0.863 vs 0.863 on Kang 2018 demuxlet doublets, 12× faster |
+| `ingest` | 90.7% vs 89.8% label accuracy mapping stimulated onto control PBMCs, 15× faster |
 
 ## Performance
 
@@ -80,17 +97,26 @@ The 100k/200k datasets are generated from the real 10k PBMC v3 matrix by
 `make_dataset.py` (each cell mixes a real cell with a nearest neighbour after
 binomial thinning), so sparsity, library size and cluster structure are realistic.
 
-Run the whole benchmark on your own machine with one command:
+The figures above come from the 0.2.0 run on a 4-core cloud VM
+(`bench/whitepaper/results/`); numbers on a 64-core workstation, reported at each
+tool's best thread count as well as at matched thread counts, will replace them. The
+paper benchmark (six real datasets plus a synthetic scaling series, 5 repeats,
+thread scaling, per-core CPU/clock/memory timelines, accuracy against scanpy,
+bootstrap confidence intervals) runs on your own machine with one command:
 
 ```bash
-bash bench/whitepaper/run_local_benchmark.sh --sizes "100000 200000" --repeats 3
+cd /path/with/space                            # everything goes under ./crest-bench, nothing in $HOME
+curl -LO https://raw.githubusercontent.com/harshameghadri/CREST/dev/scripts/crest_paper_bench.sh
+bash crest_paper_bench.sh --tier standard      # quick | standard | full
 ```
 
-It builds CREST, runs the test suite, downloads the data, and writes tables and
-figures to `bench_results/`. The pieces: `bench/whitepaper/run_pipeline.py` (one tool per process,
-per-step wall time and peak RSS, JIT warm-up excluded for scanpy),
-`bench/whitepaper/make_dataset.py` (scale a real 10x matrix to any size), and
-`bench/whitepaper/summarize.py` (tables + figures).
+It clones and builds CREST in a throwaway uv environment, runs the test suites,
+records the machine, downloads and checksums the data, runs every
+configuration in its own process, and writes `report.md`, CSV/LaTeX tables,
+PDF/PNG figures and a `.tar.gz`. The pieces live in `bench/paper/`
+(`datasets.py`, `run_one.py`, `monitor.py`, `run_all.py`, `accuracy.py`,
+`summarize.py`); module benchmarks in `bench/deseq2/`, `bench/harmony/`,
+`bench/doublets/` and `bench/ingest/`.
 
 ## How it works
 
@@ -107,7 +133,7 @@ per-step wall time and peak RSS, JIT warm-up excluded for scanpy),
 * **kNN.** Exact search with tiled GEMM (the FAISS "flat" trick) for small data;
   above 20k cells an inverted-file index — cells bucketed by k-means, each bucket
   searched against its 20 nearest buckets, like cell lists in molecular dynamics —
-  polished by NN-descent. ≥99.5% recall.
+  polished by NN-descent (99.7% recall on 108k PBMC cells).
 * **UMAP.** umap-learn's objective and defaults, optimised in parallel by domain
   decomposition: each thread owns a range of cells, writes only those, and reads
   the rest from a snapshot refreshed 16× per epoch.
@@ -118,10 +144,10 @@ per-step wall time and peak RSS, JIT warm-up excluded for scanpy),
   of Kang 2018 takes 7 s (R: 131 s, pydeseq2: 202 s).
 * **Sparse Wilcoxon.** All implicit zeros of a gene form one tie block with a
   closed-form rank, so only non-zero values are sorted.
-* **Polars expressions.** Column-level operations are also available as a
-  `.bio` Polars expression namespace (`pl.col("count").bio.log1p()`, …).
+* **Harmony in Rust.** The harmony2 algorithm with cells sorted by batch, so the
+  per-batch sums and the ridge correction are GEMMs; per-cell updates in parallel.
 
-Details: [docs/memory_model.md](docs/memory_model.md).
+Details: [docs/concepts.md](docs/concepts.md) and [docs/memory_model.md](docs/memory_model.md).
 
 ## Data formats
 
@@ -131,11 +157,22 @@ from_anndata`, `write_parquet` / `read_parquet`, `to_anndata`, `to_scipy`.
 
 ## Scope and limitations
 
-* HVG flavours: `seurat`, `cell_ranger` (not yet `seurat_v3`).
-* No batch integration yet (Harmony is planned).
-* DESeq2: Wald test only (no LRT, `lfcShrink`, `lfcThreshold`), additive formulas
+* HVG flavours: `seurat`, `cell_ranger`, `seurat_v3` / `seurat_v3_paper` (not `pearson_residuals`).
+* Batch integration: Harmony only (no scVI/BBKNN).
+* DESeq2: Wald and LRT (no `lfcShrink`, `lfcThreshold`), additive formulas
   (pass `design_matrix=` for interactions); see [docs/deseq2.md](docs/deseq2.md).
+* `ingest` places query cells in the reference UMAP by umap-learn's transform
+  initialisation (no further optimisation).
 * UMAP layouts are deterministic for a fixed thread count, not across thread counts.
+
+## Why "Chunked"?
+
+CREST started as Polars expression plugins ("columnar"). That design could not
+compute per-cell quantities correctly and was replaced by the engine described above:
+raw counts stored once, filters and transforms recorded, and every step a fused
+Rust pass over chunks of cells. Polars remains the table layer (`obs`, `var`,
+results) and the Parquet reader. The acronym stays; the "C" now says what the
+engine does.
 
 ## License
 
