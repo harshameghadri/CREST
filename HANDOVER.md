@@ -31,14 +31,16 @@ _Last updated: 2026-09-29 (0.3.0 on PyPI; standard benchmark analysed)._
 
 ## Next steps (in priority order)
 
-1. **Parse benchmark on rinamochana.** The file
-   (`/mnt/scratch/crest-bench/data/Parse_1M_adata_for_cellflow_datasets_with_embeddings.h5ad`)
-   is the **full 9.7M-cell** atlas with raw counts of **2,000 genes** in `X` (checked with
-   `--inspect`). Two datasets are built from it: `parse_pbmc` (all 9.7M cells; scanpy cannot fit
-   in 128 GB, so CREST only) and `parse_pbmc_1m` (seeded random 1M cells; the scanpy
-   comparison). QC uses `min_genes` 20 (200 scaled to 2,000 genes); DESeq2 contrast IFN-beta
-   vs PBS. Run from `/mnt/scratch`:
-   `bash crest_paper_bench.sh --ref <branch with this change> --datasets "parse_pbmc_1m parse_pbmc" --repeats 3 --timeout 21600 --skip-thread-scan`
+1. **Parse benchmark: done** (2026-09-29, 45/45 runs ok; `docs/benchmarks.md`, "Parse PBMC atlas").
+   1M cells: CREST 127 s vs scanpy 990 s (7.8×), 4.4 vs 54.5 GB. 9.7M cells: CREST 27 min, 37 GB
+   (30 GB out-of-core). Open items it raised, in priority order:
+   - **Leiden ARI vs scanpy is 0.66 at 1M** (0.80–0.94 at ≤200k) on an identical kNN graph. Measure
+     each tool's seed-to-seed ARI on the same graph before claiming equivalence (add to
+     `bench/paper/accuracy.py`: scanpy/leidenalg with 2–3 seeds, `crest.tl.leiden_sweep(n_seeds=3)`).
+   - **Leiden memory and speed**: single-threaded (24 s at 1M, 400 s at 9.7M) and the memory peak
+     (36 GB at 9.7M; the 5-resolution sweep 68 GB because each parallel run copies the graph).
+   - **UMAP** is 65% of CREST's core time at 1M and 57% at 9.7M.
+   - Final paper numbers: 5 repeats (3 gives Mann-Whitney p ≥ 0.1), CPU governor `performance`.
 2. **Connect Read the Docs** (`docs/readthedocs.md`): project `crest-sc`, default branch `main`.
 3. **White paper**: headline from the core workflow best-vs-best; "not faster" table;
    modules table; accuracy table (all in `report.md`). Use 5 repeats and the new protocol.
