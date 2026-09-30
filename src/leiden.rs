@@ -35,10 +35,11 @@ impl Graph {
     }
 
     /// Build from undirected edges (i, j, w) with i != j, each pair listed once.
-    pub(crate) fn from_edges(n: usize, edges: &[(usize, usize, f64)]) -> Self {
+    pub(crate) fn from_edges<W: Copy + Into<f64>>(n: usize, edges: &[(usize, usize, W)]) -> Self {
         let mut node_w = vec![0.0f64; n];
         let mut deg = vec![0usize; n];
         for &(i, j, w) in edges {
+            let w: f64 = w.into();
             node_w[i] += w;
             node_w[j] += w;
             deg[i] += 1;
@@ -52,6 +53,7 @@ impl Graph {
         let mut nbrs = vec![0usize; offsets[n]];
         let mut wts = vec![0.0f64; offsets[n]];
         for &(i, j, w) in edges {
+            let w: f64 = w.into();
             nbrs[pos[i]] = j;
             wts[pos[i]] = w;
             pos[i] += 1;
@@ -323,18 +325,21 @@ pub(crate) fn leiden_partition(
     let mut result: Vec<usize> = (0..n).collect();
 
     for _ in 0..n_iterations.max(1) {
-        let mut g = graph.clone();
+        // level 0 works on the caller's graph directly (no copy: a resolution sweep runs
+        // several of these in parallel on one shared graph); later levels on aggregates
+        let mut agg: Option<Graph> = None;
         let mut membership: Vec<usize> = (0..n).collect(); // original node -> aggregate node
         let mut part = result.clone(); // partition of aggregate nodes
         renumber(&mut part);
 
         for _level in 0..1000 {
-            fast_move_nodes(&g, &mut part, resolution, &mut rng);
+            let g: &Graph = agg.as_ref().unwrap_or(graph);
+            fast_move_nodes(g, &mut part, resolution, &mut rng);
             let n_comms = renumber(&mut part);
             if n_comms == g.n() {
                 break;
             }
-            let mut refined = refine_partition(&g, &part, resolution, theta, &mut rng);
+            let mut refined = refine_partition(g, &part, resolution, theta, &mut rng);
             let mut n_ref = renumber(&mut refined);
             if n_ref == g.n() {
                 // Refinement merged nothing: aggregate by the unrefined partition.
@@ -348,7 +353,8 @@ pub(crate) fn leiden_partition(
             for m in membership.iter_mut() {
                 *m = refined[*m];
             }
-            g = aggregate(&g, &refined, n_ref);
+            let next_g = aggregate(g, &refined, n_ref);
+            agg = Some(next_g);
             part = next_part;
         }
 
@@ -404,13 +410,13 @@ mod tests {
 
     #[test]
     fn test_leiden_empty() {
-        let g = Graph::from_edges(0, &[]);
+        let g = Graph::from_edges::<f64>(0, &[]);
         assert!(leiden_partition(&g, 1.0, 2, 42).is_empty());
     }
 
     #[test]
     fn test_leiden_single_node() {
-        let g = Graph::from_edges(1, &[]);
+        let g = Graph::from_edges::<f64>(1, &[]);
         assert_eq!(leiden_partition(&g, 1.0, 2, 42), vec![0]);
     }
 

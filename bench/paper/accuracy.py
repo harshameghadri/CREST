@@ -3,6 +3,8 @@
 Cells are matched by barcode. Metrics:
 
 * leiden_ari / leiden_nmi   - clusterings (both at resolution 1)
+* leiden_ari_seeds_crest / _scanpy / _cross_mean - mean pairwise ARI over 3 seeds within each
+  tool and across tools (same graph): the seed-to-seed yardstick for leiden_ari
 * knn15_jaccard             - mean Jaccard of each cell's 15 nearest neighbours in
                               the two PCA spaces (CREST's exact kNN on both)
 * pca_subspace_cos_min/mean - cosines of the principal angles between the two
@@ -60,6 +62,16 @@ def compare(crest_npz: Path, scanpy_npz: Path) -> dict:
     m["leiden_ari"] = float(adjusted_rand_score(la, lb))
     m["leiden_nmi"] = float(normalized_mutual_info_score(la, lb))
     m["n_clusters_crest"], m["n_clusters_scanpy"] = int(len(np.unique(la))), int(len(np.unique(lb)))
+    # seed baseline: how much each tool disagrees with itself on the same graph. CREST vs
+    # scanpy agreement is only meaningful relative to this.
+    if "leiden_seeds" in a and "leiden_seeds" in b:
+        ra = [la] + [x[ia] for x in a["leiden_seeds"]]
+        rb = [lb] + [x[ib] for x in b["leiden_seeds"]]
+        pair = lambda runs: [adjusted_rand_score(runs[i], runs[j])  # noqa: E731
+                             for i in range(len(runs)) for j in range(i + 1, len(runs))]
+        m["leiden_ari_seeds_crest"] = float(np.mean(pair(ra)))
+        m["leiden_ari_seeds_scanpy"] = float(np.mean(pair(rb)))
+        m["leiden_ari_cross_mean"] = float(np.mean([adjusted_rand_score(x, y) for x in ra for y in rb]))
     Pa, Pb = a["pca"][ia].astype(np.float64), b["pca"][ib].astype(np.float64)
     m["knn15_jaccard"] = _jaccard_rows(_knn(Pa), _knn(Pb))
     Qa, _ = np.linalg.qr(Pa - Pa.mean(0))

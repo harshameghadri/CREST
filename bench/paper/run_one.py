@@ -53,6 +53,8 @@ class Null:
 
 
 SCRUBLET_MAX = 0  # set from --scrublet-max-cells; 0 = no limit
+LAST = {}  # the final AnnData / BioFrame, for the untimed seed-baseline clusterings
+SEED_BASELINE = (1, 2)  # extra Leiden seeds, run after timing, saved with --save-outputs
 SKIPPED: list = []
 
 
@@ -146,6 +148,7 @@ def scanpy_pipeline(path: Path, mon, profile: str, warm: bool = False) -> dict:
             out["harmony"] = a.obsm["X_pca_harmony"].astype(np.float32)
     out.update({"pca": a.obsm["X_pca"], "umap": a.obsm["X_umap"], "leiden": a.obs["leiden"].astype(int).to_numpy(),
                 "barcodes": np.asarray(a.obs_names, dtype=str)})
+    LAST.update(tool="scanpy", obj=a)
     return out
 
 
@@ -216,7 +219,26 @@ def crest_pipeline(path: Path, mon, profile: str, backed=None, warm: bool = Fals
                                        groupby=meta["celltype"], min_cells=10, quiet=True)
     out.update({"pca": b.obsm["X_pca"], "umap": b.obsm["X_umap"], "leiden": b.obs["leiden"].cast(int).to_numpy(),
                 "barcodes": b.obs["barcode"].to_numpy().astype(str)})
+    LAST.update(tool="crest", obj=b)
     return out
+
+
+def seed_baseline() -> np.ndarray | None:
+    """Leiden (resolution 1) of the final object with seeds SEED_BASELINE on the same graph,
+    untimed: how much each tool disagrees with itself, the yardstick for CREST-vs-scanpy ARI."""
+    obj, runs = LAST.get("obj"), []
+    if obj is None:
+        return None
+    for s in SEED_BASELINE:
+        if LAST["tool"] == "scanpy":
+            import scanpy as sc
+            sc.tl.leiden(obj, flavor="igraph", n_iterations=2, random_state=s, key_added=f"_seed{s}")
+            runs.append(obj.obs[f"_seed{s}"].astype(int).to_numpy())
+        else:
+            import crest
+            crest.tl.leiden(obj, random_state=s, key_added=f"_seed{s}")
+            runs.append(obj.obs[f"_seed{s}"].cast(int).to_numpy())
+    return np.stack(runs)
 
 
 def environment() -> dict:
@@ -288,6 +310,9 @@ def main():
         shutil.rmtree(backed, ignore_errors=True)
     mon.write_timeline(out / f"{tag}.timeline.csv")
     if res and a.save_outputs:
+        extra = seed_baseline()  # after timing and monitoring: never counted in the run
+        if extra is not None:
+            res["leiden_seeds"] = extra
         np.savez_compressed(out / f"{tag}.outputs.npz", **res)
     report = {"tool": a.tool, "dataset": path.stem, "profile": a.profile, "threads": a.threads, "pinned": a.pin,
               "repeat": a.repeat, "status": status, "error": err, "n_cells": int(len(res["leiden"])) if res else None,
