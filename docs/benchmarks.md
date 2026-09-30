@@ -52,15 +52,19 @@ The script:
 
 Datasets: PBMC 3k, PBMC 10k, Kang 2018 (29k, 8 donors × 2 conditions), PBMC 68k, the
 Stephenson 2021 COVID atlas (647k), 10x 1.3M neurons, the Parse Biosciences PBMC cytokine
-atlas (~1M-cell subset, 12 donors × 90 cytokines + PBS; `parse_pbmc`), and synthetic
-100k–1M sets derived from PBMC 68k.
+atlas (12 donors × 90 cytokines + PBS: `parse_pbmc`, all 9.7M cells × 2,000 genes, and
+`parse_pbmc_1m`, a seeded random 1M-cell subset of it), and synthetic 100k–1M sets derived
+from PBMC 68k. At 9.7M cells scanpy cannot run in 128 GB (its dense scaled matrix alone would
+be 78 GB), so the tool comparison uses `parse_pbmc_1m` and the full atlas shows CREST alone
+at scale. The Parse matrix holds only 2,000 genes, so its QC threshold is scaled to the same
+fraction of genes (`min_genes` 20 of 2,000 instead of 200 of ~20,000), for both tools.
 
 The Parse file (13 GB, [figshare 28589774](https://figshare.com/articles/dataset/pbmc_parse/28589774))
 cannot always be downloaded by a script. Download it in a browser, put it in
-`crest-bench/data/`, and run with `--datasets parse_pbmc` (or `--tier full`). The raw counts
+`crest-bench/data/`, and run with `--datasets "parse_pbmc_1m parse_pbmc"` (or `--tier full`). The raw counts
 are taken from `layers/counts`, `raw/X` or `X` (the first that holds integer counts), and the
 donor, cytokine and cell-type columns are detected automatically. The pseudobulk DESeq2 step
-compares the most frequent cytokine with PBS. To check what will be used before a long run:
+compares IFN-beta with PBS (or, if absent, the most frequent condition with the control). To check what will be used before a long run:
 
 ```bash
 python bench/paper/datasets.py --inspect crest-bench/data/Parse_1M_adata_for_cellflow_datasets_with_embeddings.h5ad
@@ -152,6 +156,49 @@ search grows roughly with cells²; 2,590 s vs 3,020 s at 200k).
 same number of clusters on 4 of 6 datasets (57 vs 59 and 64 vs 62 on the synthetic sets), UMAP
 trustworthiness equal or slightly higher (0.862–0.959 vs 0.863–0.957), top-50 marker overlap
 0.92–0.99.
+
+## Results: Parse PBMC atlas, 1M and 9.7M cells
+
+Same machine, commit `ee87e3f` (library code identical to 0.3.0), 3 repeats, core workflow at 8
+and 64 threads, modules in separate runs, Scrublet skipped (above 150,000 cells). The Parse
+matrix has 2,000 genes; QC keeps cells with ≥ 20 of them (996,779 of 1,000,000 in the subset;
+9,666,140 of 9,697,974 in the full atlas).
+
+**Core workflow, 1M-cell subset** (median of 3; scanpy was fastest at 64 threads here):
+
+| | CREST | CREST out-of-core | scanpy |
+|---|---|---|---|
+| time, 64 threads | **127 s** | 131 s | 990 s |
+| time, 8 threads | 208 s | 218 s | 1,363 s |
+| peak memory | 4.4 GB | 3.7 GB | 54.5 GB |
+
+Speed-up **7.8×** (95% CI 7.7–8.0; best vs best and matched are the same here), memory
+**12.5× lower**. With 3 repeats per tool the Mann–Whitney p-value cannot go below 0.1, so the
+confidence interval is the better summary; use 5 repeats for the paper.
+
+Per step at 64 threads (CREST vs scanpy): scale + PCA 2.8 vs 83.6 s (30×; scanpy's dense
+scaled matrix is the 54.5 GB peak), neighbours 8.7 vs 105 s, Leiden 24 vs 62 s, UMAP 83 vs
+648 s, Wilcoxon 3.5 vs 80 s. **UMAP is 65% of CREST's time and Leiden another 19%**, and
+Leiden runs on one core (24 s at both 8 and 64 threads). `seurat_v3` HVG is again slower
+than scanpy (2.6 vs 1.1 s).
+
+**Full atlas, 9.7M cells (CREST only):** the core workflow takes **27 min** in memory
+(1,631 s at 64 threads, 37 GB peak) and 30 min out-of-core (1,805 s, 30 GB peak). UMAP
+(934 s) and Leiden (400 s, single-threaded) are 82% of the time. Out-of-core keeps the
+counts on disk, but at this size the neighbour graph, Leiden and UMAP dominate memory, so
+out-of-core saves only 7 GB: the per-cell structures, not the counts, set the peak. The
+optional modules at 9.7M: resolution sweep 484 s with a **68 GB** peak (five Leiden runs in
+parallel, each with its own copy of the graph), Harmony 229 s (39 GB), pseudobulk DESeq2
+(IFN-beta vs PBS, per cell type) 2 s.
+
+**Agreement with scanpy (1M):** identical PCA subspace, 15-NN graph (Jaccard 1.0) and HVG
+sets; UMAP trustworthiness 0.944 vs 0.946; top-50 marker overlap 0.94. **Leiden ARI is only
+0.66** (27 vs 27 clusters), lower than on the smaller datasets (0.80–0.94), although both tools
+cluster the identical graph. The resolution sweep shows the same pattern (ARI 0.96 at
+resolution 0.2, 0.65–0.69 at 1.0–2.0). How much of this is ordinary run-to-run variation of
+Leiden on a million-node graph still has to be measured (seed-to-seed ARI of each tool);
+until then it is an open question, not a validated equivalence. Harmony neighbourhoods agree
+at 0.82 (0.97–0.98 on Kang).
 
 ## Module benchmarks
 

@@ -83,8 +83,10 @@ All three expose the same `chunks()` iterator, so every analysis function works 
 all of them. The Parquet store is what makes CREST *out-of-core*: only one file is in memory
 at a time, so the **count matrix** never has to fit in RAM. What still grows with the number
 of cells are the per-cell results: `obs`, the 50-PC embedding (200 B per cell), the kNN graph
-and UMAP coordinates. Measured peak memory for the core workflow: 1.0–1.1 GB at 68k–200k
-cells (0.2.0 benchmark); 0.73 GB out-of-core vs 0.92 GB in memory on Kang (29k cells). The
+and UMAP coordinates, and at millions of cells these dominate. Measured peak memory for the
+core workflow: 1.0–1.1 GB at 68k–200k cells (0.2.0 benchmark); 0.73 GB out-of-core vs 0.92 GB
+in memory on Kang (29k cells); 3.7 vs 4.4 GB at 1M cells; **30 vs 37 GB at 9.7M cells**, where
+the neighbour graph, Leiden and UMAP set the peak. The
 price is re-reading the files on every pass: up to ~2× slower than in memory at 100k–200k
 cells, barely slower on small data (where out-of-core also saves nothing).
 

@@ -41,14 +41,14 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from datasets import REGISTRY, SYNTHETIC  # noqa: E402
+from datasets import REGISTRY, SUBSETS, SYNTHETIC  # noqa: E402
 
 THREAD_VARS = ("RAYON_NUM_THREADS", "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
                "NUMBA_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")
 
 
 def n_cells(name: str) -> int:
-    return SYNTHETIC.get(name) or REGISTRY[name]["cells"]
+    return SYNTHETIC.get(name) or (SUBSETS[name][1] if name in SUBSETS else REGISTRY[name]["cells"])
 
 
 def plan(a) -> list[dict]:
