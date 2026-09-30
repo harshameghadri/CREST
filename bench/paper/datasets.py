@@ -72,16 +72,17 @@ REGISTRY: dict[str, dict] = {
         "celltype": "cell_type",
     },
     "parse_pbmc": {
-        # Parse Biosciences "10 million human PBMCs" (12 donors x 90 cytokines + PBS), the
-        # processed subset distributed with CellFlow. Figshare may refuse scripted downloads
+        # Parse Biosciences "10 million human PBMCs" (12 donors x 90 cytokines + PBS), as
+        # processed for CellFlow: all 9.7M cells, raw counts of 2,000 selected genes in X.
+        # Figshare may refuse scripted downloads
         # (bot check); then download it in a browser and put it in the data directory under
         # any of `local_names`, it is picked up from there.
         "files": {"parse_pbmc.h5ad": ("https://figshare.com/ndownloader/files/53372768", 13101592422)},
         "local_names": ["Parse_1M_adata_for_cellflow_datasets_with_embeddings.h5ad",
                         "adata_for_cellflow_datasets_with_embeddings.h5ad"],
         "md5": "d89559875a6c75ab37e0adf84c6e177d",
-        "cells": 1_000_000, "tier": "full", "chemistry": "Parse Evercode WT v3 (split-pool)",
-        "description": "Parse 10M PBMC cytokine atlas, ~1M-cell CellFlow subset (figshare 28589774)",
+        "cells": 9_697_974, "tier": "full", "chemistry": "Parse Evercode WT v3 (split-pool)",
+        "description": "Parse 10M PBMC cytokine atlas, 9.7M cells x 2,000 genes (CellFlow; figshare 28589774)",
         "citation": "Parse Biosciences (2024), 10 million human PBMCs; figshare 28589774",
         # batch / sample / condition / cell type columns are detected at conversion
         # (written to parse_pbmc.meta.json), since the file's obs schema is not fixed here
@@ -93,6 +94,10 @@ REGISTRY: dict[str, dict] = {
         "citation": "10x Genomics (2017), 1M_neurons",
     },
 }
+# Random cell subsets of a real dataset: name -> (parent, cells). parse_pbmc_1m is the size
+# at which scanpy still fits in 128 GB (its dense scaled matrix at 9.7M cells would be 78 GB).
+SUBSETS = {"parse_pbmc_1m": ("parse_pbmc", 1_000_000)}
+SUBSET_TIER = {"parse_pbmc_1m": "full"}
 # Controlled scaling series: synthetic cells interpolating real PBMC 68k neighbours.
 SYNTHETIC = {f"synth_{n // 1000}k": n for n in (100_000, 200_000, 500_000, 1_000_000)}
 SYNTH_TIER = {"synth_100k": "standard", "synth_200k": "standard", "synth_500k": "full", "synth_1000k": "full"}
@@ -102,7 +107,8 @@ def tier_datasets(tier: str) -> list[str]:
     order = {"quick": 0, "standard": 1, "full": 2}[tier]
     real = [k for k, v in REGISTRY.items() if order >= {"quick": 0, "standard": 1, "full": 2}[v["tier"]]]
     syn = [k for k, t in SYNTH_TIER.items() if order >= {"quick": 0, "standard": 1, "full": 2}[t]]
-    return real + syn
+    sub = [k for k, t in SUBSET_TIER.items() if order >= {"quick": 0, "standard": 1, "full": 2}[t]]
+    return real + sub + syn
 
 
 # --------------------------------------------------------------------------- download
@@ -237,8 +243,9 @@ def _build_h5ad(src: Path, out: Path) -> None:
         with h5py.File(tmp, "w") as g:
             m = g.create_group("matrix")
             nnz = int(indptr[-1])
-            dd = m.create_dataset("data", (nnz,), np.int32, compression="gzip", compression_opts=1, chunks=(1 << 20,))
-            di = m.create_dataset("indices", (nnz,), np.int32, compression="gzip", compression_opts=1, chunks=(1 << 20,))
+            ch = (max(1, min(1 << 20, nnz)),)
+            dd = m.create_dataset("data", (nnz,), np.int32, compression="gzip", compression_opts=1, chunks=ch)
+            di = m.create_dataset("indices", (nnz,), np.int32, compression="gzip", compression_opts=1, chunks=ch)
             step = 1 << 26
             for lo in range(0, nnz, step):
                 hi = min(lo + step, nnz)
@@ -267,30 +274,41 @@ def _h5_str(a) -> list:
     return [x.decode() if isinstance(x, bytes) else str(x) for x in a]
 
 
-def _obs_column(node) -> list | None:
-    """A string / categorical obs column in either anndata encoding, or None."""
+def _obs_column(node, max_levels: int):
+    """A string / categorical obs column (either anndata encoding) as a NumPy object array,
+    or None if it is numeric or has more than ``max_levels`` distinct values."""
     if isinstance(node, h5py.Group) and "categories" in node and "codes" in node:
-        cats = _h5_str(node["categories"][:])
-        codes = node["codes"][:]
-        return [cats[c] if c >= 0 else None for c in codes]
+        cats = np.array(_h5_str(node["categories"][:]) + [None], dtype=object)
+        if len(cats) - 1 > max_levels:
+            return None
+        codes = node["codes"][:].astype(np.int64)
+        codes[codes < 0] = len(cats) - 1
+        return cats[codes]
     if isinstance(node, h5py.Dataset) and node.dtype.kind in ("S", "O", "U") and node.ndim == 1:
-        return _h5_str(node[:])
+        v = np.array(_h5_str(node[:]), dtype=object)
+        return v if len(np.unique(v)) <= max_levels else None
     return None
 
 
 def read_h5ad_obs(group, max_levels: int = 20_000) -> dict:
-    """obs index + every string/categorical column with at most ``max_levels`` levels."""
+    """obs index + every string/categorical column with at most ``max_levels`` levels
+    (NumPy object arrays; vectorised, so 10M cells take seconds)."""
     key = group.attrs.get("_index", "_index")
     key = key.decode() if isinstance(key, bytes) else key
-    cols = {"barcode": _h5_str(group[key][:])}
+    cols = {"barcode": np.array(_h5_str(group[key][:]), dtype=object)}
     order = group.attrs.get("column-order", list(group.keys()))
     for c in [x.decode() if isinstance(x, bytes) else str(x) for x in order]:
         if c == key or c not in group:
             continue
-        v = _obs_column(group[c])
-        if v is not None and len(set(v)) <= max_levels:
+        v = _obs_column(group[c], max_levels)
+        if v is not None:
             cols[c] = v
     return cols
+
+
+def _level_counts(v) -> dict:
+    u, n = np.unique(np.asarray(v, dtype=str), return_counts=True)
+    return dict(zip(u.tolist(), n.tolist()))
 
 
 def _counts_node(f):
@@ -302,7 +320,9 @@ def _counts_node(f):
         g = f[path]
         enc = g.attrs.get("encoding-type", "csr_matrix")
         enc = enc.decode() if isinstance(enc, bytes) else enc
-        sample = g["data"][: 1 << 20]
+        nnz = g["data"].shape[0]
+        k = min(1 << 20, nnz)
+        sample = np.concatenate([g["data"][o:o + k] for o in sorted({0, max(0, nnz // 2 - k // 2), max(0, nnz - k)})])
         if len(sample) and np.all(sample >= 0) and np.all(np.mod(sample, 1) == 0):
             if not enc.startswith("csr"):
                 raise RuntimeError(f"raw counts at {path} are stored as {enc}; CSR (cells x genes) is required")
@@ -319,7 +339,7 @@ def inspect_h5ad(path: Path) -> None:
                 print(f"  {name:45s} {str(obj.shape):>18s} {obj.dtype}")
             elif isinstance(obj, h5py.Group) and "encoding-type" in obj.attrs and not name.startswith(("obs/", "var/")):
                 shape = obj.attrs.get("shape")
-                print(f"  {name + '/':45s} {obj.attrs['encoding-type']} shape={None if shape is None else tuple(shape)}")
+                print(f"  {name + '/':45s} {obj.attrs['encoding-type']} shape={None if shape is None else tuple(int(x) for x in shape)}")
         f.visititems(show)
         try:
             print(f"counts: {_counts_node(f)[0]}")
@@ -330,9 +350,7 @@ def inspect_h5ad(path: Path) -> None:
         for c, v in obs.items():
             if c == "barcode":
                 continue
-            levels = {}
-            for x in v:
-                levels[x] = levels.get(x, 0) + 1
+            levels = _level_counts(v)
             top = sorted(levels.items(), key=lambda kv: -kv[1])[:6]
             print(f"  {c:30s} {len(levels):6d} levels  e.g. " + ", ".join(f"{k} ({n})" for k, n in top))
 
@@ -342,25 +360,31 @@ def _pick(cols, names):
     return next((low[n.lower()] for n in names if n.lower() in low), None)
 
 
-def _resolve_meta(obs: dict) -> dict:
-    """Batch / sample / condition / cell-type columns and a treated-vs-control contrast."""
+TREATED_PREFERENCE = ["IFN-beta", "IFN-gamma", "TNF-alpha", "IL-6", "stim", "stimulated", "treated"]
+
+
+def _resolve_meta(obs: dict, n_genes: int) -> dict:
+    """Batch / sample / condition / cell-type columns, a treated-vs-control contrast, and the
+    QC threshold. A matrix restricted to few genes gets ``min_genes`` scaled to the same
+    fraction of genes as the usual 200 of ~20,000 (both tools use the same value)."""
     import re
     cols = [c for c in obs if c != "barcode"]
     donor = _pick(cols, ["donor", "donor_id", "Donor", "individual", "patient"])
     cond = _pick(cols, ["cytokine", "cytokines", "treatment", "condition", "stim", "perturbation"])
     ctype = _pick(cols, ["cell_type", "celltype", "cell_type_annotation", "cell_type_label", "annotation"])
     meta = {"detected_columns": {"donor": donor, "condition": cond, "celltype": ctype}}
+    if n_genes < 10_000:
+        meta["min_genes"] = max(10, int(round(200 * n_genes / 20_000)))
     if donor:
         meta["batch"] = donor
     if ctype:
         meta["celltype"] = ctype
     if donor and cond:
-        counts = {}
-        for x in obs[cond]:
-            counts[x] = counts.get(x, 0) + 1
+        counts = _level_counts(obs[cond])
         ctrl = next((k for k in counts if k and re.fullmatch(r"(?i)pbs|control|ctrl|untreated|none|unstim(ulated)?", k)), None)
         if ctrl:
-            treated = max((k for k in counts if k not in (ctrl, None)), key=counts.get)
+            others = [k for k in counts if k not in (ctrl, "None")]
+            treated = next((k for k in TREATED_PREFERENCE if k in others), None) or max(others, key=counts.get)
             meta.update({"sample": [donor, cond], "condition": cond, "contrast": [cond, treated, ctrl],
                          "pb_levels_only": True})
     return meta
@@ -377,7 +401,8 @@ def _build_generic_h5ad(src: Path, out: Path) -> None:
         vkey = vkey.decode() if isinstance(vkey, bytes) else vkey
         names = _h5_str(var_group[vkey][:])
         gid = next((c for c in ("gene_ids", "gene_id", "ensembl_id", "gene_ids-0") if c in var_group), None)
-        ids = (_obs_column(var_group[gid]) if gid else None) or names
+        idv = _obs_column(var_group[gid], 10 ** 9) if gid else None
+        ids = list(idv) if idv is not None else names
         obs = read_h5ad_obs(f["obs"])
         shape = X.attrs.get("shape")
         n_cells, n_genes = int(shape[0]), int(shape[1])
@@ -388,8 +413,9 @@ def _build_generic_h5ad(src: Path, out: Path) -> None:
         with h5py.File(tmp, "w") as g:
             m = g.create_group("matrix")
             nnz = int(indptr[-1])
-            dd = m.create_dataset("data", (nnz,), np.int32, compression="gzip", compression_opts=1, chunks=(1 << 20,))
-            di = m.create_dataset("indices", (nnz,), np.int32, compression="gzip", compression_opts=1, chunks=(1 << 20,))
+            ch = (max(1, min(1 << 20, nnz)),)
+            dd = m.create_dataset("data", (nnz,), np.int32, compression="gzip", compression_opts=1, chunks=ch)
+            di = m.create_dataset("indices", (nnz,), np.int32, compression="gzip", compression_opts=1, chunks=ch)
             step = 1 << 26
             for lo in range(0, nnz, step):
                 hi = min(lo + step, nnz)
@@ -401,19 +427,65 @@ def _build_generic_h5ad(src: Path, out: Path) -> None:
                 print(f"             {hi / nnz:6.1%} of {nnz:,} non-zeros", flush=True)
             m.create_dataset("indptr", data=indptr)
             m.create_dataset("shape", data=np.array([n_genes, n_cells], np.int32))
-            m.create_dataset("barcodes", data=_enc(obs["barcode"]))
+            m.create_dataset("barcodes", data=np.asarray(obs["barcode"], dtype=str).astype(np.bytes_))
             ft = m.create_group("features")
             ft.create_dataset("id", data=_enc(ids))
             ft.create_dataset("name", data=_enc(names))
             ft.create_dataset("feature_type", data=_enc(["Gene Expression"] * n_genes))
             ft.create_dataset("genome", data=_enc(["GRCh38"] * n_genes))
         tmp.rename(out)
-    meta = _resolve_meta(obs)
+    meta = _resolve_meta(obs, n_genes)
     keep = ["barcode"] + [c for c in dict.fromkeys([meta.get("batch"), meta.get("condition"), meta.get("celltype")]) if c]
-    pl.DataFrame({c: obs[c] for c in keep}).write_parquet(out.with_suffix(".obs.parquet"))
+    pl.DataFrame({c: pl.Series(c, np.asarray(obs[c], dtype=str)) for c in keep}).write_parquet(out.with_suffix(".obs.parquet"))
     meta.update({"source": src.name, "counts_path": path, "cells": n_cells, "genes": n_genes})
     out.with_suffix(".meta.json").write_text(json.dumps(meta, indent=1))
-    print(f"  [meta]     {json.dumps({k: meta.get(k) for k in ('batch', 'sample', 'condition', 'contrast', 'celltype')})}")
+    print(f"  [meta]     {json.dumps({k: meta.get(k) for k in ('batch', 'sample', 'condition', 'contrast', 'celltype', 'min_genes')})}")
+
+
+def subset_h5(src: Path, out: Path, n: int, seed: int = 0) -> None:
+    """Random ``n``-cell subset of a 10x h5 (+ its obs/meta sidecars), streamed in row windows."""
+    import polars as pl
+    with h5py.File(src, "r") as f:
+        m = f["matrix"]
+        indptr = m["indptr"][:].astype(np.int64)
+        N = len(indptr) - 1
+        rows = np.sort(np.random.default_rng(seed).choice(N, size=min(n, N), replace=False))
+        lens = indptr[rows + 1] - indptr[rows]
+        new_ptr = np.concatenate([[0], np.cumsum(lens)]).astype(np.int64)
+        tmp = out.with_suffix(".tmp.h5")
+        with h5py.File(tmp, "w") as g:
+            o = g.create_group("matrix")
+            total = int(new_ptr[-1])
+            ch = (max(1, min(1 << 20, total)),)
+            dd = o.create_dataset("data", (total,), np.int32, compression="gzip", compression_opts=1, chunks=ch)
+            di = o.create_dataset("indices", (total,), np.int32, compression="gzip", compression_opts=1, chunks=ch)
+            step, r0, pos = 1 << 26, 0, 0
+            while r0 < N:  # windows of whole rows, ~64M non-zeros each
+                r1 = int(np.searchsorted(indptr, indptr[r0] + step, side="right")) - 1
+                r1 = min(max(r1, r0 + 1), N)
+                lo, hi = int(indptr[r0]), int(indptr[r1])
+                sel = rows[(rows >= r0) & (rows < r1)]
+                if len(sel):
+                    data, idx = m["data"][lo:hi], m["indices"][lo:hi]
+                    st, ln = indptr[sel] - lo, indptr[sel + 1] - indptr[sel]
+                    take = np.repeat(st - np.concatenate([[0], np.cumsum(ln)[:-1]]), ln) + np.arange(int(ln.sum()))
+                    dd[pos:pos + len(take)] = data[take]
+                    di[pos:pos + len(take)] = idx[take]
+                    pos += len(take)
+                print(f"             {r1 / N:6.1%} of {N:,} cells", flush=True)
+                r0 = r1
+            o.create_dataset("indptr", data=new_ptr)
+            o.create_dataset("shape", data=np.array([int(m["shape"][0]), len(rows)], np.int32))
+            o.create_dataset("barcodes", data=m["barcodes"][:][rows])
+            m.copy("features", o)
+        tmp.rename(out)
+    side = src.with_suffix(".obs.parquet")
+    if side.exists():
+        pl.read_parquet(side)[rows.tolist()].write_parquet(out.with_suffix(".obs.parquet"))
+    if src.with_suffix(".meta.json").exists():
+        meta = json.loads(src.with_suffix(".meta.json").read_text())
+        meta.update({"cells": int(len(rows)), "subset_of": src.stem, "subset_seed": seed})
+        out.with_suffix(".meta.json").write_text(json.dumps(meta, indent=1))
 
 
 def _find_local(spec: dict, data_dir: Path, dest: Path) -> None:
@@ -436,6 +508,13 @@ def build(name: str, data_dir: Path) -> Path:
     """Download (if needed) and convert; returns the path of ``<name>.h5``."""
     data_dir.mkdir(parents=True, exist_ok=True)
     out = data_dir / f"{name}.h5"
+    if name in SUBSETS:
+        if not out.exists():
+            parent, n = SUBSETS[name]
+            src = build(parent, data_dir)
+            print(f"  [subset]   {out.name}: {n:,} random cells of {src.name}")
+            subset_h5(src, out, n, seed=0)
+        return out
     if name in SYNTHETIC:
         if not out.exists():
             src = build("pbmc68k", data_dir)
@@ -496,6 +575,8 @@ def main():
     if a.list:
         for k, v in REGISTRY.items():
             print(f"{k:18s} {v['cells']:>9,d} cells  tier={v['tier']:8s} {v['description']}")
+        for k, (parent, n) in SUBSETS.items():
+            print(f"{k:18s} {n:>9,d} cells  tier={SUBSET_TIER[k]:8s} random subset of {parent}")
         for k, n in SYNTHETIC.items():
             print(f"{k:18s} {n:>9,d} cells  tier={SYNTH_TIER[k]:8s} synthetic, interpolated from pbmc68k")
         return
