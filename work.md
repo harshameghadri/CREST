@@ -4835,10 +4835,1300 @@ The docs build cleanly: no warnings, 55 API entries, and the Furo theme renders 
 
 I'm finishing up: checking the end of the exported history, then committing and pushing.
 
-<details><summary>actions (2)</summary>
+<details><summary>actions (6)</summary>
 
 - Bash: Check the export includes the latest request
 - Bash: Tidy paths in the exporter, document it, regenerate
+- Bash: Commit and push the documentation work
+- TaskUpdate: completed
+- TaskUpdate: completed
+- SendUserFile
+
+</details>
+
+#### Claude (2026-09-29 08:52 UTC)
+
+All four tasks are done, committed and pushed to `claude/awesome-lamport-dsvfv2`. The Python tests (27) and a strict docs build pass.
+
+## 1. How far are we from the Polars / biopolars idea?
+
+A long way. It's a different engine now:
+
+| | Feb 2026 (biopolars) | Now |
+|---|---|---|
+| Where the computing happens | Polars expression plugins, written in Rust | Our own Rust kernels, called directly from Python; the Polars plugin layer and Polars Rust dependency are deleted |
+| How data is processed | Column by column, in Polars batches (which gave wrong per-cell totals) | Chunks of cells; filters and normalisation are applied on the fly inside each kernel |
+| What Polars does | Everything | Holds the cell and gene tables, returns result tables, reads and writes Parquet on disk |
+
+Almost none of the computing touches Polars. "Columnar" now only describes the metadata tables and the on-disk format, not the engine. A more accurate description is "a chunked, lazily transformed, sparse streaming engine".
+
+**My recommendation:** keep the name CREST and the PyPI name `crest-sc`, and change only what the acronym stands for, e.g. "**C**hunked **R**ust **E**ngine for **S**ingle-cell **T**ranscriptomics". That's one line in three files, and nothing breaks for anyone installing it. A full rename is possible but costs more. It's your call, so I've logged it as an open decision in `HANDOVER.md` and changed nothing.
+
+## 2. CLAUDE.md and HANDOVER.md
+
+**`CLAUDE.md`** is now a full operating manual for a local session:
+- the project's purpose and history;
+- how the code works (raw counts stored once, filters and normalisation recorded and applied chunk by chunk, what each step reads);
+- build and test commands, including the conda/maturin clash you hit;
+- a table of where each feature lives;
+- the rules, including your honest-reporting rules, plus git conventions;
+- rinamochana's layout (never write to `/home`; run benchmarks from `/mnt/scratch`);
+- the working style you expect.
+
+**`HANDOVER.md`** has:
+- the current status and git state;
+- next steps in priority order: finish the standard run, build the honest tables, connect Read the Docs, release 0.3.0, write the paper;
+- a table of key decisions and the reasons for them;
+- known limitations.
+
+The full API is documented on the docs site; CLAUDE.md points to it.
+
+## 3. Read the Docs
+
+The new site has pages for installation, a quickstart (tested on PBMC 3k), how CREST works, the full API reference (55 entries), benchmarks and validation, a developer guide and the changelog.
+
+- **No Rust build needed:** the docs build without compiling the Rust code, so a Read the Docs build takes about a minute.
+- **CI check:** CI now builds the docs and fails if there are any warnings.
+- **Setup guide:** `docs/readthedocs.md` walks you through connecting the site step by step.
+- **What you do:** create an account with GitHub, add the CREST repository, name the project `crest-sc`, and set the default branch to `dev`. That's about 10 minutes, once. The site would then be `crest-sc.readthedocs.io`, and every push rebuilds it.
+- **README:** now links to that address, which will only work once you've connected the site.
+
+## 4. `work.md`
+
+The downloadable chat export is attached above and committed at the repo root.
+- **Contents:** every one of your messages, every reply, and the recaps written each time the conversation was compacted.
+- **Redactions:** access tokens, email addresses, IP addresses and model names.
+- **Coverage:** it stops just before this final reply.
+- **In CLAUDE.md:** it tells future sessions to search `work.md` when unsure why something is the way it is.
+- **Regenerating:** `scripts/export_chat.py` rebuilds it from a session transcript.
+
+## To go live
+
+Read the Docs needs these files on `dev`, and they're only on the work branch so far. Shall I open the PR into `dev`? Once you merge it, follow `docs/readthedocs.md`.
+
+
+---
+
+### User (2026-09-29 09:12 UTC)
+
+yes open the PR into dev
+
+<details><summary>actions (6)</summary>
+
+- ToolSearch
+- Bash: Check commits ahead of dev and PR template
+- Bash: Inspect dev head and merge base
+- create_pull_request: docs: Read the Docs site, session docs, work history; bench script fixes
+- subscribe_pr_activity
+- send_later
+
+</details>
+
+#### Claude (2026-09-29 09:13 UTC)
+
+I've opened the pull request into `dev`: [PR #4](https://github.com/harshameghadri/CREST/pull/4). CI hasn't finished yet; it runs the Rust and Python tests plus the new docs build. It has no conflicts: `dev` has nothing that isn't already on the branch apart from the PR #3 merge commit.
+
+I'm watching the PR and will fix anything that fails. There's also an hourly check scheduled in case GitHub notifications are missed.
+
+**Once CI is green and you've merged it:**
+1. Go to <https://app.readthedocs.org/>, sign up with GitHub, and click **Add project**.
+2. Pick `harshameghadri/CREST`, name the project `crest-sc`, and set the default branch to `dev`.
+3. The first build takes about a minute. The docs will then be at `crest-sc.readthedocs.io`.
+
+The same steps, with fixes for common errors, are in `docs/readthedocs.md`. In the Read the Docs settings, also tick "Build pull requests" so every PR gets a preview of the docs.
+
+<details><summary>actions (1)</summary>
+
+- ReadNotifications
+
+</details>
+
+#### Claude (2026-09-29 09:13 UTC)
+
+The watch on [PR #4](https://github.com/harshameghadri/CREST/pull/4) is active. CI is still running, and there are no review comments. I'll act on the next CI result or at the check-in scheduled for 10:14 UTC.
+
+<details><summary>actions (3)</summary>
+
+- ReadNotifications
+- ToolSearch
+- pull_request_read
+
+</details>
+
+#### Claude (2026-09-29 09:19 UTC)
+
+[PR #4](https://github.com/harshameghadri/CREST/pull/4) passed CI, so you can merge it into `dev`. Both the tests and the new docs build pass, and every platform's install package built. The "Release" job was skipped, which is expected because it only runs when a version tag is pushed. There are no review comments.
+
+After you merge, follow `docs/readthedocs.md` to connect Read the Docs: project name `crest-sc`, default branch `dev`. I'm still watching the PR in case anything changes before you merge.
+
+<details><summary>actions (2)</summary>
+
+- ReadNotifications
+- delete_trigger
+
+</details>
+
+#### Claude (2026-09-29 09:19 UTC)
+
+You merged [PR #4](https://github.com/harshameghadri/CREST/pull/4), so the docs, `CLAUDE.md`, `HANDOVER.md` and `work.md` are now on `dev`. I've cancelled the hourly check.
+
+To publish the docs site, follow `docs/readthedocs.md`:
+1. Sign up at <https://app.readthedocs.org/> with GitHub.
+2. Click **Add project** and choose `harshameghadri/CREST`.
+3. Name the project `crest-sc` and set the default branch to `dev`.
+
+The first build takes about a minute, and the site will then be at `crest-sc.readthedocs.io`.
+
+When the standard benchmark finishes, send me the `.tar.gz` and I'll build the tables from it.
+
+
+---
+
+### User (2026-09-29 09:33 UTC)
+
+time to merge dev to main? and update the readme to Chunked Rust Engine for Single-cell Transcriptomics and check the readme for sanity purposes .. if you are updating readme update on dev anf then merge to main to avoid repeated timeconsuming merges for simple things
+
+<details><summary>actions (5)</summary>
+
+- Bash: Restart branch from dev and find all "Columnar" mentions
+- Bash: Verify README technical claims in code
+- Bash: Check nprobe value and recall claim
+- Bash: Find evidence for recall and ARI claims
+- Bash: Find version references
+
+</details>
+
+#### Claude (2026-09-29 09:34 UTC)
+
+I'm renaming the package to "Chunked Rust Engine for Single-cell Transcriptomics" and fixing the stale README claims. Then I'll bump the version to 0.3.0, send it through `dev`, and merge to `main`.
+
+<details><summary>actions (6)</summary>
+
+- Bash: Rename acronym, bump version, fix README claims
+- Bash: Changelog 0.3.0, docs and CLAUDE.md updates
+- Bash: Update HANDOVER for rename and release state
+- Bash: Check release job and re-read README top
+- Bash: Hedge claim, build docs strictly, run tests
+- Bash: Commit release changes and push work branch
+
+</details>
+
+#### Claude (2026-09-29 09:37 UTC)
+
+The changes are committed (all tests and a strict docs build pass). I'm opening the pull request into `dev` now, and after that the one from `dev` into `main`.
+
+<details><summary>actions (3)</summary>
+
+- create_pull_request: chore: release 0.3.0; "Chunked Rust Engine for Single-cell Transcriptomics"
+- subscribe_pr_activity
+- send_later
+
+</details>
+
+#### Claude (2026-09-29 09:37 UTC)
+
+Yes, it's a good time. `dev` is fully tested, and merging it makes `main` the 0.3.0 release. I've made all your changes in one commit on `dev`'s side, so it goes `dev` → `main` in one step.
+
+[PR #5](https://github.com/harshameghadri/CREST/pull/5) into `dev` is open, and CI is running on it. The Rust tests (26), Python tests (27) and a strict docs build already pass locally.
+
+**What's in it:**
+- **Name:** now "**Chunked** Rust Engine for Single-cell Transcriptomics" in the README, package descriptions and module docstring. The README has a short "Why Chunked?" section. `crest-sc` and `import crest` don't change.
+- **Version 0.3.0:** bumped, with the CHANGELOG section dated today.
+- **README fixes:**
+  - "faster at every step" was stated as a general fact; it now says it applies to the 0.2.0 benchmark.
+  - The kNN accuracy claim ("≥99.5%") is replaced with the measured 99.7% at 108k cells.
+  - The validation section pointed at benchmark scripts that were deleted; it now points at the test suite and module benchmarks.
+  - It now lists the requirements and links to the docs, and notes that the 4-core figures will be replaced by the 64-core results.
+- **CLAUDE.md, HANDOVER.md and docs:** updated for the release. Read the Docs should now use `main` as its default branch.
+
+**Next:** when CI is green I'll merge #5, then open and merge the `dev` → `main` PR. If GitHub doesn't let me merge, I'll give you the two links to click.
+
+**Left for you after `main` is merged:** the PyPI release. Tag `main`, and CI builds the wheels and uploads them:
+
+```bash
+git fetch origin && git tag v0.3.0 origin/main && git push origin v0.3.0
+```
+
+That needs a `PYPI_API_TOKEN` secret in the repo settings first; the upload can't be undone for that version number, so it's your step.
+
+<details><summary>actions (1)</summary>
+
+- ReadNotifications
+
+</details>
+
+#### Claude (2026-09-29 09:38 UTC)
+
+Subscription confirmations only; waiting for CI on PR #5.
+
+<details><summary>actions (3)</summary>
+
+- ReadNotifications
+- ToolSearch
+- pull_request_read
+
+</details>
+
+#### Claude (2026-09-29 09:43 UTC)
+
+All green. Merging PR #5 into dev (you asked for dev → main).
+
+<details><summary>actions (4)</summary>
+
+- merge_pull_request
+- create_pull_request: Release 0.3.0: dev → main
+- subscribe_pr_activity
+- update_trigger
+
+</details>
+
+#### Claude (2026-09-29 09:43 UTC)
+
+The rename, README fixes and 0.3.0 version bump are now on `dev`: [PR #5](https://github.com/harshameghadri/CREST/pull/5) passed CI and I merged it. The release PR from `dev` into `main` is open as [PR #6](https://github.com/harshameghadri/CREST/pull/6); I'll merge it as soon as its CI passes.
+
+<details><summary>actions (1)</summary>
+
+- ReadNotifications
+
+</details>
+
+#### Claude (2026-09-29 09:43 UTC)
+
+Waiting on CI for PR #6 before merging it into main.
+
+
+---
+
+### User (2026-09-29 09:46 UTC)
+
+@"/root/.claude/uploads/f5efa133-50b8-5f3c-9d26-6b0edb4a892f/7a496789-crest-bench-rinamochana-20260928-1622.tar.gz" here is the result for benchmarking --tier quick result from yesterday --tier standard is still running 136/160 done.
+
+<details><summary>actions (6)</summary>
+
+- Bash: Extract the quick-tier benchmark archive
+- Bash: Read report and main/accuracy tables
+- Bash: Per-step comparison and core-only sums
+- Bash: Read module benchmark results and env notes
+- pull_request_read
+- Read: scratchpad/quick/rinamochana-20260928-1622/figures/fig2_steps_kang.png
+
+</details>
+
+#### Claude (2026-09-29 09:47 UTC)
+
+I've finished analysing the quick-tier results. I'm checking CI on the release PR, then I'll write up the findings.
+
+<details><summary>actions (2)</summary>
+
+- Bash: No-op placeholder
+- pull_request_read
+
+</details>
+
+#### Claude (2026-09-29 09:47 UTC)
+
+CREST's results match scanpy essentially exactly, and it is faster at almost every step. But the headline 8.4× and 14.6× speed-ups in `report.md` overstate the core workflow by 2–4×. The report's tables need fixing before any number goes in the paper.
+
+## 1. The honest speed-ups are smaller than the report says
+
+The report's main table times the **full** pipeline with **all 64 threads**. That breaks both of our reporting rules: it includes Scrublet (scanpy 100 s vs CREST 2 s on Kang), and scanpy runs worse on 64 threads than on 8.
+
+pbmc10k, core workflow only (loading through marker genes):
+
+| comparison | scanpy | CREST | speed-up |
+|---|---|---|---|
+| report headline (full pipeline, 64 threads) | 71.6 s | 8.5 s | 8.4× |
+| core workflow, both at 64 threads | 33.5 s | 5.8 s | 5.8× |
+| **core workflow, each tool at its best thread count** | 20.7 s (8 threads) | 5.8 s | **3.6×** |
+| core workflow, both on 1 thread | 37.7 s | 13.0 s | 2.9× |
+
+Summing the core steps from the per-step table at 64 threads gives:
+- pbmc3k: **1.2×**
+- pbmc10k: **5.7×**
+- Kang (29k cells): **12×**
+
+Kang's figure is probably inflated too. There's no thread scan for Kang, and scanpy's Wilcoxon step took 44 s there, with 13 s of variation between repeats.
+
+## 2. Where CREST is not faster
+
+| step | pbmc3k | pbmc10k | Kang | what's going on |
+|---|---|---|---|---|
+| scale + PCA | **0.97 s vs 0.64 s (slower)** | 1.09 vs 2.84 | 0.99 vs 6.98 | takes about 1 s whatever the data size, so it's a fixed cost; the likely suspect is the 2000×2000 eigendecomposition or thread start-up |
+| UMAP | **2.97 s vs 2.45 s (slower)** | 1.91 vs 4.61 | 2.93 vs 11.6 | umap-learn's default runs 500 optimisation epochs below 10k cells and 200 above, which is why pbmc3k is slower than pbmc10k; there's also fixed thread-coordination overhead |
+| `seurat_v3` HVG | 0.07 vs 0.07 | **0.47 vs 0.30** | **0.41 vs 0.24** | slower above 3k cells; likely the loess fit in pure Python |
+| read, Leiden | ~1.1–1.7× | | | these run on a single core |
+
+The ~1 s PCA and ~2–3 s UMAP fixed costs are why small datasets gain little: at pbmc3k they are 94% of CREST's run time. They're also the main source of CREST's ~45% serial fraction in the thread scan, and the easiest real speed-ups to make, after the paper numbers are final.
+
+**Memory:** CREST uses 1.9–2.9× less than scanpy here, not the 4–10× from 0.2.0. These datasets are small, so the fixed Python and library overhead dominates. At pbmc3k the out-of-core mode even uses more memory than in-memory (0.81 vs 0.63 GB). Out-of-core only pays off on large data; the standard tier's 100k and 200k sets will show it properly.
+
+## 3. The statistics need 5 repeats
+
+With 2 repeats per tool, the smallest possible Mann–Whitney p-value is 0.33, which is exactly what every row shows. The bootstrap confidence intervals are also artificially narrow. The quick tier is a smoke test; the standard tier (5 repeats) is the one that can support claims.
+
+## 4. Accuracy: essentially identical to scanpy
+
+| metric | pbmc3k | pbmc10k | Kang |
+|---|---|---|---|
+| PCA subspace (cosine) | 1.000000 | 1.000000 | 1.000000 |
+| 15-nearest-neighbour overlap | 1.000 | 1.000 | 0.99999 |
+| HVG set / `seurat_v3` set | 0.996 / 1.0 | 1.0 / 1.0 | 1.0 / 0.999 |
+| Leiden ARI (same number of clusters) | 0.83 (9 vs 9) | 0.85 (21 vs 21) | 0.94 (16 vs 16) |
+| UMAP trustworthiness, CREST vs scanpy | 0.862 vs 0.864 | 0.960 vs 0.958 | 0.919 vs 0.919 |
+| top-50 marker overlap | 0.94 | 0.97 | 0.985 |
+| doublet score Spearman / Harmony neighbour overlap | 0.96 | 0.98 | 0.98 / 0.97 |
+
+The Leiden ARI is below 1 even though the neighbour graphs are the same, because Leiden's result depends on its random visiting order. Two scanpy runs with different seeds disagree similarly; the paper should report that seed-to-seed baseline next to it.
+
+## 5. Module benchmarks on your machine
+
+| module | CREST | reference | agreement |
+|---|---|---|---|
+| DESeq2, simulated designs | 0.03–0.07 s | R: 1.7–3.5 s (~50×) | 1e-9 to 1e-15; significant genes identical in all 6 designs |
+| DESeq2, Kang, 8 cell types | 1.14 s total | R ~60 s, pydeseq2 ~44 s | identical calls in 6 of 8 cell types; CD4 T cells 1,356 vs 1,365 (known small difference) |
+| Scrublet | 1.98 s | scanpy 93.6 s | AUROC 0.863 vs 0.863 |
+| Harmony | 1.58 s | harmonypy 3.9 s | iLISI and cLISI identical |
+| ingest | 0.48 s | scanpy 8.51 s | accuracy 90.7% vs 89.8% |
+
+R is installed on rinamochana, so these DESeq2 comparisons ran against real R on your machine. That's good paper material.
+
+## Next
+
+- **Release PR:** [PR #6](https://github.com/harshameghadri/CREST/pull/6) (dev → main) has tests and docs passing, with three wheel builds still running. I'll merge it when they pass.
+- **When the standard run finishes:**
+  1. Change `summarize.py` so the headline is the core workflow at each tool's best thread count, with matched-thread numbers alongside.
+  2. Put the optional modules in their own table.
+  3. Add a "where CREST is not faster" table.
+  4. Add the seed-to-seed Leiden ARI.
+  5. Then write the results section.
+- **After the paper numbers:** optimise the PCA and UMAP fixed costs as the first performance work.
+
+I haven't changed any code, so nothing needs another merge. These findings go into `HANDOVER.md` together with the standard-tier results.
+
+<details><summary>actions (3)</summary>
+
+- ReadNotifications
+- merge_pull_request
+- delete_trigger
+
+</details>
+
+#### Claude (2026-09-29 09:51 UTC)
+
+Version 0.3.0 is now on `main`: [PR #6](https://github.com/harshameghadri/CREST/pull/6) passed CI (tests, docs build, and builds for every platform) and I merged it. I've cancelled the hourly check-in.
+
+Two steps are left for you:
+1. **Publish to PyPI.** First add a `PYPI_API_TOKEN` secret under the repository's Settings → Secrets → Actions. Then tag the release, which makes CI build and upload the release to PyPI:
+   ```bash
+   git fetch origin && git tag v0.3.0 origin/main && git push origin v0.3.0
+   ```
+2. **Read the Docs.** Connect the project as described in `docs/readthedocs.md`, with `main` as the default branch.
+
+<details><summary>actions (1)</summary>
+
+- ReadNotifications
+
+</details>
+
+#### Claude (2026-09-29 09:51 UTC)
+
+The merge of [PR #6](https://github.com/harshameghadri/CREST/pull/6) is complete, so there are no pull requests left to watch. What's left is on your side: tag `v0.3.0` to publish to PyPI, connect Read the Docs, and send me the standard-tier results when the run finishes.
+
+
+---
+
+### User (2026-09-29 10:24 UTC)
+
+Publish to PyPI. cant you do it now the PYPI_API_TOKEN is added
+
+<details><summary>actions (5)</summary>
+
+- Bash: Tag main as v0.3.0 and push the tag to trigger the PyPI release
+- Bash: Verify and retry the tag push
+- Bash: Check git proxy status for tag push limits
+- read_documentation
+- Bash: Remove the local tag that could not be pushed
+
+</details>
+
+#### Claude (2026-09-29 10:25 UTC)
+
+I couldn't publish it from here. This session's GitHub connection lets me push only to `claude/awesome-lamport-dsvfv2`, and pushing a tag failed four times with the connection dropped. I've deleted the local tag so nothing half-done is left behind.
+
+Tagging is the only step left, and it takes under a minute on rinamochana, where your SSH key already works:
+
+```bash
+cd /mnt/scratch/CREST                 # any clone of the repo
+git fetch origin
+git tag -a v0.3.0 origin/main -m "CREST 0.3.0"
+git push origin v0.3.0
+```
+
+That tag starts CI, which builds the wheels for every platform plus the source package, then uploads them to PyPI with your `PYPI_API_TOKEN`. This takes about 10 minutes. Follow it in the repository's **Actions** tab: the **Release** job should finish green. When it has, this should install 0.3.0:
+
+```bash
+pip install crest-sc==0.3.0
+python -c "import crest; print(crest.__version__)"
+```
+
+`main` is already at 0.3.0 (commit `4ecc023`) and every check passed on it, so the tag points at exactly what was tested. If the Release job goes red, paste me the end of its log.
+
+
+---
+
+### User (2026-09-29 13:30 UTC)
+
+@"/root/.claude/uploads/f5efa133-50b8-5f3c-9d26-6b0edb4a892f/19d14993-crest-bench-rinamochana-20260928-1756.tar.gz" tag pushed, release job is green
+
+Additionally: see the tar archive remember this benchmark is from yesterday if any software changes happened in v 0.3.0 these benchmarks dont reflect those changes. 
+
+additionally in the read the docs. 
+
+in the quick start guide you mention that you still import polars as pl why?
+are you sure the documentation is accurate and you are not bullshitting. 
+please make checks on Data:BioFrame and storees section and be accurate in your description 
+
+plus what are these # recorded, not applied yet
+
+Additionally in my local dir: /mnt/scratch/crest-bench/data
+file: /mnt/scratch/crest-bench/data/Parse_1M_adata_for_cellflow_datasets_with_embeddings.h5ad
+We have now 1M PBMC dataset from parse called Parse_1M_adata_for_cellflow_datasets_with_embeddings.h5ad for a real world usecase you might need to setup scripts to run the benchmark again including this. I obtained it from this site: https://figshare.com/articles/dataset/pbmc_parse/28589774?file=53372768
+
+<details><summary>actions (14)</summary>
+
+- Bash: Check code changes since benchmarked commit; extract standard run
+- Bash: Read standard-tier report, thread scan, failures, accuracy
+- Bash: Per-step breakdown for large datasets
+- Bash: Per-step peak memory and core-profile memory
+- Bash: Inspect the figshare dataset metadata and download headers
+- Bash: Read dataset builders and registry helpers
+- Bash: Read run_one meta handling and scanpy pipeline
+- Bash: Read summarize.py first half
+- Bash: Read summarize.py second half
+- Bash: Read accuracy driver and bench script wiring
+- TaskCreate: Docs accuracy audit (quickstart, concepts BioFrame/stores, API docstrings)
+- TaskCreate: Honest summarize.py: core headline, best/matched threads, modules table, not-faster table
+- TaskCreate: Harness: core main runs at several thread counts, separate module runs, scrublet cap
+- TaskCreate: Parse 1M PBMC dataset support (local h5ad, robust conversion, meta)
+
+</details>
+
+#### Claude (2026-09-29 13:33 UTC)
+
+I'm starting with the docs audit, checking each claim against the code and a real run. First I'm fetching the PBMC 10k file so I can run the quickstart exactly as written.
+
+<details><summary>actions (3)</summary>
+
+- Bash: Sync branch to dev and download PBMC 10k
+- Bash: Run every quickstart code block verbatim on PBMC 10k
+- Bash: Test determinism of kNN/Leiden/UMAP across runs and thread counts
+
+</details>
+
+#### Claude (2026-09-29 13:35 UTC)
+
+Verified: kNN and Leiden give identical results on 1 or 4 threads, while UMAP repeats exactly only at the same thread count, so that docs claim holds. Next, the out-of-core memory claim.
+
+<details><summary>actions (6)</summary>
+
+- Bash: Measure peak memory in-memory vs out-of-core on Kang
+- Bash: Show the BioFrame/stores and performance sections
+- Bash: Correct the BioFrame, stores, performance and reproducibility sections
+- Bash: Complete results table; show quickstart top
+- Bash: Rewrite quickstart load/filter and lazy-transform explanations
+- Bash: Write accurate BioFrame and store docstrings
+
+</details>
+
+#### Claude (2026-09-29 13:37 UTC)
+
+The concepts page and docstrings are now accurate against the code. I'm fixing two overstated sentences on other pages, then re-running the quickstart and a strict docs build.
+
+<details><summary>actions (2)</summary>
+
+- Bash: Find overstated speed claims in docs
+- Bash: Fix overstated claims; rerun quickstart verbatim
+
+</details>
+
+#### Claude (2026-09-29 13:38 UTC)
+
+I just wrote down a cause for PCA's fixed cost without measuring it. That's the kind of unchecked claim you're asking about, so I'm profiling it now.
+
+<details><summary>actions (1)</summary>
+
+- Bash: Profile PCA eigendecomposition and UMAP epochs on PBMC 3k
+
+</details>
+
+#### Claude (2026-09-29 13:38 UTC)
+
+Both claims hold. The eigendecomposition takes 1.16 s of the 1.31 s PCA on PBMC 3k, and the code uses 500 UMAP epochs up to 10k cells. Now the strict docs build:
+
+<details><summary>actions (7)</summary>
+
+- Bash: Strict docs build without the compiled module
+- TaskUpdate: completed
+- TaskUpdate: in_progress
+- Bash: Rewrite main table logic in summarize.py
+- Bash: Rewrite report headline and run on the standard results
+- Bash: Show scaling and thread sections of the new report
+- Bash: Harness: main thread counts, separate module runs, Scrublet cap
+
+</details>
+
+#### Claude (2026-09-29 13:42 UTC)
+
+The harness changes are in. Next is the Parse dataset: auto-detecting the raw-count layer, reading the obs columns, working out the donor/cytokine/cell-type metadata, and an `--inspect` mode.
+
+<details><summary>actions (1)</summary>
+
+- Bash: Add Parse dataset: counts detection, obs reader, meta, inspect, local file
+
+</details>
+
+#### Claude (2026-09-29 13:42 UTC)
+
+Now I'm testing the Parse path end to end on a synthetic h5ad built the same way: log-normalised `X`, raw counts in `layers/counts`, and donor, cytokine and cell-type columns.
+
+<details><summary>actions (2)</summary>
+
+- Bash: Build a Parse-like test h5ad and convert it
+- Bash: Run the new harness plan on the Parse-like test data
+
+</details>
+
+#### Claude (2026-09-29 13:43 UTC)
+
+While that runs, I'm updating `crest_paper_bench.sh` to use the new options.
+
+<details><summary>actions (5)</summary>
+
+- Bash: Read bench script options and run section
+- Bash: Wire new options into the benchmark script
+- Bash: Fix --help range; check test run progress
+- Bash: Tidy the help text order
+- Bash: Check the harness test run
+
+</details>
+
+#### Claude (2026-09-29 13:44 UTC)
+
+While the test runs I'm updating the benchmark docs: the new protocol, the Parse dataset, and the concepts page's thread-scaling numbers, which now come from the core-step sums.
+
+<details><summary>actions (3)</summary>
+
+- Bash: Update benchmark docs for new protocol and Parse
+- Bash: Add honest 0.3.0 results section to benchmarks page
+- Bash: Verify accuracy numbers quoted in docs
+
+</details>
+
+#### Claude (2026-09-29 13:44 UTC)
+
+Checking my own quoted numbers against the table turned up two overstatements. HVG sets are 0.994–1.0 identical, not "identical", and marker overlap is 0.92–0.99, not 0.94. Correcting both:
+
+<details><summary>actions (6)</summary>
+
+- Bash: Correct agreement numbers to the measured values
+- Bash: Add honest 0.3.0 headline to README
+- Bash: Check the harness test progress
+- Bash: Inspect the first full-profile test run and the plan
+- Bash: Wait for the harness test run to finish
+- Bash: Run accuracy and the new summary on the test results
+
+</details>
+
+#### Claude (2026-09-29 13:52 UTC)
+
+The pipeline works end to end on the test data. I'm making two small fixes to the report: footnotes only appear when they apply, and a new section lists skipped steps. Then tests, commit, and PR.
+
+<details><summary>actions (2)</summary>
+
+- Bash: Conditional footnotes, skipped-steps section; re-run summaries and a dry plan
+- Bash: Run tests, strict docs build, and compile checks
+
+</details>
+
+#### Claude (2026-09-29 13:53 UTC)
+
+Tests pass (27) and the strict docs build is clean. Now I'm updating HANDOVER and CHANGELOG with the results and next steps.
+
+<details><summary>actions (9)</summary>
+
+- Bash: Read current HANDOVER status and next steps
+- Bash: Update HANDOVER and CHANGELOG
+- Bash: Commit and push the docs and benchmark changes
+- create_pull_request: docs+bench: accurate docs, honest benchmark reporting, Parse 1M dataset
+- subscribe_pr_activity
+- send_later
+- TaskUpdate: completed
+- TaskUpdate: completed
+- TaskUpdate: completed
+
+</details>
+
+#### Claude (2026-09-29 13:54 UTC)
+
+The docs fixes, the honest reporting and the Parse 1M support are all done. They're in [PR #7](https://github.com/harshameghadri/CREST/pull/7) into `dev`, and I'll merge it and then `dev` → `main` once CI passes. Since 0.3.0 is out, the docs site will update when `main` does.
+
+## 1. The benchmark does reflect 0.3.0
+
+Between the benchmarked commit (`3db58a8`) and `v0.3.0`, the only changes in `crest/` and `src/` are docstrings and version strings. No computation changed, so these numbers are 0.3.0's numbers.
+
+## 2. Standard tier results
+
+All 160 runs succeeded, and 5 repeats per configuration give p = 0.008 on every speed-up.
+
+**The headline number.** The report's "8.4× / 15× / 21×" figures time the full pipeline with both tools on 64 threads, which overstates CREST. On PBMC 68k, the only dataset with a thread scan:
+
+| core workflow | scanpy | CREST | speed-up |
+|---|---|---|---|
+| both on 64 threads | 211 s | 10.6 s | 19.8× |
+| each at its best thread count | 94.3 s (8 threads) | 10.6 s (64) | **8.9× (95% CI 8.7–9.0)** |
+
+- Memory is 3.4× lower with CREST.
+- The other datasets only ran at 64 threads, so their 6–22× figures are upper bounds.
+- The docs and README now lead with 8.9×.
+
+**Where CREST is slower:**
+- `seurat_v3` highly variable genes: about 2× slower at 10k cells and above, because its loess fit runs in Python.
+- PCA (0.90×) and UMAP (0.81×) on PBMC 3k, because of fixed costs. I profiled these rather than assuming:
+  - the PCA eigendecomposition takes 1.16 of 1.31 s;
+  - UMAP runs 500 epochs below 10k cells.
+
+**Thread scaling:**
+- CREST goes from 45.6 s on 1 thread to 10.6 s on 64 (4.3×), meaning about 24% of the work is serial.
+- scanpy is fastest at 8 threads and slower at 64 than on 1.
+
+**Scrublet** accounts for 98% of the full-pipeline time at 200k cells: 2,590 s for CREST vs 3,020 s for scanpy.
+
+**Accuracy vs scanpy:**
+- PCA and neighbour graphs are identical.
+- The chosen HVG sets are 99.4–100% the same.
+- Leiden ARI is 0.80–0.94.
+- The top-50 marker genes overlap by 0.92–0.99.
+
+## 3. Documentation review: you were right to push
+
+Checking every claim against the code, I found these were wrong or overstated:
+
+1. **"Every function modifies `bf` and returns it"** was false. `rank_genes_groups`, `leiden_sweep` and `pseudobulk_de` return tables, and `calculate_qc_metrics` returns `None`. The page now lists exactly what each function returns.
+2. **Out-of-core "~1 GB whatever the size"** was overstated. The count matrix never has to fit in memory, but per-cell results still grow with the number of cells. The page now gives what I measured (0.73 vs 0.92 GB on Kang).
+3. **Thread scaling** was quoted as 2.6× from a single early run; the full run gives 4.3×.
+4. **The stores section** now gives exact contents, byte sizes and which functions create each store. For example, `read_h5ad` with a dense `X` gives a `FrameStore`, and the Parquet store ignores `chunk_nnz`.
+5. **The printed `BioFrame` output** in the quickstart didn't match reality; it now shows the real output.
+
+Your two questions:
+- **Why `import polars as pl`?** `bf.obs` and `bf.var` are Polars tables, not pandas. `pl` is only needed to write a filter expression such as `pl.col("total_counts") < 30_000`. The quickstart now explains this and shows the plain-NumPy alternative, `bf.filter_cells(bf.obs["total_counts"].to_numpy() < 30_000)`.
+- **What does "# recorded, not applied yet" mean?** `normalize_total` and `log1p` don't touch the data. They add an entry to `bf.ops` (`[('normalize_total', 10000.0), ('log1p',)]`), and each later step applies them on the fly as it reads the raw counts. The comments now say "lazy", and a paragraph explains it.
+
+I ran every quickstart code block verbatim on PBMC 10k. I also checked the reproducibility claim: kNN and Leiden are identical on 1 or 4 threads, while UMAP only repeats exactly at the same thread count.
+
+## 4. Parse 1M: how to run it
+
+The harness now:
+- runs the core workflow at 8 and 64 threads, so every dataset gets a best-vs-best number;
+- runs the optional modules separately, so they no longer affect the headline or memory figures;
+- skips Scrublet above 150,000 cells.
+
+I tested it end to end on a 12k-cell file with the same layout. I can't read your actual file from here: figshare blocks downloads from this container. So check its layout first:
+
+```bash
+cd /mnt/scratch/crest-bench/CREST && git pull
+python bench/paper/datasets.py --inspect /mnt/scratch/crest-bench/data/Parse_1M_adata_for_cellflow_datasets_with_embeddings.h5ad
+```
+
+That prints:
+- which layer holds the raw counts (it tries `layers/counts`, `raw/X`, then `X`);
+- the donor, cytokine and cell-type columns it found.
+
+The pseudobulk DESeq2 step compares the most frequent cytokine against PBS. If the output looks right, run this from `/mnt/scratch` once PR #7 is merged:
+
+```bash
+bash crest_paper_bench.sh --datasets "pbmc68k parse_pbmc" --timeout 21600
+```
+
+The longer timeout is needed because a single scanpy run at 1M cells may take over 2 hours. If the inspect output looks odd, paste it to me before starting the run.
+
+<details><summary>actions (1)</summary>
+
+- ReadNotifications
+
+</details>
+
+#### Claude (2026-09-29 13:54 UTC)
+
+Subscription confirmations only; waiting for CI on PR #7.
+
+<details><summary>actions (6)</summary>
+
+- ReadNotifications
+- pull_request_read
+- merge_pull_request
+- create_pull_request: dev → main: accurate docs, honest benchmark reporting, Parse 1M dataset
+- subscribe_pr_activity
+- update_trigger
+
+</details>
+
+#### Claude (2026-09-29 13:58 UTC)
+
+[PR #7](https://github.com/harshameghadri/CREST/pull/7) passed CI and is merged into `dev`, so `git pull` now gives you the `--inspect` command for the Parse file. I've opened [PR #8](https://github.com/harshameghadri/CREST/pull/8) to bring these changes from `dev` to `main`, and I'll merge it once its CI passes. After that, the Read the Docs site shows the corrected documentation.
+
+<details><summary>actions (1)</summary>
+
+- ReadNotifications
+
+</details>
+
+#### Claude (2026-09-29 13:58 UTC)
+
+PR #7 is merged; waiting for CI on PR #8 (dev → main).
+
+<details><summary>actions (4)</summary>
+
+- ReadNotifications
+- pull_request_read
+- merge_pull_request
+- delete_trigger
+
+</details>
+
+#### Claude (2026-09-29 14:03 UTC)
+
+`main` now has the corrected docs, the honest benchmark reporting and the Parse dataset support. [PR #8](https://github.com/harshameghadri/CREST/pull/8) passed CI and I merged it. The docs site shows the new pages once it's connected to Read the Docs with `main` as its default branch.
+
+Next step for the Parse run, on rinamochana:
+
+```bash
+cd /mnt/scratch/crest-bench/CREST && git pull origin main
+python bench/paper/datasets.py --inspect /mnt/scratch/crest-bench/data/Parse_1M_adata_for_cellflow_datasets_with_embeddings.h5ad
+```
+
+Paste me the output. It confirms which layer holds the raw counts and which donor, cytokine and cell-type columns and control level were picked up. Once that looks right, start the run from `/mnt/scratch`:
+
+```bash
+bash crest_paper_bench.sh --ref main --datasets "pbmc68k parse_pbmc" --timeout 21600
+```
+
+<details><summary>actions (1)</summary>
+
+- ReadNotifications
+
+</details>
+
+#### Claude (2026-09-29 14:03 UTC)
+
+PR #8 is merged into `main`, so there are no pull requests left to watch. The next step is yours: send me the `--inspect` output for the Parse file.
+
+
+---
+
+### User (2026-09-29 14:13 UTC)
+
+git pull origin main
+fatal: not a git repository (or any parent up to mount point /mnt)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+
+<details><summary>actions (1)</summary>
+
+- Bash: Check where the bench script keeps its CREST clone
+
+</details>
+
+#### Claude (2026-09-29 14:13 UTC)
+
+That error means the command ran from a folder that isn't a git checkout: `git pull` only works inside the CREST folder. The benchmark script keeps its own copy at `/mnt/scratch/crest-bench/CREST`, and the Python environment it built sits next to it. Run these from anywhere:
+
+```bash
+cd /mnt/scratch/crest-bench/CREST
+git fetch origin && git checkout -q main && git pull -q origin main
+git log --oneline -1                       # should show "Merge pull request #8 ..."
+
+PY=$(ls -d /mnt/scratch/crest-bench/venv-*/bin/python | tail -1)
+$PY bench/paper/datasets.py --inspect /mnt/scratch/crest-bench/data/Parse_1M_adata_for_cellflow_datasets_with_embeddings.h5ad
+```
+
+If `cd` fails with "No such file or directory", paste me the output of `ls /mnt/scratch/crest-bench`.
+
+Reading the layout of a 13 GB file only takes a few seconds, but listing the column values may take a minute at 1M cells. Paste me the whole output: it shows which layer holds the raw counts and which donor, cytokine and cell-type columns the benchmark will use.
+
+When starting the run itself, use the downloaded script with `--ref main`, as before. It updates that folder automatically, so this manual `git pull` is only needed for the inspection.
+
+
+---
+
+### User (2026-09-29 14:15 UTC)
+
+$PY bench/paper/datasets.py --inspect /mnt/scratch/crest-bench/data/Parse_1M_adata_for_cellflow_datasets_with_embeddings.h5ad
+  X/                                            csr_matrix shape=(np.int64(9697974), np.int64(2000))
+  X/data                                              (964534941,) float32
+  X/indices                                           (964534941,) int64
+  X/indptr                                              (9697975,) int64
+  layers/                                       dict shape=None
+  obs/                                          dataframe shape=None
+  obsm/                                         dict shape=None
+  obsp/                                         dict shape=None
+  uns/                                          dict shape=None
+  uns/donor_embeddings/                         dict shape=None
+  uns/donor_embeddings/Donor1                              (2000,) float32
+  uns/donor_embeddings/Donor10                             (2000,) float32
+  uns/donor_embeddings/Donor11                             (2000,) float32
+  uns/donor_embeddings/Donor12                             (2000,) float32
+  uns/donor_embeddings/Donor2                              (2000,) float32
+  uns/donor_embeddings/Donor3                              (2000,) float32
+  uns/donor_embeddings/Donor4                              (2000,) float32
+  uns/donor_embeddings/Donor5                              (2000,) float32
+  uns/donor_embeddings/Donor6                              (2000,) float32
+  uns/donor_embeddings/Donor7                              (2000,) float32
+  uns/donor_embeddings/Donor8                              (2000,) float32
+  uns/donor_embeddings/Donor9                              (2000,) float32
+  uns/esm2_embeddings/                          dict shape=None
+  uns/esm2_embeddings/4-1BBL                               (2560,) float64
+  uns/esm2_embeddings/ADSF                                 (2560,) float64
+  uns/esm2_embeddings/APRIL                                (2560,) float64
+  uns/esm2_embeddings/BAFF                                 (2560,) float64
+  uns/esm2_embeddings/C3a                                  (2560,) float64
+  uns/esm2_embeddings/C5a                                  (2560,) float64
+  uns/esm2_embeddings/CD27L                                (2560,) float64
+  uns/esm2_embeddings/CD30L                                (2560,) float64
+  uns/esm2_embeddings/CD40L                                (2560,) float64
+  uns/esm2_embeddings/CT-1                                 (2560,) float64
+  uns/esm2_embeddings/Decorin                              (2560,) float64
+  uns/esm2_embeddings/EBI3                                 (2560,) float64
+  uns/esm2_embeddings/EGF                                  (2560,) float64
+  uns/esm2_embeddings/EPO                                  (2560,) float64
+  uns/esm2_embeddings/FGF-beta                             (2560,) float64
+  uns/esm2_embeddings/FLT3L                                (2560,) float64
+  uns/esm2_embeddings/FasL                                 (2560,) float64
+  uns/esm2_embeddings/G-CSF                                (2560,) float64
+  uns/esm2_embeddings/GDNF                                 (2560,) float64
+  uns/esm2_embeddings/GITRL                                (2560,) float64
+  uns/esm2_embeddings/GM-CSF                               (2560,) float64
+  uns/esm2_embeddings/HGF                                  (2560,) float64
+  uns/esm2_embeddings/IFN-alpha1                           (2560,) float64
+  uns/esm2_embeddings/IFN-beta                             (2560,) float64
+  uns/esm2_embeddings/IFN-epsilon                          (2560,) float64
+  uns/esm2_embeddings/IFN-gamma                            (2560,) float64
+  uns/esm2_embeddings/IFN-lambda1                          (2560,) float64
+  uns/esm2_embeddings/IFN-lambda2                          (2560,) float64
+  uns/esm2_embeddings/IFN-lambda3                          (2560,) float64
+  uns/esm2_embeddings/IFN-omega                            (2560,) float64
+  uns/esm2_embeddings/IGF-1                                (2560,) float64
+  uns/esm2_embeddings/IL-1-alpha                           (2560,) float64
+  uns/esm2_embeddings/IL-1-beta                            (2560,) float64
+  uns/esm2_embeddings/IL-10                                (2560,) float64
+  uns/esm2_embeddings/IL-11                                (2560,) float64
+  uns/esm2_embeddings/IL-12                                (2560,) float64
+  uns/esm2_embeddings/IL-13                                (2560,) float64
+  uns/esm2_embeddings/IL-15                                (2560,) float64
+  uns/esm2_embeddings/IL-16                                (2560,) float64
+  uns/esm2_embeddings/IL-17A                               (2560,) float64
+  uns/esm2_embeddings/IL-17B                               (2560,) float64
+  uns/esm2_embeddings/IL-17C                               (2560,) float64
+  uns/esm2_embeddings/IL-17D                               (2560,) float64
+  uns/esm2_embeddings/IL-17E                               (2560,) float64
+  uns/esm2_embeddings/IL-17F                               (2560,) float64
+  uns/esm2_embeddings/IL-18                                (2560,) float64
+  uns/esm2_embeddings/IL-19                                (2560,) float64
+  uns/esm2_embeddings/IL-1Ra                               (2560,) float64
+  uns/esm2_embeddings/IL-2                                 (2560,) float64
+  uns/esm2_embeddings/IL-20                                (2560,) float64
+  uns/esm2_embeddings/IL-21                                (2560,) float64
+  uns/esm2_embeddings/IL-22                                (2560,) float64
+  uns/esm2_embeddings/IL-23                                (2560,) float64
+  uns/esm2_embeddings/IL-24                                (2560,) float64
+  uns/esm2_embeddings/IL-26                                (2560,) float64
+  uns/esm2_embeddings/IL-27                                (2560,) float64
+  uns/esm2_embeddings/IL-3                                 (2560,) float64
+  uns/esm2_embeddings/IL-31                                (2560,) float64
+  uns/esm2_embeddings/IL-32-beta                           (2560,) float64
+  uns/esm2_embeddings/IL-33                                (2560,) float64
+  uns/esm2_embeddings/IL-34                                (2560,) float64
+  uns/esm2_embeddings/IL-35                                (2560,) float64
+  uns/esm2_embeddings/IL-36-alpha                          (2560,) float64
+  uns/esm2_embeddings/IL-36Ra                              (2560,) float64
+  uns/esm2_embeddings/IL-4                                 (2560,) float64
+  uns/esm2_embeddings/IL-5                                 (2560,) float64
+  uns/esm2_embeddings/IL-6                                 (2560,) float64
+  uns/esm2_embeddings/IL-7                                 (2560,) float64
+  uns/esm2_embeddings/IL-8                                 (2560,) float64
+  uns/esm2_embeddings/IL-9                                 (2560,) float64
+  uns/esm2_embeddings/LIF                                  (2560,) float64
+  uns/esm2_embeddings/LIGHT                                (2560,) float64
+  uns/esm2_embeddings/LT-alpha                             (2560,) float64
+  uns/esm2_embeddings/LT-alpha1-beta2                      (2560,) float64
+  uns/esm2_embeddings/LT-alpha2-beta1                      (2560,) float64
+  uns/esm2_embeddings/LT-beta                              (2560,) float64
+  uns/esm2_embeddings/Leptin                               (2560,) float64
+  uns/esm2_embeddings/M-CSF                                (2560,) float64
+  uns/esm2_embeddings/Noggin                               (2560,) float64
+  uns/esm2_embeddings/OSM                                  (2560,) float64
+  uns/esm2_embeddings/OX40L                                (2560,) float64
+  uns/esm2_embeddings/PRL                                  (2560,) float64
+  uns/esm2_embeddings/PSPN                                 (2560,) float64
+  uns/esm2_embeddings/RANKL                                (2560,) float64
+  uns/esm2_embeddings/SCF                                  (2560,) float64
+  uns/esm2_embeddings/TGF-beta1                            (2560,) float64
+  uns/esm2_embeddings/TL1A                                 (2560,) float64
+  uns/esm2_embeddings/TNF-alpha                            (2560,) float64
+  uns/esm2_embeddings/TPO                                  (2560,) float64
+  uns/esm2_embeddings/TRAIL                                (2560,) float64
+  uns/esm2_embeddings/TSLP                                 (2560,) float64
+  uns/esm2_embeddings/TWEAK                                (2560,) float64
+  uns/esm2_embeddings/VEGF                                 (2560,) float64
+  uns/hvg/                                      dict shape=None
+  uns/hvg/flavor                                                () object
+  uns/log1p/                                    dict shape=None
+  var/                                          dataframe shape=None
+  varm/                                         dict shape=None
+  varp/                                         dict shape=None
+counts: X
+obs: 9697974 cells
+  sample                           1092 levels  e.g. Donor1_PBS (90452), Donor12_PBS (71179), Donor2_PBS (70520), Donor6_PBS (59158), Donor5_PBS (55293), Donor3_PBS (48567)
+  species                             1 levels  e.g. hg38 (9697974)
+  bc1_well                           96 levels  e.g. B7 (136899), A5 (135264), A10 (130692), A9 (129206), A8 (126167), A6 (126129)
+  bc2_well                          192 levels  e.g. A2 (89908), C2 (89368), B2 (87824), E2 (86136), D2 (84008), p2.D11 (83328)
+  bc3_well                          192 levels  e.g. H12 (53807), H11 (53363), p2.A2 (53309), p2.B3 (52945), p2.A4 (52940), H9 (52812)
+  donor                              12 levels  e.g. Donor1 (1267690), Donor5 (1066725), Donor12 (1054708), Donor6 (974030), Donor2 (931569), Donor3 (695158)
+  cytokine                           91 levels  e.g. PBS (629701), CT-1 (136899), IL-36-alpha (135264), IL-9 (130692), TSLP (129206), IL-7 (126167)
+  treatment                           2 levels  e.g. cytokine (9068273), PBS (629701)
+  cell_type                          18 levels  e.g. CD4 Memory (2376445), CD4 Naive (1725983), CD14 Mono (1582568), CD8 Memory (757585), B Naive (625239), CD8 Naive (619816)
+  cytokine_family                    15 levels  e.g. TNF (1624802), Growth factor (1081989), IL-6/IL-12 (1065429), Common γ chain/IL-13/TSLP (946659), Other (875433), IL-1 (798308)
+
+#### Claude (2026-09-29 14:16 UTC)
+
+Important finding: this is the **full 9.7 million-cell** Parse atlas, not a 1M subset. It holds 964 M non-zeros but only **2,000 genes**, which are already an HVG selection. That changes the plan in four ways:
+
+1. **scanpy can't run the full file on 128 GB.** Its scaling step alone needs a dense 9.7M × 2,000 matrix, which is 78 GB before temporaries. So the real comparison is on a random **1M-cell subset**, and the full 9.7M runs CREST-only as the scale demonstration.
+2. **QC threshold.** `min_genes=200` would drop many cells when only 2,000 genes exist. Both tools need the same, lower threshold, recorded in the metadata.
+3. **Contrast.** The pseudobulk contrast should be a meaningful cytokine like IFN-beta vs PBS, not simply the most frequent one (CT-1).
+4. **The converter is too slow at 9.7M cells.** Its obs-column reading uses Python loops that are fine at 1M but too slow here.
+
+I'm implementing all four now.
+
+<details><summary>actions (3)</summary>
+
+- Bash: Sync to dev and locate code to change
+- Bash: 9.7M-aware Parse support: subset, fast obs, min_genes, contrast choice
+- Bash: Rebuild a test file shaped like the real one; convert and subset it
+
+</details>
+
+#### Claude (2026-09-29 14:18 UTC)
+
+Found a real bug that only shows on small data: the fixed HDF5 chunk size can be larger than the whole dataset. It affects all three writers, so I'm fixing them all.
+
+<details><summary>actions (1)</summary>
+
+- Bash: Fix chunk sizes; rebuild and verify the subset matches the parent row by row
+
+</details>
+
+#### Claude (2026-09-29 14:18 UTC)
+
+The subset rows don't match their parent rows, so there's a bug. I'm debugging it before going any further:
+
+<details><summary>actions (5)</summary>
+
+- Bash: Compare subset rows with parent rows
+- Bash: Verify every subset row against the parent
+- Bash: Run both tools on the 2,000-gene subset (core + modules)
+- Bash: Check whether work survived and machine state
+- Bash: Inspect finished CREST test runs; commit and push
+
+</details>
+
+#### Claude (2026-09-29 14:37 UTC)
+
+The commit is saved locally, but the push hit a temporary GitHub 503, so I'll retry it. Meanwhile I'm starting the scanpy test runs in the background.
+
+<details><summary>actions (2)</summary>
+
+- Bash: Start scanpy test runs; retry the push with backoff
+- Bash: Check proxy failures and retry push once more
+
+</details>
+
+#### Claude (2026-09-29 14:39 UTC)
+
+The push went through. Next I'm waiting on the scanpy test runs.
+
+<details><summary>actions (3)</summary>
+
+- Bash: Wait for the scanpy test runs to finish
+- Bash: Check scanpy warnings and CREST-vs-scanpy agreement on the subset
+- Bash: Document the real Parse layout; commit and push
+
+</details>
+
+#### Claude (2026-09-29 14:42 UTC)
+
+Your `--inspect` output changed the plan: the file is the **full Parse atlas, 9.7 million cells**, not 1M, with raw counts for only **2,000 genes** in `X`. I've adapted the benchmark to that and tested it end to end on a file with the same layout. It's pushed to `claude/awesome-lamport-dsvfv2`. It isn't on `dev` or `main` yet, because the GitHub connection for opening pull requests is down right now; I'll open the PR when it's back.
+
+**What changed:**
+- **Two datasets from your file:**
+  - `parse_pbmc_1m`, a random 1M-cell subset, is the CREST vs scanpy comparison.
+  - `parse_pbmc`, all 9.7M cells, runs CREST only. scanpy can't fit it in 128 GB: its dense scaled matrix alone would be 78 GB (9.7M × 2,000 × 4 bytes).
+
+  The subset is taken with a fixed seed. I checked that every one of its rows is identical to the source row.
+- **QC threshold:** the usual `min_genes=200` assumes ~20,000 genes. With only 2,000 genes it's scaled to 20, the same fraction. Both tools use the same value, and it's recorded in `parse_pbmc.meta.json`.
+- **DESeq2 contrast:** IFN-beta vs PBS, per cell type across the 12 donors. Before, it would have picked CT-1, simply because that's the most frequent cytokine.
+- **Faster reading:** the table of cell information is now read with vectorised code, so 9.7M cells take seconds rather than a long Python loop.
+- **Test run:** on a file with the same layout, both tools kept the same 9,958 cells. PCA, the neighbour graph and the selected genes were identical, Leiden ARI was 0.90 with 16 clusters each, and marker genes overlapped 99%.
+
+**To run it, from `/mnt/scratch`:**
+
+```bash
+cd /mnt/scratch
+curl -LO https://raw.githubusercontent.com/harshameghadri/CREST/claude/awesome-lamport-dsvfv2/scripts/crest_paper_bench.sh
+bash crest_paper_bench.sh --ref claude/awesome-lamport-dsvfv2 \
+  --datasets "parse_pbmc_1m parse_pbmc" --repeats 3 --timeout 21600 --skip-thread-scan
+```
+
+**Expected time and disk:**
+- **Conversion:** a one-time step reads your 13 GB file and writes a compressed copy plus the 1M subset. That's roughly 30–60 minutes and about 10 GB of extra disk.
+- **Total:** roughly one to one and a half days. My guess, from the 200k-cell runs scaled up, is:
+  - about 30 minutes per 9.7M-cell CREST run;
+  - 20–40 minutes per 1M-cell scanpy run.
+- **Halving the time:** add `--main-threads 64`. That drops the 8-thread runs, but the report then can't give each tool's best-thread speed-up for these datasets. PBMC 68k already has one.
+
+If a run fails, `logs/driver.log` and the per-run logs under `logs/runs/` will show why; paste me the tail of whichever failed.
+
+
+---
+
+### User (2026-09-30 13:43 UTC)
+
+@"/root/.claude/uploads/f5efa133-50b8-5f3c-9d26-6b0edb4a892f/8d179e9a-crest-bench-rinamochana-20260929-1805.tar.gz" okay this is the result for the run with 1M cells
+
+<details><summary>actions (5)</summary>
+
+- Bash: Extract the Parse run and list all runs
+- Bash: Extract the Parse run and list all runs
+- Bash: Extract the benchmark archive
+- Glob: scratchpad/p1m/**/report.md
+- Bash: List the archive contents
+
+</details>
+
+#### Claude (2026-09-30 13:43 UTC)
+
+I haven't analysed the 1M-cell results yet. Unpacking your `.tar.gz` needs a shell command, and the safety check that approves shell commands has failed four times in a row on even a read-only `tar -tzf`. I can't read the archive any other way.
+
+This is a temporary problem on the check's side, not a refusal of the command. I've stopped retrying for now, because too many consecutive failures ends the turn.
+
+Two ways to continue:
+- **Send "go" in a minute or two.** I'll retry and do the full analysis: core-workflow headline at best vs matched threads, memory, where CREST is slower, the modules table and agreement with scanpy.
+- **Or, to go faster, paste `report.md`** from the results folder (`/mnt/scratch/crest-bench/results/rinamochana-20260929-1805/report.md`). Include the end of `logs/driver.log` if any run failed. I can start from that text without the shell.
+
+
+---
+
+### User (2026-09-30 13:45 UTC)
+
+go
+
+<details><summary>actions (2)</summary>
+
+- Bash: Extract the Parse benchmark archive and show the run log
+- Bash: List every run and the core-workflow headline
+
+</details>
+
+#### Claude (2026-09-30 13:46 UTC)
+
+All 45 runs succeeded. Now the per-step breakdown, memory by step, and agreement with scanpy.
+
+<details><summary>actions (2)</summary>
+
+- Bash: Per-step time and memory, and accuracy vs scanpy
+- Bash: Module step times and memory at 1M and 9.7M
+
+</details>
+
+#### Claude (2026-09-30 13:46 UTC)
+
+The analysis is done. I'm adding these results to the benchmarks page and correcting the out-of-core memory statement, which at 9.7M cells turns out to be much weaker than "~1 GB" suggests.
+
+<details><summary>actions (6)</summary>
+
+- Bash: Add Parse results to the docs; strict docs build
+- Bash: Update HANDOVER, commit and push
+- ToolSearch
+- create_pull_request: bench+docs: Parse 9.7M atlas support and results (1M vs scanpy, 9.7M CREST-only)
+- ToolSearch
+- list_pull_requests
+
+</details>
+
+#### Claude (2026-09-30 13:47 UTC)
+
+You'd already opened [PR #9](https://github.com/harshameghadri/CREST/pull/9) from this branch, and it now includes my results commit. I'm checking its CI.
+
+<details><summary>actions (2)</summary>
+
+- pull_request_read
+- subscribe_pr_activity
+
+</details>
+
+#### Claude (2026-09-30 13:48 UTC)
+
+All 45 runs succeeded. The 1M-cell subset gives a strong, defensible headline. The full 9.7M-cell atlas is a good scale demonstration, but it exposed two things that need work before publishing.
+
+## 1M cells: CREST vs scanpy
+
+Core workflow, median of 3 repeats:
+
+| | CREST | CREST out-of-core | scanpy |
+|---|---|---|---|
+| time, 64 threads | **127 s** | 131 s | 990 s |
+| time, 8 threads | 208 s | 218 s | 1,363 s |
+| peak memory | **4.4 GB** | 3.7 GB | 54.5 GB |
+
+**CREST is 7.8× faster (95% CI 7.7–8.0) and uses 12.5× less memory.** At this size scanpy was fastest at 64 threads, so "best vs best" and "same thread count" give the same number. There's no thread-count caveat, unlike PBMC 68k.
+
+Per step at 64 threads (CREST vs scanpy):
+
+| step | CREST | scanpy | notes |
+|---|---|---|---|
+| scale + PCA | 2.8 s | 84 s | 30× faster; scanpy's dense scaled matrix causes its 54.5 GB peak |
+| neighbours | 8.7 s | 105 s | |
+| UMAP | 83 s | 648 s | |
+| Wilcoxon | 3.5 s | 80 s | |
+| Leiden | 24 s | 62 s | |
+
+## 9.7M cells: CREST only
+
+- **In memory:** 27 minutes, 37 GB.
+- **Out-of-core:** 30 minutes, 30 GB.
+- **scanpy:** couldn't fit in 128 GB.
+
+## Four things I'd report plainly
+
+1. **Leiden agreement is lower at 1M cells.** The ARI vs scanpy is 0.66 (27 clusters each), down from 0.80–0.94 on the smaller datasets. The neighbour graphs are identical, so the difference comes from the clustering step itself. Leiden's result also varies between random seeds on a million-cell graph. Until we measure how much each tool disagrees with *itself* across seeds, this is an open question, not a validated match. I've written it that way in the docs.
+2. **UMAP and Leiden dominate CREST's time.** UMAP is 65% of the time at 1M cells. Leiden runs on one core: 24 s whether on 8 or 64 threads, and 400 s at 9.7M.
+3. **Out-of-core barely helps memory at 9.7M cells** (30 vs 37 GB). At that size the neighbour graph, Leiden and UMAP set the memory peak, not the counts. The resolution sweep peaks at 68 GB, because its five parallel Leiden runs each copy the graph. I've corrected the docs, which implied out-of-core memory stays around 1 GB.
+4. **`seurat_v3` HVG selection is still slower than scanpy:** 2.6 s vs 1.1 s.
+
+Also, 3 repeats per tool can't give a Mann–Whitney p-value below 0.1, so quote the confidence interval. Use 5 repeats for the final paper run.
+
+## Where things are
+
+The results are in `docs/benchmarks.md`, `docs/concepts.md` and `HANDOVER.md`, pushed to the branch. That branch is already your [PR #9](https://github.com/harshameghadri/CREST/pull/9), so it now includes these results. CI is running. I'm watching it and will fix anything that fails; tell me if you want me to merge it and then `dev` → `main`.
+
+## Suggested next steps
+
+1. **Measure Leiden's seed-to-seed variation** for both tools on the same graph. That settles point 1.
+2. **Make Leiden multi-threaded and stop the sweep copying the graph** for every run. This is the biggest remaining time and memory cost.
+3. **Speed up UMAP.**
+4. **Final paper run:** 5 repeats, with the CPU frequency setting switched from `powersave` to `performance`.
+
+<details><summary>actions (2)</summary>
+
+- ReadNotifications
+- send_later
+
+</details>
+
+#### Claude (2026-09-30 13:48 UTC)
+
+I'm now watching [PR #9](https://github.com/harshameghadri/CREST/pull/9), and a check-in is scheduled for 14:49 UTC in case a GitHub notification gets missed. CI is still running on the latest commit. If a check fails because of this branch, I'll fix it. I won't merge until you say so.
+
+<details><summary>actions (1)</summary>
+
+- ReadNotifications
+
+</details>
+
+#### Claude (2026-09-30 13:50 UTC)
+
+Read the Docs is connected and working. It built a preview of PR #9 with the two updated pages, [benchmarks](https://crest-sc--9.org.readthedocs.build/en/9/benchmarks.html) and [concepts](https://crest-sc--9.org.readthedocs.build/en/9/concepts.html). The live site is at [crest-sc.readthedocs.io](https://crest-sc.readthedocs.io/en/latest/). I'm still waiting on the rest of CI for PR #9.
+
+<details><summary>actions (2)</summary>
+
+- ReadNotifications
+- pull_request_read
+
+</details>
+
+#### Claude (2026-09-30 13:51 UTC)
+
+[PR #9](https://github.com/harshameghadri/CREST/pull/9) is ready to merge into `dev`: every CI check passed, there are no merge conflicts and no review comments. Read the Docs also built its preview.
+
+It's your PR, so I haven't merged it. Say the word and I'll merge it into `dev`, then merge `dev` into `main` so the live docs site shows the Parse results.
+
+<details><summary>actions (2)</summary>
+
+- ReadNotifications
+- delete_trigger
+
+</details>
+
+#### Claude (2026-09-30 14:16 UTC)
+
+You merged [PR #9](https://github.com/harshameghadri/CREST/pull/9), so the Parse support and results are now on `dev`. I've stopped watching it and cancelled the scheduled check-in.
+
+The live docs site builds from `main`, so it won't show the Parse results until `dev` is merged into `main`. Say if you want me to do that.
+
+
+---
+
+### User (2026-09-30 14:17 UTC)
+
+finish the dev to main merge, then
+
+finish off the code required for the next steps except for 4. my next step is continuing this in claude code locally in a new chat after you code. my cloud credits are almost out
+
+<details><summary>actions (6)</summary>
+
+- ToolSearch
+- create_pull_request: dev → main: Parse 9.7M dataset support and 1M / 9.7M benchmark results
+- Bash: Sync branch to dev; survey Leiden code
+- Bash: Read Leiden core and the Python bindings
+- Bash: Read the UMAP SGD loop
+- Bash: Find snapshot reads in run_chunk
+
+</details>
+
+#### Claude (2026-09-30 14:18 UTC)
+
+I'm fixing UMAP so all threads read one shared snapshot (same results, no per-thread copies), then fixing Leiden's graph copies.
+
+<details><summary>actions (1)</summary>
+
+- Bash: UMAP: read the shared snapshot instead of per-thread full copies
+
+</details>
+
+#### Claude (2026-09-30 14:18 UTC)
+
+Before rebuilding I'm recording UMAP output from the current (old) build, so I can prove the new code gives bit-identical results:
+
+<details><summary>actions (9)</summary>
+
+- Bash: Record UMAP/Leiden/sweep output hashes with the old build
+- Bash: Make Graph::from_edges accept f32 weights directly
+- Bash: Leiden: no graph clone per iteration; build graph without f64 edge copy
+- Bash: Build and run Rust tests
+- Bash: Rebuild and compare outputs against the old build
+- Bash: Locate hooks for the seed baseline
+- Bash: Read the code around the hooks
+- Bash: Add untimed seed-baseline Leiden runs; test on Kang
+- Bash: Tests, changelog, handover; commit and push
+
+</details>
+
+#### Claude (2026-09-30 14:26 UTC)
+
+Pushed. Before handing over, I'm regenerating `work.md` so your local session has this whole conversation's history, then checking PR #10.
+
+<details><summary>actions (2)</summary>
+
+- Bash: Regenerate work.md, commit and push
+- pull_request_read
 
 </details>
 
