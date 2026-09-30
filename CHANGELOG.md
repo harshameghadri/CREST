@@ -3,6 +3,16 @@
 ## Unreleased
 
 ### Changed
+- UMAP (parallel): threads read one shared snapshot of the embedding instead of each copying
+  all n rows 16 times per epoch; removes O(threads x cells) copying and ~threads x cells x 8 B
+  of memory. Output bit-identical.
+- Leiden: the input graph is no longer cloned at the start of each iteration, and the graph is
+  built without an intermediate f64 edge list; a resolution sweep now shares one graph across
+  its parallel runs (was one copy per run). Output bit-identical.
+- Benchmark accuracy: Leiden seed-to-seed baseline (3 seeds per tool on the same graph, untimed)
+  reported next to CREST-vs-scanpy ARI.
+
+### Changed
 - Benchmark protocol (`bench/paper/`, `crest_paper_bench.sh`): the headline is the core workflow,
   run at 8 and all threads so every speed-up is reported at matched threads **and** best vs
   best (the smaller is the headline); optional modules run separately so their time and memory

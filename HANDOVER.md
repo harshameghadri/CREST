@@ -31,16 +31,25 @@ _Last updated: 2026-09-29 (0.3.0 on PyPI; standard benchmark analysed)._
 
 ## Next steps (in priority order)
 
-1. **Parse benchmark: done** (2026-09-29, 45/45 runs ok; `docs/benchmarks.md`, "Parse PBMC atlas").
-   1M cells: CREST 127 s vs scanpy 990 s (7.8×), 4.4 vs 54.5 GB. 9.7M cells: CREST 27 min, 37 GB
-   (30 GB out-of-core). Open items it raised, in priority order:
-   - **Leiden ARI vs scanpy is 0.66 at 1M** (0.80–0.94 at ≤200k) on an identical kNN graph. Measure
-     each tool's seed-to-seed ARI on the same graph before claiming equivalence (add to
-     `bench/paper/accuracy.py`: scanpy/leidenalg with 2–3 seeds, `crest.tl.leiden_sweep(n_seeds=3)`).
-   - **Leiden memory and speed**: single-threaded (24 s at 1M, 400 s at 9.7M) and the memory peak
-     (36 GB at 9.7M; the 5-resolution sweep 68 GB because each parallel run copies the graph).
-   - **UMAP** is 65% of CREST's core time at 1M and 57% at 9.7M.
-   - Final paper numbers: 5 repeats (3 gives Mann-Whitney p ≥ 0.1), CPU governor `performance`.
+1. **Parse benchmark: done** (2026-09-29, 45/45 runs; `docs/benchmarks.md`). 1M cells: CREST 127 s vs
+   scanpy 990 s (7.8×), 4.4 vs 54.5 GB. 9.7M: CREST 27 min, 37 GB. Follow-ups, status 2026-09-30:
+   - **Leiden agreement (ARI 0.66 vs scanpy at 1M):** seed-to-seed baseline now in the harness
+     (`run_one.py` saves 2 extra untimed Leiden seeds; `accuracy.py` reports
+     `leiden_ari_seeds_crest/_scanpy/_cross_mean`). On Kang: cross 0.88 vs within-tool 0.87/0.90,
+     i.e. seed noise. **To do: re-run `parse_pbmc_1m`** (core profile, 1 repeat is enough for accuracy)
+     and put the three numbers in `docs/benchmarks.md`.
+   - **Leiden / sweep memory: fixed** (no per-iteration graph clone, no f64 edge copy; the sweep shares
+     one graph). Results bit-identical. To do: measure the 9.7M peak again (was 36 GB; sweep 68 GB).
+   - **UMAP: fixed the parallel snapshot** (was every thread copying all n rows 16×/epoch). Results
+     bit-identical; no speed change at 29k cells on 4 cores, where the copy was cheap. To do: measure at
+     1M / 9.7M on 64 threads (was 83 s / 934 s).
+   - **Still open: Leiden is single-threaded** (24 s at 1M, 400 s at 9.7M). Design for a local session:
+     parallelise `refine_partition` per community (communities are independent; give each its own
+     RNG seeded from (seed, community id) so results stay deterministic for any thread count), then
+     profile `fast_move_nodes` (the queue-based local moving is inherently sequential; the standard
+     parallel variant processes a frontier of nodes in batches). Every change must pass
+     `test_leiden_*` and keep modularity >= leidenalg (tests/test_crest.py).
+   - Final paper numbers: 5 repeats, CPU governor `performance` (owner's step).
 2. **Connect Read the Docs** (`docs/readthedocs.md`): project `crest-sc`, default branch `main`.
 3. **White paper**: headline from the core workflow best-vs-best; "not faster" table;
    modules table; accuracy table (all in `report.md`). Use 5 repeats and the new protocol.
