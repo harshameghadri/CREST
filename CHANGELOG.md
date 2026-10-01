@@ -3,6 +3,16 @@
 ## Unreleased
 
 ### Changed
+- Leiden refinement (phase 2) now runs each unrefined community on its own thread (rayon),
+  with an RNG seeded from `(seed, community id)` via SplitMix64: a merge only ever pulls a
+  node into a sub-community of its own unrefined community, so communities refine
+  independently and the result is the same for any thread count. ~16% faster at 1M cells
+  (20.1 s vs 23.9 s median of 5, 64 threads, FRASER-quiet rinamochana) with modularity
+  statistically unchanged vs both the prior sequential code and leidenalg (mean gap vs
+  leidenalg +0.0015 either way over 20 seeds at resolution 1; the exact per-seed partition
+  changes along with the RNG draw sequence, so this is not bit-identical to the old code).
+  `fast_move_nodes` (phase 1) is still single-threaded and is now the larger share of
+  Leiden's wall time; parallelising it is the next step (HANDOVER.md).
 - UMAP (parallel): threads read one shared snapshot of the embedding instead of each copying
   all n rows 16 times per epoch; removes O(threads x cells) copying and ~threads x cells x 8 B
   of memory. Output bit-identical.
