@@ -16,7 +16,7 @@ CREST is held to two claims, and both are measured:
 | HVG `seurat_v3` | scanpy + skmisc loess | identical sets and ranks; `variances_norm` within 1e-14 |
 | scale + PCA | scanpy (dense) | identical subspace (0.000° principal angles) |
 | neighbours (connectivities) | scanpy / umap-learn | identical given the same kNN (1e-5) |
-| Leiden | leidenalg | same number of clusters, equal or higher modularity |
+| Leiden | leidenalg | similar number of clusters; modularity typically equal or higher (mean +0.0015 over 20 seeds at resolution 1 on PBMC 68k), occasionally ~0.002 lower on a given seed — both tools' own seed-to-seed variation is of the same order, so this is not a per-seed guarantee |
 | t-test, Wilcoxon | scanpy | scores within 1e-4, same p-values |
 | `score_genes` | scanpy | identical incl. control-gene sampling (3e-7) |
 | DESeq2 Wald / LRT | R DESeq2 1.42 | ~1e-9 (Wald, simulated), 1e-6 (LRT) |
@@ -159,46 +159,67 @@ trustworthiness equal or slightly higher (0.862–0.959 vs 0.863–0.957), top-5
 
 ## Results: Parse PBMC atlas, 1M and 9.7M cells
 
-Same machine, commit `ee87e3f` (library code identical to 0.3.0), 3 repeats, core workflow at 8
-and 64 threads, modules in separate runs, Scrublet skipped (above 150,000 cells). The Parse
-matrix has 2,000 genes; QC keeps cells with ≥ 20 of them (996,779 of 1,000,000 in the subset;
-9,666,140 of 9,697,974 in the full atlas).
+Same machine, commit `3dbd760` (`dev`; includes the copy-free Leiden graph and shared UMAP
+snapshot below, but not yet the parallel Leiden refinement further down), 1 repeat, core
+workflow at 8 and 64 threads, modules in separate runs, Scrublet skipped (above 150,000
+cells). The Parse matrix has 2,000 genes; QC keeps cells with ≥ 20 of them (996,779 of
+1,000,000 in the subset; 9,666,140 of 9,697,974 in the full atlas).
 
-**Core workflow, 1M-cell subset** (median of 3; scanpy was fastest at 64 threads here):
+**Core workflow, 1M-cell subset** (scanpy was fastest at 64 threads here):
 
 | | CREST | CREST out-of-core | scanpy |
 |---|---|---|---|
-| time, 64 threads | **127 s** | 131 s | 990 s |
-| time, 8 threads | 208 s | 218 s | 1,363 s |
-| peak memory | 4.4 GB | 3.7 GB | 54.5 GB |
+| time, 64 threads | **85.1 s** | 89.5 s | 994 s |
+| time, 8 threads | 154.0 s | 162.3 s | 1,379 s |
+| peak memory | 4.7 GB | 3.2 GB | 54.8 GB |
 
-Speed-up **7.8×** (95% CI 7.7–8.0; best vs best and matched are the same here), memory
-**12.5× lower**. With 3 repeats per tool the Mann–Whitney p-value cannot go below 0.1, so the
-confidence interval is the better summary; use 5 repeats for the paper.
+Speed-up **11.7×** at 64 threads (best vs best and matched are the same here; 9.0× at matched
+8 threads), memory **11.7× lower**. 1 repeat only (this was the Leiden-seed-baseline /
+Leiden-UMAP-speed re-run, not the final paper run); use 5 repeats with the CPU governor set
+to `performance` for the paper.
 
-Per step at 64 threads (CREST vs scanpy): scale + PCA 2.8 vs 83.6 s (30×; scanpy's dense
-scaled matrix is the 54.5 GB peak), neighbours 8.7 vs 105 s, Leiden 24 vs 62 s, UMAP 83 vs
-648 s, Wilcoxon 3.5 vs 80 s. **UMAP is 65% of CREST's time and Leiden another 19%**, and
-Leiden runs on one core (24 s at both 8 and 64 threads). `seurat_v3` HVG is again slower
-than scanpy (2.6 vs 1.1 s).
+Per step at 64 threads (CREST vs scanpy): scale + PCA 2.7 vs 84.7 s (31×; scanpy's dense
+scaled matrix is the 54.8 GB peak), neighbours 8.8 vs 106 s, Leiden 23.7 vs 64.5 s, UMAP 42.0
+vs 647 s, Wilcoxon 3.5 vs 79.4 s. Against the previous (`ee87e3f`) measurement, **UMAP
+dropped from 83 s to 42 s** (the shared-snapshot fix) while **Leiden held at ~24 s**
+(unaffected by that fix, still single-threaded at this commit) — UMAP is now 49% of CREST's
+time and Leiden 28%. `seurat_v3` HVG is again slower than scanpy (2.6 vs 1.1 s, unchanged).
 
-**Full atlas, 9.7M cells (CREST only):** the core workflow takes **27 min** in memory
-(1,631 s at 64 threads, 37 GB peak) and 30 min out-of-core (1,805 s, 30 GB peak). UMAP
-(934 s) and Leiden (400 s, single-threaded) are 82% of the time. Out-of-core keeps the
-counts on disk, but at this size the neighbour graph, Leiden and UMAP dominate memory, so
-out-of-core saves only 7 GB: the per-cell structures, not the counts, set the peak. The
-optional modules at 9.7M: resolution sweep 484 s with a **68 GB** peak (five Leiden runs in
-parallel, each with its own copy of the graph), Harmony 229 s (39 GB), pseudobulk DESeq2
-(IFN-beta vs PBS, per cell type) 2 s.
+**Full atlas, 9.7M cells (CREST only):** the core workflow now takes **21.4 min** in memory
+(1,282 s at 64 threads, 40.3 GB peak, vs 27 min / 37 GB previously) and **24.3 min**
+out-of-core (1,460 s, 24.9 GB peak, vs 30 min / 30 GB previously). Per step at 64 threads:
+UMAP dropped from 934 s to **584 s**, Leiden held at **400 s** (single-threaded, unaffected by
+the UMAP/graph-copy fixes) — together still 77% of the time. At 8 threads: 44.3 min in memory,
+49.7 min out-of-core. Out-of-core's memory saving shrank further (15.4 GB vs the previous
+7 GB) as the in-memory peak itself grew slightly (37 → 40.3 GB) while per-cell structures stayed
+the dominant cost either way. The resolution-sweep number below (484 s, 68 GB peak) predates
+this commit's graph-copy fix and still needs remeasuring.
 
 **Agreement with scanpy (1M):** identical PCA subspace, 15-NN graph (Jaccard 1.0) and HVG
-sets; UMAP trustworthiness 0.944 vs 0.946; top-50 marker overlap 0.94. **Leiden ARI is only
-0.66** (27 vs 27 clusters), lower than on the smaller datasets (0.80–0.94), although both tools
-cluster the identical graph. The resolution sweep shows the same pattern (ARI 0.96 at
-resolution 0.2, 0.65–0.69 at 1.0–2.0). How much of this is ordinary run-to-run variation of
-Leiden on a million-node graph still has to be measured (seed-to-seed ARI of each tool);
-until then it is an open question, not a validated equivalence. Harmony neighbourhoods agree
-at 0.82 (0.97–0.98 on Kang).
+sets; UMAP trustworthiness 0.944 vs 0.946; top-50 marker overlap 0.94. **Leiden ARI is 0.66**
+(27 vs 27 clusters), lower than on the smaller datasets (0.80–0.94), although both tools
+cluster the identical graph. **Seed-to-seed baseline** (2 extra untimed Leiden runs per tool,
+same graph): CREST seed-to-seed ARI 0.73, scanpy seed-to-seed ARI 0.64, CREST-vs-scanpy
+cross-seed mean ARI 0.67. So CREST-vs-scanpy disagreement (0.66) is close to scanpy's own
+seed noise (0.64) and a bit below CREST's own seed noise (0.73): **most of the gap is ordinary
+Leiden seed variation on a million-node graph, not a correctness difference**, though CREST's
+higher self-consistency leaves a modest residual not yet explained. The resolution sweep shows
+the same pattern (ARI 0.96 at resolution 0.2, 0.65–0.69 at 1.0–2.0). Harmony neighbourhoods
+agree at 0.82 (0.97–0.98 on Kang).
+
+### Leiden refinement, parallelised
+
+The above numbers predate the parallel Leiden refinement (`CHANGELOG.md`, Unreleased): phase 2
+(`refine_partition`) now runs each unrefined community on its own thread instead of one
+sequential pass over all nodes. Measured separately (not through the harness above, same
+machine, FRASER-quiet, median of 5 `crest.tl.leiden` calls on the 1M-cell graph at 64
+threads): **20.1 s vs 23.9 s before, ~16% faster**, modularity unchanged (within the seed
+noise quantified above against leidenalg). At 9.7M cells, a full core-workflow run (same
+machine, FRASER-quiet, 1 run each via `bench/paper/run_one.py`) dropped from 1,287.6 s to
+1,218.6 s (**-5.4% overall**, peak memory unchanged at ~40.3 GB) — consistent with Leiden
+being ~31% of total time and ~16% faster, the same ratio seen at 1M cells. `fast_move_nodes`
+(phase 1, still single-threaded) is now the larger share of Leiden's time; parallelising it
+is the next step.
 
 ## Module benchmarks
 
