@@ -4,7 +4,7 @@ Scanpy-style API (``crest.pp`` / ``crest.tl``) over :class:`BioFrame`, backed by
 native Rust kernels.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from .core import BioFrame, CSRStore, FrameStore, ParquetStore, read_parquet
 from . import pp, tl, io

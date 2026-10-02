@@ -68,8 +68,8 @@ benchmarks (`bench/<module>/`). On PBMC3k with the scanpy tutorial parameters:
 | `DESeq2` (pseudobulk) | R DESeq2 1.42: size factors, dispersions, log2FC, p-values within ~1e-9 on simulated designs; identical calls on 5 of 8 Kang 2018 cell types, >99% on the rest ([docs/deseq2.md](docs/deseq2.md)); LRT statistics within 1e-6 |
 | `highly_variable_genes(flavor="seurat_v3")` | identical gene sets and ranks, `variances_norm` within 1e-14 (loess port matches `skmisc` to 1e-14) |
 | `harmony` | same integration quality as harmonypy 2.0 (iLISI 1.81 vs 1.81, cLISI 1.01, ARI 0.82) at 3.5× the speed; neighbourhoods as close to harmonypy's as two harmonypy seeds are to each other |
-| `scrublet` | AUROC 0.863 vs 0.863 on Kang 2018 demuxlet doublets, 12× faster |
-| `ingest` | 90.7% vs 89.8% label accuracy mapping stimulated onto control PBMCs, 15× faster |
+| `scrublet` | AUROC 0.863 vs 0.863 on Kang 2018 demuxlet doublets, 49× faster |
+| `ingest` | 90.7% vs 89.8% label accuracy mapping stimulated onto control PBMCs, 17.6× faster |
 
 ## Performance
 
@@ -98,12 +98,15 @@ The 100k/200k datasets are generated from the real 10k PBMC v3 matrix by
 binomial thinning), so sparsity, library size and cluster structure are realistic.
 
 The figures above come from the 0.2.0 run on a 4-core cloud VM
-(`bench/whitepaper/results/`). On a 64-thread workstation (0.3.0, 5 repeats), the core
-workflow on PBMC 68k took 10.6 s with CREST vs 94.3 s with scanpy at its best thread
-count (8 threads): **8.9× faster** (95% CI 8.7–9.0), with 3.4× less memory. Comparing both
-at 64 threads would give 19.8×, which flatters CREST because scanpy slows down at high
-thread counts. CREST is *not* faster for `seurat_v3` HVG selection (about 2× slower) or
-for PCA and UMAP on very small datasets (PBMC 3k). Full tables, including every step
+(`bench/whitepaper/results/`). On a 64-thread workstation (0.4.0, 5 repeats, CPU governor
+`performance`), best-vs-best core-workflow speed-up ranges from **1.20× (PBMC 3k, 2,700
+cells) to 16.70× (synthetic 200k cells)**, including **10.28×** on PBMC 68k (9.13 s with
+CREST vs 210 s with scanpy at 64 threads, 93.8 s at scanpy's own best of 8 threads), with
+1.6×–4.7× less memory. Comparing at matched 64 threads overstates CREST's advantage on
+larger datasets, since scanpy slows down at high thread counts (it's 2.2× slower at 64
+threads than at its own best of 8, on PBMC 68k). CREST is *not* faster for `seurat_v3` HVG
+selection (about 2× slower above 10k cells) or for PCA and UMAP on very small datasets
+(PBMC 3k). Full tables, including every step
 where CREST loses: [docs/benchmarks.md](docs/benchmarks.md). The
 paper benchmark (six real datasets plus a synthetic scaling series, 5 repeats,
 thread scaling, per-core CPU/clock/memory timelines, accuracy against scanpy,

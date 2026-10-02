@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-10-02)
 
 ### Changed
 - Final paper benchmark: standard tier, 5 repeats, CPU governor `performance`, commit
