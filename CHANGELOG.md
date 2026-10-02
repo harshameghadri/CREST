@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Changed
+- Final paper benchmark: standard tier, 5 repeats, CPU governor `performance`, commit
+  `d75475e` (`dev`, both Leiden parallelisations + the `read_h5ad`/`from_anndata` I/O work).
+  284/284 runs succeeded. Headline best-vs-best speed-up 1.20×–16.70× across 2,700–199,531
+  cells (10.28× on PBMC 68k), memory 1.6×–4.7× lower; CREST scales as cells^0.74 vs scanpy's
+  cells^0.91. Full results in `docs/benchmarks.md`.
 - `read_h5ad` now keeps every obs/var column (previously only the cell/gene index and
   `gene_ids`), including anndata's categorical encoding (a sub-group of `categories` +
   integer `codes`), expanded to strings the same way `BioFrame.from_anndata` already

@@ -109,6 +109,70 @@ These rules apply to every number CREST publishes:
   are reported, not hidden.
 * Every speed-up has a confidence interval and the number of repeats.
 
+## Results: `dev` (`d75475e`), standard tier, performance governor — final paper run
+
+Same Threadripper PRO 3975WX (32 cores / 64 threads, 123 GB), CPU governor set to
+`performance`, 5 repeats, current protocol (core runs at 8 and 64 threads, modules in separate
+3-repeat runs, Scrublet skipped above 150,000 cells). Commit `d75475e` is `dev` with both
+Leiden parallelisations merged (phases 2 and 3; phase 1 stays single-threaded, see below) and
+the `read_h5ad`/`from_anndata` I/O work. 284/284 runs succeeded, zero failures. This
+supersedes the 0.3.0 numbers above for every dataset (those used `powersave` and only had a
+thread scan on PBMC 68k); the full `report.md` and figures are archived at
+`crest-bench-rinamochana-20261002-0323.tar.gz` on rinamochana.
+
+**Core workflow**, median seconds (read → Wilcoxon markers), matched at 64 threads and best
+vs best per tool; headline is the smaller of the two:
+
+| dataset | cells | CREST | CREST best (threads) | scanpy | scanpy best (threads) | matched | best vs best | headline | memory ratio |
+|---|---|---|---|---|---|---|---|---|---|
+| PBMC 3k | 2,700 | 4.35 | 2.79 (8) | 5.21 | 4.68 (8) | 1.20× | 1.68× | **1.20×** | 1.58× |
+| PBMC 10k | 11,537 | 5.09 | 5.09 (64) | 31.0 | 17.5 (8) | 6.09× | 3.44× | **3.44×** | 1.59× |
+| Kang 2018 | 28,871 | 5.28 | 5.28 (64) | 82.4 | 34.1 (8) | 15.61× | 6.46× | **6.46×** | 2.38× |
+| PBMC 68k | 68,551 | 9.13 | 9.13 (64) | 210 | 93.8 (8) | 22.97× | 10.28× | **10.28×** | 3.17× |
+| synthetic 100k | 99,779 | 11.5 | 11.5 (64) | 306 | 142 (8) | 26.50× | 12.31× | **12.31×** | 3.93× |
+| synthetic 200k | 199,531 | 20.0 | 20.0 (64) | 555 | 333 (8) | 27.83× | 16.70× | **16.70×** | 4.70× |
+
+All speed-ups have 95% bootstrap CIs within ±5% of the point estimate (Mann-Whitney
+p = 0.0079 on every dataset, the best possible with 5 vs 5 samples). CREST's own best thread
+count is 64 everywhere except PBMC 3k (8); scanpy's best is consistently 8 — it gets *slower*
+above that (PBMC 68k: 93.8 s at 8 threads vs 210 s at 64, worse than its own 1-thread time).
+Out-of-core CREST trails in-memory CREST by 5–18%, as before.
+
+**Where CREST is not faster (< 1.2×):**
+
+| step | CREST vs scanpy |
+|---|---|
+| `seurat_v3` HVG (10k–200k cells) | 0.48–0.56× (loess fit runs in Python; at 2,700 cells, PBMC 3k, it's 1.14×) |
+| scale + PCA, PBMC 3k | 0.72× (fixed eigendecomposition cost) |
+| UMAP, PBMC 3k | 0.83× (fixed cost below 10k cells) |
+| QC filter, PBMC 3k | 1.02× (both near the measurement floor) |
+| reading the file (all datasets) | 1.13–1.19× (near parity; both HDF5-decompression-bound) |
+
+**Thread scaling** (PBMC 68k, core workflow, 1→64 threads): CREST 46.3 s → 9.13 s (5.08×,
+Amdahl serial fraction 0.19, still improving at 64). scanpy 195 s → 93.8 s at its best (8
+threads, 2.08×) then *regresses* to 210 s at 64 (Amdahl serial fraction 0.59).
+
+**Scaling with cells** (core workflow, log-log fit over all six datasets): CREST time ∝
+cells^0.74 (r²=0.995), CREST out-of-core ∝ cells^0.78 (r²=0.997), scanpy ∝ cells^0.91
+(r²=0.999) — CREST scales sublinearly in this range, scanpy close to linear.
+
+**Agreement with scanpy:** PCA subspace cosine 1.000 and 15-NN graph Jaccard 1.000 on every
+dataset; HVG Jaccard 0.994–1.000 (`seurat`) and 0.998–1.000 (`seurat_v3`); Leiden ARI
+0.70–0.94 / NMI 0.86–0.94 (same range as 0.3.0); UMAP trustworthiness 0.86–0.96, matching
+scanpy's own to within 0.01; top-50 marker overlap 0.90–0.96.
+
+**Optional modules** (64 threads, 3 repeats): `leiden_sweep` 14.6–22.7× faster; Scrublet
+1.3–48.8× (shrinks with cell count, as before — both tools' neighbour search grows
+roughly quadratically); Harmony 2.3× on Kang (ARI vs cell type 0.82 CREST / 0.818 harmonypy,
+15-NN neighbourhood overlap 0.98). Three module runs stand out as new comparisons this round:
+Scrublet-equivalent doublet detection vs `scanpy.pp.scrublet` on Kang is **49× faster** at
+identical AUROC (0.863 both, Spearman 0.983 on doublet scores); `ingest` label transfer is
+**17.6× faster** and *more accurate* (90.7% vs 89.8%, label agreement 96.4%); pseudobulk
+DESeq2 on Kang (8 cell types) matches R's significant-gene calls almost exactly (identical
+counts in 6 of 8 cell types, off by 1 and by 9 genes in the other two) at 63–78× R's time and
+41–79× pydeseq2's — pydeseq2 itself diverges from R noticeably more than CREST does on some
+cell types (e.g. 914 vs R's 794 significant genes on B cells).
+
 ## Results: 0.3.0, standard tier
 
 Threadripper PRO 3975WX (32 cores / 64 threads, 128 GB), Ubuntu 26.04, CPU governor
