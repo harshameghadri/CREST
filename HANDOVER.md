@@ -16,7 +16,7 @@ _Last updated: 2026-10-01 (Leiden refinement parallelised; Parse re-run with see
 | Modules after clustering | Harmony, Scrublet, `seurat_v3` HVG, `leiden_sweep`, `ingest`, `knn_query`; each validated (`docs/downstream.md`) |
 | Leiden | Phases 2 (`refine_partition`) and 3 (`aggregate`) now parallel, same per-community-independent pattern; 17.9 s at 1M cells (was 23.9 s), modularity unchanged vs leidenalg (2026-10-01, `docs/benchmarks.md`). Phase 1 (`fast_move_nodes`, ~73% of Leiden's time, confirmed by profiling) is still single-threaded: a parallel version was attempted and **measured-and-rejected** — it terminates but measurably loses modularity (see Next steps and `CHANGELOG.md`) |
 | Paper benchmark | Quick + standard tiers done; Parse 1M + 9.7M re-run (2026-10-01, `3dbd760`, 1 repeat, core profile) with the Leiden seed-to-seed baseline and post-fix UMAP/Leiden timings in `docs/benchmarks.md`. **Next: final 5-repeat run with the parallel refinement + `performance` governor** |
-| Input formats | 10x H5/MTX, `.h5ad` (native, no `anndata` needed) plus a generic `BioFrame.from_anndata()`/`to_anndata()` bridge (covers Loom/Visium/Zarr-AnnData/CSV via scanpy's readers) — **the bridge is undocumented and untested; `read_h5ad`'s native path drops all obs/var columns except the index and `gene_ids`**. Plan sketched 2026-10-01, not yet implemented (see Next steps) |
+| Input formats | 10x H5/MTX, `.h5ad` (native, no `anndata` needed, now keeps every obs/var column incl. categoricals) plus `BioFrame.from_anndata()`/`to_anndata()` — the documented path for anything else scanpy/anndata reads (Loom, Visium, Zarr-AnnData, CSV, ...), now with a parity test and a `quickstart.md` section (2026-10-02, Phase 0+1 of the plan below). Native streaming readers for Loom/Zarr (Phase 2+3) not started |
 | Documentation | Sphinx site in `docs/`, checked claim by claim against the code (2026-09-29). Read the Docs connection: owner's step |
 | Packaging | **0.3.0 published on PyPI** (tag `v0.3.0`, release job green, 2026-09-29) |
 | CI | `test` (cargo + pytest), `docs` (sphinx `-W`), wheels for all platforms; publishes on tag |
@@ -103,18 +103,32 @@ _Last updated: 2026-10-01 (Leiden refinement parallelised; Parse re-run with see
        it's almost certainly a repeat of this — kill it, don't assume it's doing useful work.
    - Final paper numbers: 5 repeats, CPU governor `performance` (owner's step).
    - Resolution-sweep memory/time at 9.7M (484 s, 68 GB) predates the graph-copy fix; remeasure.
-2. **Input format support beyond 10x: planned, not implemented** (2026-10-01, owner's request).
-   CREST already reads `.h5ad` natively and has `BioFrame.from_anndata()` / `to_anndata()`, which
-   covers Loom/Visium/Zarr-AnnData/CSV etc. via scanpy's readers — but that bridge has no test and
-   isn't documented or in the Sphinx API, so nobody would find it. Planned phases (not started):
-   (0) add a parity test + document `from_anndata` as the official "other formats" path;
-   (1) fix `read_h5ad`'s native fast path to keep all obs/var columns, not just the index and
-   `gene_ids` (removes the `.obs.parquet` sidecar-file workaround the Parse dataset needs today);
-   (2) native streaming reader for Loom (same chunked-`h5py` pattern as `read_10x_h5`);
-   (3) native streaming reader for Zarr-backed AnnData (large cloud atlases, e.g. CELLxGENE
-   Census use this; the one format where going through `anndata` first would defeat CREST's
-   memory-bounded design at real scale); (4) Seurat RDS — docs-only (recommend SeuratDisk →
-   h5ad), not a native Rust reader, unless there's real demand later.
+2. **Input format support beyond 10x** (owner's request, 2026-10-01; Phase 0+1 done 2026-10-02).
+   `BioFrame.from_anndata()` already existed and covers Loom/Visium/Zarr-AnnData/CSV etc. via
+   scanpy's readers — it was in the Sphinx API already (bare `:members:` on `BioFrame` picks up
+   every public method), the actual gaps were narrower: no test, and not mentioned in
+   `quickstart.md`. An earlier version of this file claimed otherwise ("undocumented... not in
+   the Sphinx API") and that the `.obs.parquet` sidecar `bench/paper/datasets.py` writes for the
+   Parse dataset was a `read_h5ad` limitation — both wrong, corrected here: the sidecar exists
+   because that script converts Parse's `.h5ad` to a **10x-style `.h5`** for the benchmark harness,
+   a format with no room for arbitrary obs columns at all regardless of `read_h5ad`; the two also
+   use entirely different h5ad-reading code (`bench/paper/datasets.py`'s own `read_h5ad_obs` vs
+   `crest.io.read_h5ad`). Done:
+   - **Phase 0:** `from_anndata`/`to_anndata` docstrings now say what's preserved and point to this
+     as the "other formats" path; `test_from_anndata_roundtrip` (categorical/numeric/string obs
+     columns + obsm, round-tripped) in `tests/test_crest.py`; a "Reading other formats" section in
+     `quickstart.md`.
+   - **Phase 1:** `read_h5ad`'s native path (`crest/io.py`, no `anndata` needed) now keeps every
+     obs/var column instead of just the index + `gene_ids`, including anndata's categorical
+     encoding (a sub-group of `categories` + integer `codes`) — expanded to strings, matching what
+     `from_anndata` already does for a pandas categorical column. `test_read_h5ad_keeps_obs_columns`
+     writes a real `.h5ad` via installed `anndata` and reads it back with `crest.read_h5ad` to
+     exercise the actual on-disk encoding, not a hand-rolled approximation of it.
+   Not started: (2) native streaming reader for Loom (same chunked-`h5py` pattern as
+   `read_10x_h5`); (3) native streaming reader for Zarr-backed AnnData (large cloud atlases, e.g.
+   CELLxGENE Census use this; the one format where going through `anndata` first would defeat
+   CREST's memory-bounded design at real scale); (4) Seurat RDS — docs-only (recommend SeuratDisk
+   → h5ad), not a native Rust reader, unless there's real demand later.
 3. **Connect Read the Docs** (`docs/readthedocs.md`): project `crest-sc`, default branch `main`.
 4. **White paper**: headline from the core workflow best-vs-best; "not faster" table;
    modules table; accuracy table (all in `report.md`). Use 5 repeats and the new protocol.
