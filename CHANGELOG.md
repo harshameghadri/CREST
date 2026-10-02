@@ -3,6 +3,41 @@
 ## Unreleased
 
 ### Changed
+- Leiden aggregation (phase 3) now computes each community's outgoing edges on its own
+  thread (rayon `map_init`, one reused `NeighborWeights` buffer per worker thread rather
+  than one fresh O(k)-sized buffer per community): a community's edges to higher-numbered
+  communities depend only on its own members, so this is independent per community and the
+  result is bit-identical for any thread count (no RNG involved). Measured on a profiled
+  split of Leiden's own wall time on `parse_pbmc_1m` (1M cells, 64 threads): phase 1
+  (`fast_move_nodes`) ~73%, phase 3 (`aggregate`) ~21%, phase 2 (`refine_partition`) ~3%.
+  This change alone takes `aggregate`'s share from ~10-13 s to ~5-5.6 s under load; combined
+  with the refinement parallelisation below, Leiden at 1M cells is **17.9 s** (median of 5,
+  64 threads, FRASER-quiet), down from 20.1 s with refinement alone and 23.9 s originally
+  (~25% faster overall). Modularity vs leidenalg unchanged (20-seed sweep at resolution 1 on
+  PBMC 68k: mean gap +0.00152, 2/20 seeds below — identical to the refinement-only baseline).
+- **`fast_move_nodes` (phase 1) parallelisation: attempted, measured, rejected.** This is
+  73% of Leiden's time and the obvious next target, but it is a fundamentally different
+  algorithm from refinement/aggregation: moves are not independent per node, so a node's
+  decision needs to see other nodes' just-applied moves to stay correct. Two designs were
+  tried, both as synchronous rounds (parallel scan of neighbour weights, sequential commit
+  one node at a time so `comm_w`/`comm_size`/the empty-community stack never race):
+  - Deciding from the round-start snapshot (both which communities to consider *and* their
+    weights) caused a real infinite loop on the existing test suite: two nodes could each see
+    the other's not-yet-updated community as attractive and swap into each other's old spots
+    every round forever. Not a hypothetical failure mode — it hung for hours before being
+    killed.
+  - Deciding from *live* `comm_w`/`comm_size` at commit time (only the candidate-community
+    list and each candidate's raw edge weight came from the round-start scan) does terminate
+    — every applied move is a certified modularity improvement under current weights, same as
+    the original algorithm, so it inherits the same finite-state termination argument. But it
+    measurably hurts solution quality: the same 20-seed modularity sweep that read +0.00152
+    vs leidenalg with refinement+aggregation alone reads **-0.00083** with this change added,
+    and 15/20 seeds fall below leidenalg instead of 2/20. A control run (reverting only this
+    change, keeping the aggregation parallelisation) reproduced the +0.00152/2-of-20 baseline
+    exactly, isolating this specific change as the cause.
+  Per the project's accuracy rules, a parity-losing change does not ship even when it is
+  faster: `fast_move_nodes` stays single-threaded. Design notes for a future attempt are in
+  `HANDOVER.md`.
 - Leiden refinement (phase 2) now runs each unrefined community on its own thread (rayon),
   with an RNG seeded from `(seed, community id)` via SplitMix64: a merge only ever pulls a
   node into a sub-community of its own unrefined community, so communities refine
