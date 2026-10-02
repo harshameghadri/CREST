@@ -207,19 +207,41 @@ higher self-consistency leaves a modest residual not yet explained. The resoluti
 the same pattern (ARI 0.96 at resolution 0.2, 0.65–0.69 at 1.0–2.0). Harmony neighbourhoods
 agree at 0.82 (0.97–0.98 on Kang).
 
-### Leiden refinement, parallelised
+### Leiden, parallelised phase by phase
 
-The above numbers predate the parallel Leiden refinement (`CHANGELOG.md`, Unreleased): phase 2
-(`refine_partition`) now runs each unrefined community on its own thread instead of one
+The above numbers predate the parallel Leiden work in `CHANGELOG.md` (Unreleased). Profiling
+Leiden's own three phases directly (temporary timers, `parse_pbmc_1m`, 64 threads) gives their
+share of its wall time: phase 1 (`fast_move_nodes`) ~73%, phase 3 (`aggregate`) ~21%, phase 2
+(`refine_partition`) ~3%.
+
+**Phase 2 (refinement):** each unrefined community now runs on its own thread instead of one
 sequential pass over all nodes. Measured separately (not through the harness above, same
 machine, FRASER-quiet, median of 5 `crest.tl.leiden` calls on the 1M-cell graph at 64
 threads): **20.1 s vs 23.9 s before, ~16% faster**, modularity unchanged (within the seed
-noise quantified above against leidenalg). At 9.7M cells, a full core-workflow run (same
-machine, FRASER-quiet, 1 run each via `bench/paper/run_one.py`) dropped from 1,287.6 s to
-1,218.6 s (**-5.4% overall**, peak memory unchanged at ~40.3 GB) — consistent with Leiden
-being ~31% of total time and ~16% faster, the same ratio seen at 1M cells. `fast_move_nodes`
-(phase 1, still single-threaded) is now the larger share of Leiden's time; parallelising it
-is the next step.
+noise quantified above against leidenalg).
+
+**Phase 3 (aggregation):** each community's outgoing edges now compute on its own thread too
+(no RNG involved, so this is bit-identical for any thread count — verified by diffing labels
+before/after on PBMC 68k). Combined with phase 2: **17.9 s at 1M cells** (median of 5,
+FRASER-quiet), down from 20.1 s with phase 2 alone and 23.9 s originally — a 25% reduction
+overall. At 9.7M cells, a full core-workflow run (`bench/paper/run_one.py`, FRASER-quiet)
+went 1,287.6 s (original) → 1,218.6 s (phase 2) → **1,165.9 s (phase 2+3, -9.5% overall)**,
+peak memory ~42.7 GB (up slightly from ~40.3 GB; within the run-to-run variation already seen
+at this scale, not attributed to the change). Modularity vs leidenalg unchanged (20-seed sweep
+at resolution 1 on PBMC 68k: mean gap +0.00152, 2/20 below — identical to phase-2-alone).
+
+**Phase 1 (`fast_move_nodes`, ~73% of the time): attempted, measured, rejected.** Unlike
+phases 2 and 3, a node's move here is not independent of other nodes' concurrent moves, so
+this isn't the same safe per-item parallelisation. Two synchronous-round designs were tried
+(parallel scan of neighbour weights, sequential commit so the community bookkeeping can't
+race): deciding from a round-start snapshot caused a genuine infinite loop (two nodes
+repeatedly swapping into each other's not-yet-updated communities); deciding from *live*
+community weights at commit time does terminate, but the 20-seed modularity sweep against
+leidenalg went from +0.00152 mean / 2-of-20 below to **-0.00083 mean / 15-of-20 below** — a
+real, isolated regression (a control run reverting only this change reproduced the
++0.00152/2-of-20 baseline exactly). Per the accuracy rules above, this does not ship.
+`fast_move_nodes` stays single-threaded; see `HANDOVER.md` for what a future attempt should
+try differently.
 
 ## Module benchmarks
 

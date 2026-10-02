@@ -339,6 +339,13 @@ fn refine_one_community(
 }
 
 /// Phase 3: collapse each community of `by` (contiguous ids 0..k) into one node.
+///
+/// Each community's outgoing edges (to higher-numbered communities, to avoid double
+/// counting) depend only on its own members and their neighbours, so communities
+/// aggregate independently of one another — the same structure `refine_partition`
+/// exploits. `NeighborWeights` is reused per worker thread (`map_init`), not
+/// allocated fresh per community, since it is sized `k` and this runs `k` times:
+/// one fresh buffer per community would cost O(k^2) in total.
 fn aggregate(g: &Graph, by: &[usize], k: usize) -> Graph {
     let n = g.n();
     let mut members: Vec<Vec<usize>> = vec![Vec::new(); k];
@@ -346,25 +353,38 @@ fn aggregate(g: &Graph, by: &[usize], k: usize) -> Graph {
         members[by[v]].push(v);
     }
     let mut node_w = vec![0.0f64; k];
-    let mut edges: Vec<(usize, usize, f64)> = Vec::new();
-    let mut nw = NeighborWeights::new(k);
     for c in 0..k {
         for &v in &members[c] {
             node_w[c] += g.node_w[v];
-            for (u, w) in g.neighbors(v) {
-                let d = by[u];
-                if d != c {
-                    nw.add(d, w);
-                }
-            }
         }
-        for &d in &nw.touched {
-            if d > c {
-                edges.push((c, d, nw.w[d]));
-            }
-        }
-        nw.clear();
     }
+
+    let edges: Vec<(usize, usize, f64)> = (0..k)
+        .into_par_iter()
+        .map_init(
+            || NeighborWeights::new(k),
+            |nw, c| {
+                for &v in &members[c] {
+                    for (u, w) in g.neighbors(v) {
+                        let d = by[u];
+                        if d != c {
+                            nw.add(d, w);
+                        }
+                    }
+                }
+                let mut out = Vec::new();
+                for &d in &nw.touched {
+                    if d > c {
+                        out.push((c, d, nw.w[d]));
+                    }
+                }
+                nw.clear();
+                out
+            },
+        )
+        .flatten_iter()
+        .collect();
+
     let mut agg = Graph::from_edges(k, &edges);
     agg.node_w = node_w; // keep internal weight (self-loops) in degrees
     agg.two_m = g.two_m;
