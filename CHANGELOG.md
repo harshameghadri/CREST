@@ -3,6 +3,15 @@
 ## Unreleased
 
 ### Changed
+- `read_h5ad` now keeps every obs/var column (previously only the cell/gene index and
+  `gene_ids`), including anndata's categorical encoding (a sub-group of `categories` +
+  integer `codes`), expanded to strings the same way `BioFrame.from_anndata` already
+  handles a pandas categorical column.
+- `BioFrame.from_anndata`/`to_anndata` docstrings now document that `from_anndata` is the
+  path for any format CREST doesn't read natively (Loom, Visium, Zarr-backed AnnData, CSV,
+  ...) via scanpy/anndata's own readers, and what it does and doesn't carry over. Added a
+  parity test and a "Reading other formats" section in `docs/quickstart.md` — this bridge
+  already existed but had neither.
 - Leiden refinement (phase 2) now runs each unrefined community on its own thread (rayon),
   with an RNG seeded from `(seed, community id)` via SplitMix64: a merge only ever pulls a
   node into a sub-community of its own unrefined community, so communities refine
