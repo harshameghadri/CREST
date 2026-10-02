@@ -4,18 +4,18 @@ This file says where the project stands and what to do next. Read `CLAUDE.md` fi
 the code works, and the rules). Keep **Status** and **Next steps** current at the end of
 every session.
 
-_Last updated: 2026-10-01 (Leiden refinement parallelised; Parse re-run with seed baseline)._
+_Last updated: 2026-10-02 (final 5-repeat, performance-governor standard-tier paper run)._
 
 ## Status
 
 | Area | State |
 |---|---|
-| Core workflow (QC → HVG → scale / PCA → kNN → Leiden → UMAP → t-test / Wilcoxon → `score_genes`) | Done; validated against scanpy 1.11. 0.3.0 on the 64-thread workstation: PBMC 68k core workflow **8.9× faster best-vs-best** (19.8× at matched 64 threads), 3.4× less memory (`docs/benchmarks.md`) |
+| Core workflow (QC → HVG → scale / PCA → kNN → Leiden → UMAP → t-test / Wilcoxon → `score_genes`) | Done; validated against scanpy 1.11. Final 5-repeat, `performance`-governor run on `dev` (2026-10-02, `d75475e`): best-vs-best headline **1.20×–16.70×** across 2.7k–200k cells (10.28× on PBMC 68k), memory 1.6×–4.7× lower, zero failed runs out of 284 (`docs/benchmarks.md`) |
 | Out-of-core (Parquet) | Done; count matrix never in RAM; ~0.7–1.1 GB peak up to 200k cells (per-cell results still grow with cells); up to ~2× slower |
 | Pseudobulk DESeq2 (Rust) | Done: Wald + LRT; matches R DESeq2 1.42; ~50× faster than R on rinamochana |
 | Modules after clustering | Harmony, Scrublet, `seurat_v3` HVG, `leiden_sweep`, `ingest`, `knn_query`; each validated (`docs/downstream.md`) |
 | Leiden | Phases 2 (`refine_partition`) and 3 (`aggregate`) now parallel, same per-community-independent pattern; 17.9 s at 1M cells (was 23.9 s), modularity unchanged vs leidenalg (2026-10-01, `docs/benchmarks.md`). Phase 1 (`fast_move_nodes`, ~73% of Leiden's time, confirmed by profiling) is still single-threaded: a parallel version was attempted and **measured-and-rejected** — it terminates but measurably loses modularity (see Next steps and `CHANGELOG.md`) |
-| Paper benchmark | Quick + standard tiers done; Parse 1M + 9.7M re-run (2026-10-01, `3dbd760`, 1 repeat, core profile) with the Leiden seed-to-seed baseline and post-fix UMAP/Leiden timings in `docs/benchmarks.md`. **Next: final 5-repeat run with the parallel refinement + `performance` governor** |
+| Paper benchmark | **Done.** Quick + standard tiers; Parse 1M + 9.7M re-run (2026-10-01, `3dbd760`, 1 repeat, core profile); final standard-tier run (2026-10-02, `d75475e`, 5 repeats, `performance` governor, 284/284 runs ok) — all in `docs/benchmarks.md`. Parse re-run was 1 repeat only; a 5-repeat Parse run was not requested and hasn't been done |
 | Input formats | 10x H5/MTX, `.h5ad` (native, no `anndata` needed, now keeps every obs/var column incl. categoricals) plus `BioFrame.from_anndata()`/`to_anndata()` — the documented path for anything else scanpy/anndata reads (Loom, Visium, Zarr-AnnData, CSV, ...), now with a parity test and a `quickstart.md` section (2026-10-02, Phase 0+1 of the plan below). Native streaming readers for Loom/Zarr (Phase 2+3) not started |
 | Documentation | Sphinx site in `docs/`, checked claim by claim against the code (2026-09-29). Read the Docs connection: owner's step |
 | Packaging | **0.3.0 published on PyPI** (tag `v0.3.0`, release job green, 2026-09-29) |
@@ -101,7 +101,13 @@ _Last updated: 2026-10-01 (Leiden refinement parallelised; Parse re-run with see
        5679% CPU, 54 GB RSS) before being found and killed. If a `leiden`-tagged
        `target/release/deps/crest-*` process is ever found running for an implausibly long time,
        it's almost certainly a repeat of this — kill it, don't assume it's doing useful work.
-   - Final paper numbers: 5 repeats, CPU governor `performance` (owner's step).
+   - **Final paper numbers: done** (2026-10-02, `d75475e`, 5 repeats, `performance` governor,
+     standard tier, 284/284 runs succeeded). Headline best-vs-best 1.20×–16.70× across the six
+     standard-tier datasets, memory 1.6×–4.7× lower; full table, thread scaling, cross-dataset
+     scaling exponents and module results in `docs/benchmarks.md`. This run used the six
+     standard-tier datasets (PBMC 3k/10k/68k, Kang, synthetic 100k/200k), not Parse — a 5-repeat
+     Parse run would need a separate invocation (`--datasets "parse_pbmc_1m parse_pbmc"`) and
+     hasn't been requested.
    - Resolution-sweep memory/time at 9.7M (484 s, 68 GB) predates the graph-copy fix; remeasure.
 2. **Input format support beyond 10x** (owner's request, 2026-10-01; Phase 0+1 done 2026-10-02).
    `BioFrame.from_anndata()` already existed and covers Loom/Visium/Zarr-AnnData/CSV etc. via
@@ -130,9 +136,9 @@ _Last updated: 2026-10-01 (Leiden refinement parallelised; Parse re-run with see
    CREST's memory-bounded design at real scale); (4) Seurat RDS — docs-only (recommend SeuratDisk
    → h5ad), not a native Rust reader, unless there's real demand later.
 3. **Connect Read the Docs** (`docs/readthedocs.md`): project `crest-sc`, default branch `main`.
-4. **White paper**: headline from the core workflow best-vs-best; "not faster" table;
-   modules table; accuracy table (all in `report.md`). Use 5 repeats and the new protocol.
-   Set the CPU governor to `performance` for the final run.
+4. **White paper**: the final 5-repeat, `performance`-governor `report.md` and figures (done,
+   see above) have everything needed — headline best-vs-best, "not faster" table, modules
+   table, accuracy table. Remaining work here is writing the paper itself, not re-benchmarking.
 5. **Performance work, measured first:**
    - `seurat_v3` HVG is 2× slower than scanpy at ≥ 10k cells: the loess fit runs in Python
      (`crest/_loess.py`); port it to Rust or vectorise it.
