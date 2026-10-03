@@ -159,6 +159,62 @@ def test_io_roundtrips(data, tmp_path):
         assert abs(bf.to_scipy(transform=False) - X).max() == 0
 
 
+def test_from_anndata_roundtrip(data):
+    """``BioFrame.from_anndata`` is the documented path for any format CREST doesn't read
+    natively (Loom, Visium, a Zarr-backed AnnData store, ...): load it as an AnnData with
+    scanpy/anndata, then convert. It must carry over obs columns of every dtype pandas
+    gives an AnnData (categorical, numeric, plain string) and obsm, and ``to_anndata`` must
+    carry them back out the same way."""
+    ad = pytest.importorskip("anndata")
+    pd = pytest.importorskip("pandas")
+    X, names, labels = data
+    n = X.shape[0]
+    rng = np.random.default_rng(0)
+    obs = pd.DataFrame({
+        "cell_type": pd.Categorical([f"type{int(l)}" for l in labels]),
+        "n_counts": np.asarray(X.sum(1)).ravel().astype(np.float32),
+        "batch": [f"b{i % 2}" for i in range(n)],
+    })
+    a = ad.AnnData(X=X.copy(), obs=obs, var=pd.DataFrame(index=names))
+    a.obsm["X_pca"] = rng.normal(size=(n, 10)).astype(np.float32)
+
+    bf = crest.BioFrame.from_anndata(a)
+    assert bf.shape == X.shape
+    assert abs(bf.to_scipy(transform=False) - X).max() == 0
+    assert (bf.obs["cell_type"].to_numpy() == obs["cell_type"].astype(str).to_numpy()).all()
+    np.testing.assert_allclose(bf.obs["n_counts"].to_numpy(), obs["n_counts"].to_numpy())
+    assert (bf.obs["batch"].to_numpy() == obs["batch"].to_numpy()).all()
+    np.testing.assert_array_equal(bf.obsm["X_pca"], a.obsm["X_pca"])
+
+    a2 = bf.to_anndata()
+    assert (a2.obs["cell_type"].astype(str).to_numpy() == obs["cell_type"].astype(str).to_numpy()).all()
+    np.testing.assert_array_equal(a2.obsm["X_pca"], a.obsm["X_pca"])
+
+
+def test_read_h5ad_keeps_obs_columns(data, tmp_path):
+    """``crest.read_h5ad`` (no ``anndata`` involved) must keep every obs/var column an
+    .h5ad file carries, including anndata's categorical encoding (a sub-group of
+    ``categories`` + integer ``codes``) — not just the cell/gene index."""
+    ad = pytest.importorskip("anndata")
+    pd = pytest.importorskip("pandas")
+    X, names, labels = data
+    obs = pd.DataFrame({
+        "cell_type": pd.Categorical([f"type{int(l)}" for l in labels]),
+        "n_counts": np.asarray(X.sum(1)).ravel().astype(np.float32),
+    })
+    var = pd.DataFrame({"gene_ids": [f"ENSG{i:08d}" for i in range(len(names))]}, index=names)
+    a = ad.AnnData(X=X.copy(), obs=obs, var=var)
+    p = tmp_path / "a.h5ad"
+    a.write_h5ad(p)
+
+    bf = crest.read_h5ad(p)
+    assert bf.shape == X.shape
+    assert abs(bf.to_scipy(transform=False) - X).max() == 0
+    assert (bf.obs["cell_type"].to_numpy() == obs["cell_type"].astype(str).to_numpy()).all()
+    np.testing.assert_allclose(bf.obs["n_counts"].to_numpy(), obs["n_counts"].to_numpy())
+    assert (bf.var["gene_ids"].to_numpy() == var["gene_ids"].to_numpy()).all()
+
+
 # --------------------------------------------------------------------------- scanpy parity
 sc = None
 try:

@@ -96,27 +96,60 @@ def read_10x_h5(path: Union[str, Path], gex_only: bool = True, backed: Optional[
     return bf
 
 
+def _h5ad_series(group, key):
+    """One obs/var column from the 'group of columns' h5ad layout. Plain numeric/string
+    datasets are read directly; a categorical column (anndata's usual encoding for pandas
+    ``category`` dtype: a sub-group holding ``categories`` + integer ``codes``, -1 =
+    missing) is expanded to strings, matching what ``BioFrame.from_anndata`` already does
+    for a categorical column arriving via pandas. Returns ``None`` for an encoding this
+    doesn't recognise (e.g. nullable-integer/-boolean) rather than guessing at it."""
+    import h5py
+
+    node = group[key]
+    if isinstance(node, h5py.Group):
+        if "categories" in node and "codes" in node:
+            cats = _decode(node["categories"])
+            codes = node["codes"][:]
+            return [cats[c] if c >= 0 else "nan" for c in codes]
+        return None
+    arr = node[:]
+    return _decode(arr) if arr.dtype.kind in "SUO" else arr
+
+
 def _h5ad_frame(node, index_name: str) -> pl.DataFrame:
-    """obs/var names (+ string ``gene_ids`` if present) from either h5ad layout:
-    a group of columns (anndata >= 0.7) or a legacy structured dataset."""
+    """obs/var columns from either h5ad layout: a group of columns (anndata >= 0.7,
+    including the categorical encoding) or a legacy structured dataset."""
     import h5py
 
     if isinstance(node, h5py.Dataset):  # legacy: structured array
         arr = node[:]
         cols = {index_name: _decode(arr["index"])}
-        if "gene_ids" in (arr.dtype.names or ()):
-            cols["gene_ids"] = _decode(arr["gene_ids"])
+        for name in arr.dtype.names or ():
+            if name == "index":
+                continue
+            col = arr[name]
+            cols[name] = _decode(col) if col.dtype.kind in "SUO" else col
         return pl.DataFrame(cols)
     key = node.attrs.get("_index", "_index")
     key = key.decode() if isinstance(key, bytes) else key
     cols = {index_name: _decode(node[key])}
-    if "gene_ids" in node and isinstance(node["gene_ids"], h5py.Dataset):
-        cols["gene_ids"] = _decode(node["gene_ids"])
+    order = node.attrs.get("column-order", list(node.keys()))
+    for raw in order:
+        name = raw.decode() if isinstance(raw, bytes) else raw
+        if name == key:
+            continue
+        value = _h5ad_series(node, name)
+        if value is not None:
+            cols[name] = value
     return pl.DataFrame(cols)
 
 
 def read_h5ad(path: Union[str, Path]) -> BioFrame:
-    """Read ``X`` (CSR, or dense) plus obs/var names from an .h5ad file without anndata."""
+    """Read ``X`` (CSR, or dense) plus every obs/var column from an .h5ad file, without
+    needing ``anndata`` installed. Categorical columns are expanded to strings (matching
+    ``BioFrame.from_anndata``). ``obsm``/``varm``/``uns``/other layers are not read; for
+    those, load with `anndata.read_h5ad` and use :meth:`BioFrame.from_anndata` instead.
+    """
     import h5py
 
     with h5py.File(path, "r") as f:

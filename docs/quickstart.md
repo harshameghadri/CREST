@@ -143,6 +143,23 @@ UMAP) are still held in memory and grow with the number of cells. Each step re-r
 files, which makes it up to about 2× slower than working in memory; on data that fits in RAM
 comfortably, in-memory is the better choice.
 
+## 8. Reading other formats
+
+CREST reads 10x H5/MTX and `.h5ad` natively (no `anndata` needed). For anything else —
+Loom, Visium, a Zarr-backed AnnData store, a CSV/Excel matrix, or any other format
+`scanpy`/`anndata` can load — load it as an `AnnData` with the matching reader, then convert:
+
+```python
+import scanpy as sc
+import crest
+
+adata = sc.read_loom("sample.loom")       # or sc.read_visium(...), ad.read_zarr(...), ...
+bf = crest.BioFrame.from_anndata(adata)   # carries over every obs/var column, and obsm
+```
+
+This loads the whole matrix into memory first (unlike `read_10x_h5(..., backed=...)`), so for
+files too large for that, convert to `.h5ad` and use `crest.read_h5ad` instead.
+
 ## Differences from scanpy to know about
 
 | scanpy | CREST |

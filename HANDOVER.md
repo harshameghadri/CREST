@@ -4,17 +4,19 @@ This file says where the project stands and what to do next. Read `CLAUDE.md` fi
 the code works, and the rules). Keep **Status** and **Next steps** current at the end of
 every session.
 
-_Last updated: 2026-09-29 (0.3.0 on PyPI; standard benchmark analysed)._
+_Last updated: 2026-10-02 (final 5-repeat, performance-governor standard-tier paper run)._
 
 ## Status
 
 | Area | State |
 |---|---|
-| Core workflow (QC → HVG → scale / PCA → kNN → Leiden → UMAP → t-test / Wilcoxon → `score_genes`) | Done; validated against scanpy 1.11. 0.3.0 on the 64-thread workstation: PBMC 68k core workflow **8.9× faster best-vs-best** (19.8× at matched 64 threads), 3.4× less memory (`docs/benchmarks.md`) |
+| Core workflow (QC → HVG → scale / PCA → kNN → Leiden → UMAP → t-test / Wilcoxon → `score_genes`) | Done; validated against scanpy 1.11. Final 5-repeat, `performance`-governor run on `dev` (2026-10-02, `d75475e`): best-vs-best headline **1.20×–16.70×** across 2.7k–200k cells (10.28× on PBMC 68k), memory 1.6×–4.7× lower, zero failed runs out of 284 (`docs/benchmarks.md`) |
 | Out-of-core (Parquet) | Done; count matrix never in RAM; ~0.7–1.1 GB peak up to 200k cells (per-cell results still grow with cells); up to ~2× slower |
 | Pseudobulk DESeq2 (Rust) | Done: Wald + LRT; matches R DESeq2 1.42; ~50× faster than R on rinamochana |
 | Modules after clustering | Harmony, Scrublet, `seurat_v3` HVG, `leiden_sweep`, `ingest`, `knn_query`; each validated (`docs/downstream.md`) |
-| Paper benchmark | Quick + standard tiers done on rinamochana (190 runs, 0 failures). Harness now runs core at 8 + 64 threads, modules separately, Scrublet capped; supports the Parse ~1M PBMC dataset (`parse_pbmc`). **Next: the Parse run** |
+| Leiden | Phases 2 (`refine_partition`) and 3 (`aggregate`) now parallel, same per-community-independent pattern; 17.9 s at 1M cells (was 23.9 s), modularity unchanged vs leidenalg (2026-10-01, `docs/benchmarks.md`). Phase 1 (`fast_move_nodes`, ~73% of Leiden's time, confirmed by profiling) is still single-threaded: a parallel version was attempted and **measured-and-rejected** — it terminates but measurably loses modularity (see Next steps and `CHANGELOG.md`) |
+| Paper benchmark | **Done.** Quick + standard tiers; Parse 1M + 9.7M re-run (2026-10-01, `3dbd760`, 1 repeat, core profile); final standard-tier run (2026-10-02, `d75475e`, 5 repeats, `performance` governor, 284/284 runs ok) — all in `docs/benchmarks.md`. Parse re-run was 1 repeat only; a 5-repeat Parse run was not requested and hasn't been done |
+| Input formats | 10x H5/MTX, `.h5ad` (native, no `anndata` needed, now keeps every obs/var column incl. categoricals) plus `BioFrame.from_anndata()`/`to_anndata()` — the documented path for anything else scanpy/anndata reads (Loom, Visium, Zarr-AnnData, CSV, ...), now with a parity test and a `quickstart.md` section (2026-10-02, Phase 0+1 of the plan below). Native streaming readers for Loom/Zarr (Phase 2+3) not started |
 | Documentation | Sphinx site in `docs/`, checked claim by claim against the code (2026-09-29). Read the Docs connection: owner's step |
 | Packaging | **0.3.0 published on PyPI** (tag `v0.3.0`, release job green, 2026-09-29) |
 | CI | `test` (cargo + pytest), `docs` (sphinx `-W`), wheels for all platforms; publishes on tag |
@@ -31,21 +33,113 @@ _Last updated: 2026-09-29 (0.3.0 on PyPI; standard benchmark analysed)._
 
 ## Next steps (in priority order)
 
-1. **Parse benchmark: done** (2026-09-29, 45/45 runs ok; `docs/benchmarks.md`, "Parse PBMC atlas").
-   1M cells: CREST 127 s vs scanpy 990 s (7.8×), 4.4 vs 54.5 GB. 9.7M cells: CREST 27 min, 37 GB
-   (30 GB out-of-core). Open items it raised, in priority order:
-   - **Leiden ARI vs scanpy is 0.66 at 1M** (0.80–0.94 at ≤200k) on an identical kNN graph. Measure
-     each tool's seed-to-seed ARI on the same graph before claiming equivalence (add to
-     `bench/paper/accuracy.py`: scanpy/leidenalg with 2–3 seeds, `crest.tl.leiden_sweep(n_seeds=3)`).
-   - **Leiden memory and speed**: single-threaded (24 s at 1M, 400 s at 9.7M) and the memory peak
-     (36 GB at 9.7M; the 5-resolution sweep 68 GB because each parallel run copies the graph).
-   - **UMAP** is 65% of CREST's core time at 1M and 57% at 9.7M.
-   - Final paper numbers: 5 repeats (3 gives Mann-Whitney p ≥ 0.1), CPU governor `performance`.
-2. **Connect Read the Docs** (`docs/readthedocs.md`): project `crest-sc`, default branch `main`.
-3. **White paper**: headline from the core workflow best-vs-best; "not faster" table;
-   modules table; accuracy table (all in `report.md`). Use 5 repeats and the new protocol.
-   Set the CPU governor to `performance` for the final run.
-4. **Performance work, measured first:**
+1. **Parse benchmark re-run: done** (2026-10-01, `3dbd760`, 1 repeat, core profile;
+   `docs/benchmarks.md`). 1M cells: CREST 85.1 s vs scanpy 994 s (11.7×), 4.7 vs 54.8 GB. 9.7M:
+   CREST 21.4 min, 40.3 GB. Status of the 2026-09-30 follow-ups:
+   - **Leiden agreement (ARI 0.66 vs scanpy at 1M): measured.** Seed-to-seed baseline: CREST 0.73,
+     scanpy 0.64, cross-seed mean 0.67 — mostly ordinary Leiden seed variation on a million-node
+     graph, not a correctness gap, though CREST's higher self-consistency (0.73 vs the 0.66–0.67
+     cross numbers) is a modest residual nobody has explained yet.
+   - **UMAP / Leiden speed at scale: measured.** UMAP 83 s → 42 s at 1M, 934 s → 584 s at 9.7M
+     (the shared-snapshot fix). Leiden held at ~24 s / 400 s at this commit (fix didn't touch it).
+   - **Leiden refinement: parallelised, merged** (2026-10-01, PR #12). `refine_partition` runs
+     each unrefined community on its own rayon thread (merges never cross community boundaries,
+     so this is embarrassingly parallel); each gets an RNG seeded from `(seed, community id)` via
+     SplitMix64, so results are the same for any thread count. ~16% faster at 1M cells (20.1 s vs
+     23.9 s, median of 5, FRASER-quiet), ~5.4% faster end-to-end at 9.7M. `cargo test --release`
+     (26/26) and `pytest -q` (27/27) pass, incl. `test_leiden_sweep_equals_leiden_and_ari`
+     (bit-identical to a standalone `leiden()` call with the same seed). Modularity vs leidenalg
+     checked over 20 seeds at resolution 1 on PBMC 68k: mean gap +0.0015 both before and after
+     (statistically unchanged; `docs/benchmarks.md` softens the "equal or higher" claim to match —
+     it was never a strict per-seed guarantee, the pre-change code already dips ~1/20 seeds too).
+   - **Leiden aggregation: parallelised, same session, not yet committed.** Profiling
+     `fast_move_nodes` / `refine_partition` / `aggregate` directly (temporary `Instant` timers,
+     stripped before commit) on `parse_pbmc_1m` confirmed the shares: phase 1 ~73%, phase 3
+     (`aggregate`) ~21%, phase 2 ~3%. `aggregate`'s per-community outgoing-edge computation is
+     exploitable exactly like refinement (a community's edges to higher-numbered communities
+     depend only on its own members), with no RNG involved at all — parallelised with rayon
+     `map_init` (one reused `NeighborWeights` buffer per worker thread, not one fresh O(k) buffer
+     per community, since that would cost O(k²) total). Output is **bit-identical** for any thread
+     count (verified by diffing labels before/after on PBMC 68k across 5 seeds). Leiden at 1M cells
+     is now **17.9 s** (median of 5, FRASER-quiet) — down from 20.1 s with refinement alone, 23.9 s
+     originally. `git diff src/leiden.rs` in the working tree has this change; needs committing,
+     testing once more, and a PR.
+   - **`fast_move_nodes` (phase 1) parallelisation: attempted, measured, rejected** (same session).
+     This is the 73% that actually matters, but unlike refinement/aggregation it is not
+     embarrassingly parallel: a node's move decision genuinely depends on other nodes' concurrent
+     moves. Two synchronous-round designs were tried (parallel scan of neighbour edge weights,
+     sequential commit one node at a time so `comm_w`/`comm_size`/the empty-community stack can't
+     race):
+     1. Deciding from the round-start snapshot (both candidate communities *and* their weights):
+        caused a genuine infinite loop — two nodes repeatedly swapping into each other's
+        not-yet-updated communities, forever. Hung for hours before being killed (a real resource
+        incident on rinamochana, not just a test failure — see note below).
+     2. Deciding from *live* `comm_w`/`comm_size` at commit time (only the neighbour-weight scan
+        itself comes from the round-start snapshot): terminates — every applied move is a
+        certified modularity improvement under current weights, same finite-state termination
+        argument as the original algorithm. But it measurably hurts quality: the 20-seed
+        modularity-vs-leidenalg sweep (same test as refinement's gate) went from +0.00152 mean
+        gap / 2-of-20 below, to **-0.00083 mean gap / 15-of-20 below**. A control run (this design
+        reverted, aggregation parallelisation kept) reproduced +0.00152/2-of-20 exactly, isolating
+        this specific change as the cause.
+     Per CLAUDE.md's accuracy rules, this does not ship. `fast_move_nodes` stays single-threaded
+     and sequential. **For a future attempt:** the failure mode in design 2 is neighbour-community
+     staleness (not weight staleness, which design 2 already fixed) — a node's candidate list can
+     miss a community that only became relevant because a neighbour moved earlier in the same
+     round, or over-weight a candidate because a neighbour hasn't moved yet when it's about to.
+     Shrinking the round size (process a bounded batch per round instead of the whole active set)
+     would reduce this staleness at the cost of more synchronization overhead; whether that
+     trade-off is worth it has not been measured. A different line of attack worth trying first:
+     the queue-based algorithm is likely memory-latency-bound (every `part[u]`/`comm_w[c]` access
+     is an effectively-random lookup into a multi-MB array for a 1M+-node graph) rather than
+     compute-bound, given ~20-30 edges/node isn't enough raw arithmetic to explain 40 s — if so, a
+     cache-friendlier node/edge layout (e.g. renumbering nodes so neighbours are close in memory)
+     might speed up the existing *sequential* algorithm substantially with zero quality risk,
+     which could make parallelising it less necessary.
+     - **Resource note:** an early, buggier version of design 1 was left running by mistake and
+       hung undetected for ~4.5 hours at near-full machine utilization (confirmed via `ps`:
+       5679% CPU, 54 GB RSS) before being found and killed. If a `leiden`-tagged
+       `target/release/deps/crest-*` process is ever found running for an implausibly long time,
+       it's almost certainly a repeat of this — kill it, don't assume it's doing useful work.
+   - **Final paper numbers: done** (2026-10-02, `d75475e`, 5 repeats, `performance` governor,
+     standard tier, 284/284 runs succeeded). Headline best-vs-best 1.20×–16.70× across the six
+     standard-tier datasets, memory 1.6×–4.7× lower; full table, thread scaling, cross-dataset
+     scaling exponents and module results in `docs/benchmarks.md`. This run used the six
+     standard-tier datasets (PBMC 3k/10k/68k, Kang, synthetic 100k/200k), not Parse — a 5-repeat
+     Parse run would need a separate invocation (`--datasets "parse_pbmc_1m parse_pbmc"`) and
+     hasn't been requested.
+   - Resolution-sweep memory/time at 9.7M (484 s, 68 GB) predates the graph-copy fix; remeasure.
+2. **Input format support beyond 10x** (owner's request, 2026-10-01; Phase 0+1 done 2026-10-02).
+   `BioFrame.from_anndata()` already existed and covers Loom/Visium/Zarr-AnnData/CSV etc. via
+   scanpy's readers — it was in the Sphinx API already (bare `:members:` on `BioFrame` picks up
+   every public method), the actual gaps were narrower: no test, and not mentioned in
+   `quickstart.md`. An earlier version of this file claimed otherwise ("undocumented... not in
+   the Sphinx API") and that the `.obs.parquet` sidecar `bench/paper/datasets.py` writes for the
+   Parse dataset was a `read_h5ad` limitation — both wrong, corrected here: the sidecar exists
+   because that script converts Parse's `.h5ad` to a **10x-style `.h5`** for the benchmark harness,
+   a format with no room for arbitrary obs columns at all regardless of `read_h5ad`; the two also
+   use entirely different h5ad-reading code (`bench/paper/datasets.py`'s own `read_h5ad_obs` vs
+   `crest.io.read_h5ad`). Done:
+   - **Phase 0:** `from_anndata`/`to_anndata` docstrings now say what's preserved and point to this
+     as the "other formats" path; `test_from_anndata_roundtrip` (categorical/numeric/string obs
+     columns + obsm, round-tripped) in `tests/test_crest.py`; a "Reading other formats" section in
+     `quickstart.md`.
+   - **Phase 1:** `read_h5ad`'s native path (`crest/io.py`, no `anndata` needed) now keeps every
+     obs/var column instead of just the index + `gene_ids`, including anndata's categorical
+     encoding (a sub-group of `categories` + integer `codes`) — expanded to strings, matching what
+     `from_anndata` already does for a pandas categorical column. `test_read_h5ad_keeps_obs_columns`
+     writes a real `.h5ad` via installed `anndata` and reads it back with `crest.read_h5ad` to
+     exercise the actual on-disk encoding, not a hand-rolled approximation of it.
+   Not started: (2) native streaming reader for Loom (same chunked-`h5py` pattern as
+   `read_10x_h5`); (3) native streaming reader for Zarr-backed AnnData (large cloud atlases, e.g.
+   CELLxGENE Census use this; the one format where going through `anndata` first would defeat
+   CREST's memory-bounded design at real scale); (4) Seurat RDS — docs-only (recommend SeuratDisk
+   → h5ad), not a native Rust reader, unless there's real demand later.
+3. **Connect Read the Docs** (`docs/readthedocs.md`): project `crest-sc`, default branch `main`.
+4. **White paper**: the final 5-repeat, `performance`-governor `report.md` and figures (done,
+   see above) have everything needed — headline best-vs-best, "not faster" table, modules
+   table, accuracy table. Remaining work here is writing the paper itself, not re-benchmarking.
+5. **Performance work, measured first:**
    - `seurat_v3` HVG is 2× slower than scanpy at ≥ 10k cells: the loess fit runs in Python
      (`crest/_loess.py`); port it to Rust or vectorise it.
    - PCA has a ~1 s fixed cost: the full eigendecomposition of the 2,000 × 2,000 Gram matrix
@@ -53,7 +147,7 @@ _Last updated: 2026-09-29 (0.3.0 on PyPI; standard benchmark analysed)._
    - UMAP fixed cost on small data (500 epochs below 10k cells, as umap-learn).
    - Serial fraction ~24% (reading HDF5, Leiden, glue).
    - Scrublet at ≥ 100k cells without a batch key is ~quadratic (k ≈ 1.5·√n); low priority.
-5. **Possible extensions:** DESeq2 `lfcShrink` / `lfcThreshold` / interactions; UMAP transform
+6. **Possible extensions:** DESeq2 `lfcShrink` / `lfcThreshold` / interactions; UMAP transform
    optimisation in `ingest`; `pearson_residuals` HVG.
 
 ## Decisions (and why)
@@ -74,6 +168,9 @@ Longer discussions are in `work.md`; search for the keywords.
 | Benchmarks write only under `./crest-bench`, nothing in `$HOME` | the owner's `/home` is a small OS disk |
 | Honest reporting rules (CLAUDE.md §5) | owner's explicit requirement for the paper |
 | Acronym now "**Chunked** Rust Engine for Single-cell Transcriptomics" (0.3.0; was "Columnar") | the engine streams chunks of cells through fused Rust kernels; Polars is only the table / Parquet layer. Keeping the acronym and the `crest-sc` / `crest` names avoids breaking anyone |
+| Leiden refinement parallelised by unrefined community, each with its own RNG from `(seed, community id)` (SplitMix64), instead of one shared RNG stream for all nodes | a merge only ever pulls a node into a sub-community of its own unrefined community (candidates are filtered by `part[u] == s`), so communities are already independent; giving each its own stream makes the result the same for any thread count instead of only being deterministic because it happened to be single-threaded. Changes the exact RNG draw sequence (no longer bit-identical to the old code for the same seed), which is fine — parity is against leidenalg/scanpy via modularity and ARI, not against CREST's own prior output |
+| "Leiden modularity >= leidenalg" softened from a per-seed claim to a statistical one | measured: both the old sequential code and the new parallel one occasionally fall ~0.002 below leidenalg's modularity on a specific (resolution, seed) pair (1–2 times per 20 seeds); the mean gap is positive (+0.0015) and unchanged by the parallelisation. The original claim was from a small sample and was never a proven per-seed guarantee for a randomised heuristic |
+| `fast_move_nodes` (Leiden phase 1) stays single-threaded despite being ~73% of Leiden's time | two parallel designs were measured: one hangs forever (stale-weight decisions let two nodes swap into each other's communities every round), the other terminates but drops mean modularity vs leidenalg from +0.0015 to -0.0008 over 20 seeds (15/20 below instead of 2/20), isolated by a control run. CLAUDE.md's accuracy rules don't allow shipping a parity-losing change for speed; see `CHANGELOG.md` and HANDOVER's Next steps for what was tried and what to try next |
 
 ## Known limitations
 

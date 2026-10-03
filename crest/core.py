@@ -321,7 +321,12 @@ class BioFrame:
                              shape=self.shape)
 
     def to_anndata(self, transform: bool = False):
-        """Convert to AnnData (requires ``anndata``). ``X`` holds raw counts unless ``transform``."""
+        """Convert to AnnData (requires ``anndata``). ``X`` holds raw counts unless ``transform``.
+
+        Carries over obs/var (all columns), obsm, varm and uns (``neighbors`` becomes
+        ``obsp["connectivities"]``, scanpy's layout). Use this to hand a ``BioFrame`` to
+        ``sc.pl`` or anything else in the scverse ecosystem.
+        """
         import anndata as ad
         obs, var = _to_pandas(self.obs), _to_pandas(self.var)
         obs.index = obs.get("barcode", obs["cell_id"]).astype(str).values
@@ -341,7 +346,16 @@ class BioFrame:
 
     @classmethod
     def from_anndata(cls, adata) -> "BioFrame":
-        """From AnnData with a sparse (or dense) X of counts."""
+        """From AnnData with a sparse (or dense) X of counts.
+
+        This is the path for any format CREST doesn't read natively: Loom, Visium, a
+        Zarr-backed AnnData store, CSV/Excel matrices, or anything else `scanpy`/`anndata`
+        can load (``sc.read_loom``, ``sc.read_visium``, ``ad.read_zarr``, ...) — load it as
+        an ``AnnData`` with the matching reader, then call this. Carries over ``obs``/``var``
+        (every column, not just the index) and ``obsm``; ``varm``, ``uns`` and any ``layers``
+        other than ``X`` are not. Loads the whole matrix into memory, so for files too large
+        for that, see :func:`crest.read_h5ad` / `convert_h5_to_parquet_stream` instead.
+        """
         import scipy.sparse as sp
         X = adata.X if sp.issparse(adata.X) else sp.csr_matrix(adata.X)
         obs = _from_pandas(adata.obs, "barcode")

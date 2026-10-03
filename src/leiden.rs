@@ -1,6 +1,7 @@
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
+use rayon::prelude::*;
 use std::collections::VecDeque;
 
 // ----- Leiden Algorithm Implementation -----
@@ -35,10 +36,11 @@ impl Graph {
     }
 
     /// Build from undirected edges (i, j, w) with i != j, each pair listed once.
-    pub(crate) fn from_edges(n: usize, edges: &[(usize, usize, f64)]) -> Self {
+    pub(crate) fn from_edges<W: Copy + Into<f64>>(n: usize, edges: &[(usize, usize, W)]) -> Self {
         let mut node_w = vec![0.0f64; n];
         let mut deg = vec![0usize; n];
         for &(i, j, w) in edges {
+            let w: f64 = w.into();
             node_w[i] += w;
             node_w[j] += w;
             deg[i] += 1;
@@ -52,6 +54,7 @@ impl Graph {
         let mut nbrs = vec![0usize; offsets[n]];
         let mut wts = vec![0.0f64; offsets[n]];
         for &(i, j, w) in edges {
+            let w: f64 = w.into();
             nbrs[pos[i]] = j;
             wts[pos[i]] = w;
             pos[i] += 1;
@@ -175,62 +178,126 @@ fn fast_move_nodes(g: &Graph, part: &mut [usize], gamma: f64, rng: &mut StdRng) 
     }
 }
 
+/// SplitMix64: mix two integers into a well-distributed 64-bit seed, so each
+/// community gets an independent-looking RNG stream from one base seed.
+#[inline]
+fn mix_seed(a: u64, b: u64) -> u64 {
+    let mut z = a.wrapping_add(b.wrapping_mul(0x9E3779B97F4A7C15));
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+    z ^ (z >> 31)
+}
+
 /// Phase 2: refine each community of `part` by merging singletons into
 /// well-connected sub-communities (Traag et al. 2019, Alg. A.2 MergeNodesSubset).
-fn refine_partition(g: &Graph, part: &[usize], gamma: f64, theta: f64, rng: &mut StdRng) -> Vec<usize> {
+///
+/// A merge only ever pulls a node into a sub-community of its *own* unrefined
+/// community S (every candidate is filtered by `part[u] == s`), so communities
+/// refine independently of one another. This runs each one on its own thread,
+/// with its own RNG seeded from `(seed, community id)`: the result is the same
+/// for any thread count, since which thread handles a community never affects
+/// its RNG stream.
+fn refine_partition(g: &Graph, part: &[usize], gamma: f64, theta: f64, seed: u64) -> Vec<usize> {
     let n = g.n();
     let scale = gamma / g.two_m;
+    let k = part.iter().max().map(|m| m + 1).unwrap_or(0);
 
-    // Summed degree of each (unrefined) community S.
-    let mut s_w = vec![0.0f64; n];
+    // Group nodes by their unrefined community, and give each node a local
+    // index within that group (its position in `members[part[v]]`).
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); k];
+    let mut local_idx = vec![0usize; n];
+    for v in 0..n {
+        local_idx[v] = members[part[v]].len();
+        members[part[v]].push(v);
+    }
+    let mut s_w = vec![0.0f64; k];
     for v in 0..n {
         s_w[part[v]] += g.node_w[v];
     }
 
-    let mut refined: Vec<usize> = (0..n).collect();
-    let mut ref_w = g.node_w.clone();
-    let mut ref_size = vec![1usize; n];
-    // ext[c]: weight from refined community c to the rest of its S.
-    let mut ext = vec![0.0f64; n];
-    for v in 0..n {
+    let local: Vec<Vec<usize>> = members
+        .par_iter()
+        .enumerate()
+        .map(|(s, nodes)| {
+            refine_one_community(g, nodes, &local_idx, part, s_w[s], scale, theta, mix_seed(seed, s as u64))
+        })
+        .collect();
+
+    let mut refined = vec![0usize; n];
+    for (nodes, local_refined) in members.iter().zip(local.iter()) {
+        for (i, &v) in nodes.iter().enumerate() {
+            refined[v] = nodes[local_refined[i]];
+        }
+    }
+    refined
+}
+
+/// Refine a single unrefined community `nodes` (Traag et al. 2019, Alg. A.2
+/// MergeNodesSubset). `local_idx[u]` gives `u`'s position in `nodes` for any
+/// `u` with `part[u]` equal to this community. Returns, for each position `i`
+/// in `nodes`, the local index of the refined sub-community `nodes[i]` joined.
+#[allow(clippy::too_many_arguments)]
+fn refine_one_community(
+    g: &Graph,
+    nodes: &[usize],
+    local_idx: &[usize],
+    part: &[usize],
+    s_w: f64,
+    scale: f64,
+    theta: f64,
+    seed: u64,
+) -> Vec<usize> {
+    let m = nodes.len();
+    if m == 0 {
+        return Vec::new();
+    }
+    let s = part[nodes[0]];
+    let mut rng = StdRng::seed_from_u64(seed);
+
+    let mut refined: Vec<usize> = (0..m).collect();
+    let mut ref_w: Vec<f64> = nodes.iter().map(|&v| g.node_w[v]).collect();
+    let mut ref_size = vec![1usize; m];
+    // ext[i]: weight from refined sub-community i to the rest of S.
+    let mut ext = vec![0.0f64; m];
+    for (i, &v) in nodes.iter().enumerate() {
         for (u, w) in g.neighbors(v) {
-            if part[u] == part[v] {
-                ext[v] += w;
+            if part[u] == s {
+                ext[i] += w;
             }
         }
     }
 
-    let mut order: Vec<usize> = (0..n).collect();
-    order.shuffle(rng);
-    let mut nw = NeighborWeights::new(n);
+    let mut order: Vec<usize> = (0..m).collect();
+    order.shuffle(&mut rng);
+    let mut nw = NeighborWeights::new(m);
     let mut cands: Vec<(usize, f64)> = Vec::new();
 
-    for v in order {
-        if ref_size[refined[v]] != 1 {
+    for i in order {
+        if ref_size[refined[i]] != 1 {
             continue; // only singletons are moved
         }
-        let s = part[v];
+        let v = nodes[i];
         let kv = g.node_w[v];
         // v must itself be well connected to S.
-        if ext[v] < kv * (s_w[s] - kv) * scale {
+        if ext[i] < kv * (s_w - kv) * scale {
             continue;
         }
 
         for (u, w) in g.neighbors(v) {
             if part[u] == s {
-                nw.add(refined[u], w);
+                nw.add(refined[local_idx[u]], w);
             }
         }
 
-        let own = refined[v];
+        let own = refined[i];
         cands.clear();
         cands.push((own, 0.0));
         for &c in &nw.touched {
             if c == own {
                 continue;
             }
-            // Only merge into well-connected refined communities.
-            if ext[c] < ref_w[c] * (s_w[s] - ref_w[c]) * scale {
+            // Only merge into well-connected refined sub-communities.
+            if ext[c] < ref_w[c] * (s_w - ref_w[c]) * scale {
                 continue;
             }
             let gain = nw.w[c] - kv * ref_w[c] * scale;
@@ -264,7 +331,7 @@ fn refine_partition(g: &Graph, part: &[usize], gamma: f64, theta: f64, rng: &mut
             ref_size[chosen] += 1;
             ref_w[own] = 0.0;
             ref_size[own] = 0;
-            refined[v] = chosen;
+            refined[i] = chosen;
         }
         nw.clear();
     }
@@ -272,6 +339,13 @@ fn refine_partition(g: &Graph, part: &[usize], gamma: f64, theta: f64, rng: &mut
 }
 
 /// Phase 3: collapse each community of `by` (contiguous ids 0..k) into one node.
+///
+/// Each community's outgoing edges (to higher-numbered communities, to avoid double
+/// counting) depend only on its own members and their neighbours, so communities
+/// aggregate independently of one another — the same structure `refine_partition`
+/// exploits. `NeighborWeights` is reused per worker thread (`map_init`), not
+/// allocated fresh per community, since it is sized `k` and this runs `k` times:
+/// one fresh buffer per community would cost O(k^2) in total.
 fn aggregate(g: &Graph, by: &[usize], k: usize) -> Graph {
     let n = g.n();
     let mut members: Vec<Vec<usize>> = vec![Vec::new(); k];
@@ -279,25 +353,38 @@ fn aggregate(g: &Graph, by: &[usize], k: usize) -> Graph {
         members[by[v]].push(v);
     }
     let mut node_w = vec![0.0f64; k];
-    let mut edges: Vec<(usize, usize, f64)> = Vec::new();
-    let mut nw = NeighborWeights::new(k);
     for c in 0..k {
         for &v in &members[c] {
             node_w[c] += g.node_w[v];
-            for (u, w) in g.neighbors(v) {
-                let d = by[u];
-                if d != c {
-                    nw.add(d, w);
-                }
-            }
         }
-        for &d in &nw.touched {
-            if d > c {
-                edges.push((c, d, nw.w[d]));
-            }
-        }
-        nw.clear();
     }
+
+    let edges: Vec<(usize, usize, f64)> = (0..k)
+        .into_par_iter()
+        .map_init(
+            || NeighborWeights::new(k),
+            |nw, c| {
+                for &v in &members[c] {
+                    for (u, w) in g.neighbors(v) {
+                        let d = by[u];
+                        if d != c {
+                            nw.add(d, w);
+                        }
+                    }
+                }
+                let mut out = Vec::new();
+                for &d in &nw.touched {
+                    if d > c {
+                        out.push((c, d, nw.w[d]));
+                    }
+                }
+                nw.clear();
+                out
+            },
+        )
+        .flatten_iter()
+        .collect();
+
     let mut agg = Graph::from_edges(k, &edges);
     agg.node_w = node_w; // keep internal weight (self-loops) in degrees
     agg.two_m = g.two_m;
@@ -323,18 +410,22 @@ pub(crate) fn leiden_partition(
     let mut result: Vec<usize> = (0..n).collect();
 
     for _ in 0..n_iterations.max(1) {
-        let mut g = graph.clone();
+        // level 0 works on the caller's graph directly (no copy: a resolution sweep runs
+        // several of these in parallel on one shared graph); later levels on aggregates
+        let mut agg: Option<Graph> = None;
         let mut membership: Vec<usize> = (0..n).collect(); // original node -> aggregate node
         let mut part = result.clone(); // partition of aggregate nodes
         renumber(&mut part);
 
         for _level in 0..1000 {
-            fast_move_nodes(&g, &mut part, resolution, &mut rng);
+            let g: &Graph = agg.as_ref().unwrap_or(graph);
+            fast_move_nodes(g, &mut part, resolution, &mut rng);
             let n_comms = renumber(&mut part);
             if n_comms == g.n() {
                 break;
             }
-            let mut refined = refine_partition(&g, &part, resolution, theta, &mut rng);
+            let refine_seed = rng.gen::<u64>();
+            let mut refined = refine_partition(g, &part, resolution, theta, refine_seed);
             let mut n_ref = renumber(&mut refined);
             if n_ref == g.n() {
                 // Refinement merged nothing: aggregate by the unrefined partition.
@@ -348,7 +439,8 @@ pub(crate) fn leiden_partition(
             for m in membership.iter_mut() {
                 *m = refined[*m];
             }
-            g = aggregate(&g, &refined, n_ref);
+            let next_g = aggregate(g, &refined, n_ref);
+            agg = Some(next_g);
             part = next_part;
         }
 
@@ -404,13 +496,13 @@ mod tests {
 
     #[test]
     fn test_leiden_empty() {
-        let g = Graph::from_edges(0, &[]);
+        let g = Graph::from_edges::<f64>(0, &[]);
         assert!(leiden_partition(&g, 1.0, 2, 42).is_empty());
     }
 
     #[test]
     fn test_leiden_single_node() {
-        let g = Graph::from_edges(1, &[]);
+        let g = Graph::from_edges::<f64>(1, &[]);
         assert_eq!(leiden_partition(&g, 1.0, 2, 42), vec![0]);
     }
 

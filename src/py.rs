@@ -115,9 +115,9 @@ fn leiden<'py>(
         return Err(pyo3::exceptions::PyValueError::new_err("resolution must be positive and finite"));
     }
     let e = undirected(n, contiguous(&rows, "rows")?, contiguous(&cols, "cols")?, contiguous(&weights, "weights")?)?;
-    let labels = py.allow_threads(|| {
-        let edges: Vec<(usize, usize, f64)> = e.iter().map(|&(a, b, w)| (a, b, w as f64)).collect();
-        let g = crate::leiden::Graph::from_edges(n, &edges);
+    let labels = py.allow_threads(move || {
+        let g = crate::leiden::Graph::from_edges(n, &e);
+        drop(e);
         crate::leiden::leiden_partition(&g, resolution, n_iterations, seed)
     });
     Ok(PyArray1::from_vec_bound(py, labels.into_iter().map(|c| c as u32).collect()))
@@ -615,9 +615,9 @@ fn leiden_sweep<'py>(
     }
     let e = undirected(n, contiguous(&rows, "rows")?, contiguous(&cols, "cols")?, contiguous(&weights, "weights")?)?;
     let runs = resolutions.len();
-    let flat = py.allow_threads(|| {
-        let edges: Vec<(usize, usize, f64)> = e.iter().map(|&(a, b, w)| (a, b, w as f64)).collect();
-        let g = crate::leiden::Graph::from_edges(n, &edges);
+    let flat = py.allow_threads(move || {
+        let g = crate::leiden::Graph::from_edges(n, &e);
+        drop(e);
         let labels: Vec<Vec<usize>> = resolutions
             .par_iter()
             .zip(seeds.par_iter())

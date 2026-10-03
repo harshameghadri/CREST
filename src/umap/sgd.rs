@@ -51,7 +51,7 @@ struct Params<'a> {
     eps: &'a [f32],
     eps_neg: &'a [f32],
     pos: &'a [AtomicU32],
-    snap: &'a [f32],
+    snap: &'a [AtomicU32],
     dim: usize,
     n: usize,
     a: f32,
@@ -72,7 +72,7 @@ fn run_chunk<const PAR: bool>(p: &Params, base: usize, nx: &mut [f32], nn: &mut 
     set_flush_denormals();
     let (dim, a, b, alpha) = (p.dim, p.a, p.b, p.alpha);
     let ep = p.epoch as f32;
-    let other = |x: usize| if PAR { p.snap[x] } else { ld(&p.pos[x]) };
+    let other = |x: usize| if PAR { ld(&p.snap[x]) } else { ld(&p.pos[x]) };
     for t in 0..nx.len() {
         if nx[t] > ep {
             continue;
@@ -208,33 +208,32 @@ pub fn optimize_layout(
                     } else {
                         0..0
                     };
-                    let mut local_snap = vec![0.0f32; n * dim];
                     for epoch in 0..n_epochs {
                         let alpha = 1.0 - epoch as f32 / n_epochs as f32;
                         // several snapshot refreshes per epoch keep reads fresh
                         for sub in 0..substeps {
+                            // publish own rows, then everyone reads the shared snapshot
+                            // (no per-thread copy of all n rows); the second barrier stops
+                            // the next refresh from overwriting rows still being read
                             for r in rows.clone() {
                                 st(&snap_plain[r], ld(&pos[r]));
-                            }
-                            barrier.wait();
-                            for (d, s) in local_snap.iter_mut().zip(snap_plain) {
-                                *d = ld(s);
                             }
                             barrier.wait();
                             let len = hi - lo;
                             let (s0, s1) = (len * sub / substeps, len * (sub + 1) / substeps);
                             let p = Params {
-                                edges, eps, eps_neg, pos, snap: &local_snap, dim, n, a, b, gamma: 1.0,
+                                edges, eps, eps_neg, pos, snap: snap_plain, dim, n, a, b, gamma: 1.0,
                                 alpha, epoch, seed,
                             };
                             run_chunk::<true>(&p, lo + s0, &mut nx[s0..s1], &mut nn[s0..s1]);
+                            barrier.wait();
                         }
                     }
                 });
             }
         });
     } else {
-        let empty: Vec<f32> = Vec::new();
+        let empty: Vec<AtomicU32> = Vec::new();
         for epoch in 0..n_epochs {
             let p = Params {
                 edges: &edges, eps: &eps, eps_neg: &eps_neg, pos: &pos, snap: &empty, dim, n, a, b, gamma: 1.0,
