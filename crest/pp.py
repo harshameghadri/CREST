@@ -99,6 +99,9 @@ def normalize_total(bf: BioFrame, target_sum: float = 1e4) -> BioFrame:
     if any(op[0] == "log1p" for op in bf.ops):
         raise ValueError("normalize_total must come before log1p")
     totals = bf._kept_gene_totals()
+    kept = totals[bf.obs["cell_id"].to_numpy().astype(np.int64)]
+    if not (np.isfinite(kept).all() and (kept >= 0).all()):  # checked once here, not per chunk
+        raise ValueError("per-cell totals must be finite and >= 0 (negative or non-finite counts?)")
     # A data-dependent target (e.g. the median total) must be resolved here, from these
     # totals at call time, and recorded as a number: a later cell filter would change it.
     target = float(target_sum)

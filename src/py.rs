@@ -173,11 +173,9 @@ fn view<'a>(
         None => None,
         Some(t) => {
             let t = sl(t, "cell_totals")?;
+            // O(1) per chunk: the values are checked once, when normalize_total stores them
             if t.len() != cm.len() {
                 return Err(pyo3::exceptions::PyValueError::new_err("cell_totals must have one entry per store cell (as cell_map)"));
-            }
-            if cm.iter().zip(t).any(|(&m, &x)| m >= 0 && !(x.is_finite() && x >= 0.0)) {
-                return Err(pyo3::exceptions::PyValueError::new_err("cell_totals must be finite and >= 0 for every kept cell"));
             }
             Some(t)
         }

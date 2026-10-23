@@ -273,8 +273,22 @@ def test_cell_totals_validated(data):
     ctx[6] = np.ones(len(ctx[2]) - 1)  # wrong length
     with pytest.raises(ValueError, match="cell_totals"):
         _native.gene_stats(*ctx, out)
-    bad = np.array(bf.cell_totals)
-    bad[bf.obs["cell_id"].to_numpy()[0]] = np.nan  # not finite for a kept cell
-    ctx[6] = bad
-    with pytest.raises(ValueError, match="cell_totals"):
-        _native.gene_stats(*ctx, out)
+    # negative counts give a negative total: rejected once, when normalize_total stores it
+    Y = X.copy()
+    Y.data[: Y.indptr[1]] = -1.0
+    neg = crest.BioFrame.from_scipy(Y, var=pl.DataFrame({"gene_name": names}))
+    with pytest.raises(ValueError, match="finite and >= 0"):
+        crest.pp.normalize_total(neg, 1e4)
+
+
+def test_fingerprinted_op_without_totals_raises(data):
+    X, names = data
+    bf = crest.BioFrame.from_scipy(X, var=pl.DataFrame({"gene_name": names}))
+    crest.pp.normalize_total(bf, 1e4)
+    bf.cell_totals = None
+    with pytest.raises(ValueError, match="normalize_total again"):
+        crest.pp.gene_stats(bf)
+    # a legacy two-element op (set by hand) still falls back to totals over the kept genes
+    bf.ops = [("normalize_total", 1e4)]
+    D = X.toarray()
+    np.testing.assert_allclose(bf.to_scipy().toarray(), D / D.sum(1, keepdims=True) * 1e4, rtol=1e-5)

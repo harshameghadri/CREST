@@ -285,14 +285,20 @@ class BioFrame:
 
         Kernels apply the cell/gene filters and (if ``transform``) the recorded
         normalize_total/log1p on the fly; raw data is never copied. ``cell_totals``
-        is :attr:`cell_totals` when the data are normalised (``None`` otherwise, or
-        when no totals are stored: then each cell's total over the kept genes).
+        is :attr:`cell_totals` when the data are normalised (``None`` otherwise). A
+        legacy two-element ``("normalize_total", target)`` op without stored totals
+        falls back to each cell's total over the kept genes; a fingerprinted op whose
+        totals are missing raises ``ValueError``.
         """
         cmap, gmap = self._cell_map(), self._gene_map()
         target, log = self._transform() if transform else (0.0, False)
         totals = None
-        if target > 0 and self.cell_totals is not None:
-            totals = np.ascontiguousarray(self.cell_totals, dtype=np.float64)
+        if target > 0:
+            if self.cell_totals is not None:
+                totals = np.ascontiguousarray(self.cell_totals, dtype=np.float64)
+            elif any(op[0] == "normalize_total" and len(op) > 2 for op in self.ops):
+                raise ValueError("bf.ops records normalize_total with stored per-cell totals, but "
+                                 "bf.cell_totals is None; call crest.pp.normalize_total again")
         for genes, values, cells, indptr, first in self.store.chunks(self.chunk_nnz):
             yield (np.ascontiguousarray(genes, dtype=np.uint32), np.ascontiguousarray(values, dtype=np.float32),
                    cmap, gmap, target, log, totals,

@@ -63,8 +63,10 @@ sphinx-build -b html docs docs/_build/html     # open docs/_build/html/index.htm
 * `cell_totals` (passed when `target_sum` > 0) is what each cell is divided by, indexed by
   store cell id: the totals `normalize_total` computed over the genes kept at that time
   (`BioFrame.cell_totals`), so filtering genes later does not change the values, as in
-  scanpy. `None` falls back to each cell's total over the genes kept by `gene_map`.
-  `py.rs` checks its length and that it is finite and ≥ 0 for every kept cell.
+  scanpy. `None` falls back to each cell's total over the genes kept by `gene_map` (only
+  for a legacy two-element `("normalize_total", target)` op; a fingerprinted op with no
+  stored totals raises). `py.rs` checks only its length (O(1) per chunk);
+  `normalize_total` checks once that the totals are finite and ≥ 0.
 
 Each streaming native function takes `*ctx` followed by its own inputs and **preallocated
 NumPy outputs that it accumulates into**, for example:
