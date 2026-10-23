@@ -48,11 +48,13 @@ class CSRStore:
         self.n_genes = int(n_genes)
         # validated once here, so the per-chunk kernels need not scan ids (they
         # would otherwise silently drop out-of-range entries)
-        if self.n_cells < 0 or self.indptr[0] != 0 or self.indptr[-1] != len(self.indices) \
+        # the same rules as scipy's check_format (storage may be over-allocated)
+        if self.n_cells < 0 or self.indptr[0] != 0 or self.indptr[-1] > len(self.indices) \
                 or len(self.data) != len(self.indices) or np.any(np.diff(self.indptr) < 0):
-            raise ValueError("CSR indptr must start at 0, be non-decreasing and end at len(indices) == len(data)")
-        if len(self.indices) and int(self.indices.max()) >= self.n_genes:
-            raise ValueError(f"gene index {int(self.indices.max())} out of range for n_genes={self.n_genes}")
+            raise ValueError("CSR indptr must start at 0, be non-decreasing and not exceed len(indices) == len(data)")
+        if len(self.indices) and int(self.indices[:self.indptr[-1]].max(initial=0)) >= self.n_genes:
+            raise ValueError(f"gene index {int(self.indices[:self.indptr[-1]].max())} out of range "
+                             f"for n_genes={self.n_genes}")
 
     @property
     def nnz(self) -> int:
