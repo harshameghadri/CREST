@@ -95,7 +95,7 @@ cells, barely slower on small data (where out-of-core also saves nothing).
 | step | writes |
 |---|---|
 | `pp.calculate_qc_metrics` | obs `n_genes_by_counts`, `total_counts`, `pct_counts_mt`; var `n_cells_by_counts`, `total_counts` |
-| `pp.highly_variable_genes` | var `highly_variable`, `means`, `dispersions(_norm)`, cached `mean_log` / `std_log`; `uns["hvg"]` |
+| `pp.highly_variable_genes` | var `highly_variable`, `means`, `dispersions(_norm)`, cached `mean_log` / `std_log` (reused by `tl.pca` for `scale` until a cell filter or a new transform; then recomputed over the current cells); `uns["hvg"]` |
 | `tl.pca` | `obsm["X_pca"]`, `varm["PCs"]`, `uns["pca"]` (variance, variance_ratio, `projection` for `ingest`) |
 | `pp.neighbors` | `uns["neighbors"]`: `indices`, `distances` (kNN), `rows`, `cols`, `weights` (fuzzy graph) |
 | `tl.leiden` | obs `leiden` (strings, `"0"` = largest cluster); `uns["leiden"]` (parameters) |
