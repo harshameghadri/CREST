@@ -290,6 +290,16 @@ class BioFrame:
         varm = {k: v[var_mask] for k, v in self.varm.items()} if var_mask is not None else dict(self.varm)
         uns = dict(self.uns)
         if obs_mask is not None:
+            # State derived from the old cell set. uns is a shallow copy, so replace these
+            # entries, never mutate them (the parent keeps its own). The HVG scale cache
+            # (var mean_log/std_log) is disowned so tl.pca recomputes mean/std on the kept
+            # cells; obs-aligned arrays are sliced; uns["pca"] stays: it describes the PCs
+            # that the kept obsm["X_pca"] rows hold (what ingest projects onto).
+            if "ops" in uns.get("hvg", {}):
+                uns["hvg"] = {k: v for k, v in uns["hvg"].items() if k != "ops"}
+            if "ingest" in uns:
+                uns["ingest"] = {**uns["ingest"], "indices": uns["ingest"]["indices"][obs_mask],
+                                 "distances": uns["ingest"]["distances"][obs_mask]}
             uns.pop("neighbors", None)
         return BioFrame(self.store, obs, var, obsm, varm, uns, list(self.ops), self.chunk_nnz)
 

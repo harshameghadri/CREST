@@ -211,7 +211,9 @@ def highly_variable_genes(bf: BioFrame, n_top_genes: Optional[int] = None, flavo
     Adds var columns ``means``, ``dispersions``, ``dispersions_norm``,
     ``highly_variable`` (``seurat_v3``: ``means``, ``variances``,
     ``variances_norm``, ``highly_variable_rank``, ``highly_variable_nbatches``) and
-    caches per-gene log-scale mean/std for :func:`scale`.
+    caches per-gene log-scale mean/std for :func:`scale` (var ``mean_log``/``std_log``,
+    reused by :func:`crest.tl.pca` until the cells or the transforms change; after a
+    cell filter, PCA recomputes them over the kept cells, as ``sc.pp.scale`` would).
     """
     if flavor in ("seurat_v3", "seurat_v3_paper"):
         if n_top_genes is None:
