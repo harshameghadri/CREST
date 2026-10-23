@@ -214,5 +214,22 @@ def read_10x_mtx(path: Union[str, Path], gex_only: bool = True) -> BioFrame:
 
 
 def convert_h5_to_parquet_stream(file_path: Union[str, Path], output_path: Union[str, Path]) -> BioFrame:
-    """Stream a 10x HDF5 into a Parquet dataset directory (kept for backward compatibility)."""
+    """Stream a 10x HDF5 file into a Parquet dataset directory and open it out-of-core.
+
+    Kept for backward compatibility: it is ``read_10x_h5(file_path,
+    gex_only=False, backed=output_path)``, so all feature types are kept.
+
+    Parameters
+    ----------
+    file_path : str or pathlib.Path
+        A Cell Ranger ``.h5`` matrix.
+    output_path : str or pathlib.Path
+        Directory for the Parquet parts (created if needed; existing
+        ``part-*.parquet`` files in it are replaced).
+
+    Returns
+    -------
+    crest.BioFrame
+        An out-of-core BioFrame backed by the new Parquet dataset.
+    """
     return read_10x_h5(file_path, gex_only=False, backed=output_path)

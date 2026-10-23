@@ -210,17 +210,60 @@ class DESeq2:
 
     Parameters
     ----------
-    counts : (samples, genes) array or :class:`Pseudobulk`
-    obs : sample metadata (one row per sample); taken from the Pseudobulk if omitted
-    design : additive formula (``"~ batch + condition"``)
-    design_matrix, coef_names : a numeric model matrix instead of a formula
-    ref_levels : reference level per factor (default: first in sorted order)
-    sf_type : ``"ratio"`` (DESeq2 default) or ``"poscounts"`` (for data where every gene has a zero)
-    fit_type : ``"parametric"`` (default) or ``"mean"``
-    min_replicates_for_replace : replace Cook's outliers in cells with at least this many samples (7)
-    test : ``"Wald"`` (default) or ``"LRT"``; the LRT compares ``design`` with ``reduced``
-    reduced : reduced formula for the LRT (e.g. ``"~ batch"``, or ``"~ 1"``), or a numeric
-        model matrix when ``design_matrix`` is used
+    counts : numpy.ndarray or Pseudobulk
+        Integer counts, one row per sample and one column per gene, or a
+        :class:`Pseudobulk` (its ``obs`` and ``var_names`` are then used unless
+        given explicitly).
+    obs : polars.DataFrame, optional
+        Sample metadata, one row per sample. Taken from the :class:`Pseudobulk`
+        if omitted. Required with a ``design`` formula.
+    design : str
+        Additive formula, e.g. ``"~ batch + condition"``.
+    design_matrix : numpy.ndarray, optional
+        A numeric (samples × coefficients) model matrix to use instead of a
+        formula (for interactions or other designs the formula parser does not
+        handle).
+    coef_names : list of str, optional
+        Names of the columns of ``design_matrix`` (default ``x0, x1, ...``).
+    ref_levels : dict of str to str, optional
+        Reference level per factor. Default: the first level in sorted order.
+    var_names : list of str, optional
+        Gene names, used in the result tables. Default: the Pseudobulk's
+        ``var_names``, or ``"0", "1", ...``.
+    size_factors : numpy.ndarray, optional
+        Per-sample size factors to use instead of estimating them (as assigning
+        ``sizeFactors(dds)`` in R).
+    sf_type : str
+        ``"ratio"`` (median of ratios, the DESeq2 default) or ``"poscounts"``
+        (for data where every gene has a zero).
+    fit_type : str
+        Dispersion trend: ``"parametric"`` (default) or ``"mean"``.
+    min_replicates_for_replace : float
+        Replace Cook's outliers in sample groups with at least this many
+        samples (default 7, as DESeq2's ``minReplicatesForReplace``).
+    min_mu : float
+        Lower bound on the fitted means in the GLM fit (default 0.5, as
+        DESeq2's ``minmu``).
+    quiet : bool
+        If ``False`` (default), fit messages (e.g. a failed parametric trend
+        fit) are emitted as warnings. They are always kept in
+        ``fit["messages"]``.
+    test : str
+        ``"Wald"`` (default) or ``"LRT"``. The LRT compares ``design`` with
+        ``reduced``.
+    reduced : str or numpy.ndarray, optional
+        Reduced design for the LRT: a formula (e.g. ``"~ batch"`` or ``"~ 1"``),
+        or a numeric model matrix when ``design_matrix`` is used.
+
+    Attributes
+    ----------
+    fit : dict
+        Everything the Rust fit returns: per-gene arrays (``baseMean``,
+        ``dispGeneEst``, ``dispFit``, ``dispMAP``, ``dispersion``, ``beta``,
+        ``beta_cov``, ``cooks``, and with ``test="LRT"`` ``LRTStatistic`` and
+        ``LRTPvalue``, ...), ``size_factors``, ``dispPriorVar`` and
+        ``messages`` (a list of notes such as a fallback to the mean
+        dispersion trend).
     """
 
     def __init__(self, counts, obs: Optional[pl.DataFrame] = None, design: str = "~ condition", *,

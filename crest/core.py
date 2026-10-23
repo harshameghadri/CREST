@@ -216,18 +216,27 @@ class BioFrame:
     # ---- shape / names
     @property
     def n_obs(self) -> int:
+        """Number of cells kept (rows of ``obs``), as ``AnnData.n_obs``."""
         return self.obs.height
 
     @property
     def n_vars(self) -> int:
+        """Number of genes kept (rows of ``var``), as ``AnnData.n_vars``."""
         return self.var.height
 
     @property
     def shape(self) -> Tuple[int, int]:
+        """``(n_obs, n_vars)``."""
         return self.n_obs, self.n_vars
 
     @property
     def var_names(self) -> list:
+        """Gene names of the kept genes, as a list of str.
+
+        Taken from the first ``var`` column that exists of ``gene_name``,
+        ``gene_symbols`` and ``gene_ids``; otherwise the store's integer
+        ``gene_id`` as strings.
+        """
         for c in ("gene_name", "gene_symbols", "gene_ids"):
             if c in self.var.columns:
                 return self.var[c].cast(pl.Utf8).to_list()

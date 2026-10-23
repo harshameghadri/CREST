@@ -42,6 +42,7 @@ autodoc_typehints = "description"
 autodoc_preserve_defaults = True
 napoleon_numpy_docstring = True
 napoleon_google_docstring = False
+napoleon_preprocess_types = True     # "x, optional", "list of str" render as types, not refs
 
 # links to GitHub files mentioned in the Markdown pages
 myst_url_schemes = {
@@ -65,3 +66,12 @@ copybutton_prompt_is_regexp = True
 # existing design notes cross-reference files outside docs/ (bench/, tests/); those are shown
 # as code, not links, so these warnings are expected and harmless
 suppress_warnings = ["myst.xref_missing", "myst.header"]
+
+# `sphinx-build -n` (nitpicky) reports every unresolved cross-reference. Types from numpy,
+# polars and the standard library are not linked (no intersphinx: the build stays offline),
+# so ignore those and let -n report only broken references to CREST's own API.
+nitpick_ignore_regex = [
+    ("py:class", r"(numpy|np)\..*"),
+    ("py:class", r"(polars|pl)\..*"),
+    ("py:class", r"(pathlib\.)?Path"),
+]
