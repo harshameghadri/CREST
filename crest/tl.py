@@ -101,7 +101,14 @@ def _graph(bf: BioFrame):
 
 def leiden(bf: BioFrame, resolution: float = 1.0, n_iterations: int = 2, random_state: int = 0,
            key_added: str = "leiden") -> BioFrame:
-    """Leiden clustering of the neighbour graph (labels ordered by cluster size, "0" largest)."""
+    """Leiden clustering of the neighbour graph (labels ordered by cluster size, "0" largest).
+
+    Differs from scanpy: the default is ``n_iterations=2``. scanpy 1.11's
+    ``sc.tl.leiden`` defaults to ``flavor="leidenalg"`` with ``n_iterations=-1``
+    (iterate until no improvement), and warns that its future default is
+    ``flavor="igraph", n_iterations=2``. CREST has one implementation (Traag et
+    al. 2019) and no ``flavor`` argument.
+    """
     rows, cols, w = _graph(bf)
     lab = _native.leiden(bf.n_obs, rows, cols, w, resolution, n_iterations, random_state)
     sizes = np.bincount(lab)
@@ -180,7 +187,14 @@ def leiden_sweep(bf: BioFrame, resolutions: Sequence[float] = (0.1, 0.2, 0.4, 0.
 
 def umap(bf: BioFrame, min_dist: float = 0.5, spread: float = 1.0, n_components: int = 2,
          n_epochs: Optional[int] = None, random_state: int = 0) -> BioFrame:
-    """UMAP embedding of the neighbour graph (scanpy defaults: min_dist=0.5)."""
+    """UMAP embedding of the neighbour graph (scanpy defaults: min_dist=0.5).
+
+    umap-learn's objective and default parameters, with CREST's own iterative
+    spectral initialisation. With more than one thread (and at least 1,000
+    cells) the SGD runs in parallel with a different schedule than on one
+    thread, so layouts are deterministic for a fixed thread count but differ
+    between thread counts.
+    """
     rows, cols, w = _graph(bf)
     bf.obsm["X_umap"] = _native.umap(bf.n_obs, rows, cols, w, n_components, min_dist, spread, n_epochs, 100, random_state)
     return bf
@@ -213,6 +227,9 @@ def rank_genes_groups(bf: BioFrame, groupby: str, method: str = "t-test", groups
     Returns a long DataFrame (group, names, scores, logfoldchanges, pvals,
     pvals_adj) with the top ``n_genes`` per group by score; also stored in
     ``uns['rank_genes_groups']``.
+
+    Differs from scanpy: the default is ``n_genes=100``; scanpy's default
+    (``None``) keeps every gene. Pass ``n_genes=None`` for all genes.
     """
     labels = bf.obs[groupby].cast(pl.Utf8).to_numpy()
     cats = sorted({x for x in labels if x is not None}, key=_natural_key)

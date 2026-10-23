@@ -113,7 +113,22 @@ def scale(bf: BioFrame, max_value: Optional[float] = 10.0) -> BioFrame:
 
 # --------------------------------------------------------------------------- gene statistics / HVG
 def gene_stats(bf: BioFrame) -> np.ndarray:
-    """(n_vars, 5) array: Σx, Σx², Σexpm1(x), Σexpm1(x)², nnz of the transformed matrix."""
+    """Per-gene sums of the current (filtered and transformed) values, in one streamed pass.
+
+    The values are those the recorded ``bf.ops`` produce (e.g. log-normalised
+    after :func:`normalize_total` and :func:`log1p`); ``scale`` is not applied.
+
+    Parameters
+    ----------
+    bf : crest.BioFrame
+        The data.
+
+    Returns
+    -------
+    numpy.ndarray
+        Array of shape ``(n_vars, 5)``; the columns are Σx, Σx², Σexpm1(x),
+        Σexpm1(x)² and the number of non-zeros of each gene, over the kept cells.
+    """
     out = np.zeros((bf.n_vars, 5), np.float64)
     for ctx in bf.iter_ctx():
         _native.gene_stats(*ctx, out)

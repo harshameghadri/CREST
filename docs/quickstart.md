@@ -14,6 +14,7 @@ curl -LO https://cf.10xgenomics.com/samples/cell-exp/3.0.0/pbmc_10k_v3/pbmc_10k_
 
 ```python
 import crest
+import polars as pl   # for the table filters in steps 5 and 6 (see "Why polars?" below)
 
 bf = crest.read_10x_h5("pbmc_10k_v3_filtered_feature_bc_matrix.h5")
 print(bf)
@@ -44,12 +45,10 @@ and genes are new.
 ### Why `polars`?
 
 `bf.obs` (cells) and `bf.var` (genes) are [Polars](https://pola.rs) DataFrames, not pandas.
-Polars is installed with CREST, and you only need to import it yourself to write a Polars
-*expression*, for example a custom filter:
+Polars is installed with CREST, and you only need to import it yourself (as in step 2) to
+write a Polars *expression*, for example a custom filter:
 
 ```python
-import polars as pl
-
 bf = bf.filter_cells(pl.col("total_counts") < 30_000)
 ```
 
@@ -171,3 +170,15 @@ files too large for that, convert to `.h5ad` and use `crest.read_h5ad` instead.
 | `sc.pp.scale` densifies | `crest.pp.scale` is recorded and applied exactly inside PCA |
 | results in `adata.uns[...]` as recarrays | results returned as Polars DataFrames (and stored in `bf.uns`) |
 | plotting in `sc.pl` | convert with `bf.to_anndata()` |
+
+## Defaults that differ from scanpy
+
+These defaults differ from scanpy's (checked against the signatures in scanpy 1.11.5). Each
+is also noted in the function's docstring. Pass the scanpy value explicitly if you want
+scanpy's behaviour.
+
+| function | CREST default | scanpy 1.11 default | note |
+|---|---|---|---|
+| `tl.rank_genes_groups` | `n_genes=100` | `n_genes=None` (all genes) | `n_genes=None` returns all genes in CREST too |
+| `tl.leiden` | `n_iterations=2` | `n_iterations=-1` (until no improvement), `flavor="leidenalg"` | CREST has one implementation and no `flavor`. scanpy 1.11 warns that its future default is `flavor="igraph", n_iterations=2`, which is also what the benchmarks compare against |
+| `pp.regress_out` | not implemented | available | use `sc.pp.regress_out` on `bf.to_anndata()` if you need it |

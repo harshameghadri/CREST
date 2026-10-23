@@ -64,8 +64,9 @@ The consequences are rules, not suggestions:
   - log-normalised values: `seurat` / `cell_ranger` HVG, DE, `score_genes`;
   - scaled values: PCA;
   - `obsm` embeddings: neighbours, Leiden, UMAP, Harmony, ingest.
-* `ParquetStore` = out-of-core: one Parquet part in RAM at a time, ~1 GB peak at any size,
-  ~2× slower.
+* `ParquetStore` = out-of-core: one Parquet part in RAM at a time, ~2× slower. Peak memory
+  was ~1 GB at 68k–200k cells (0.2.0 run); it grows with the per-cell results (obs, PCA,
+  neighbour graph, UMAP) at larger sizes.
 
 Full user-level explanation: `docs/concepts.md`. The chunk protocol tuple and the table of
 all native functions: `docs/development.md`.
@@ -77,7 +78,7 @@ all native functions: `docs/development.md`.
 uv venv .venv --python 3.11 && source .venv/bin/activate && uv pip install maturin
 maturin develop --release -E test      # rebuild after ANY change under src/ (always --release)
 cargo test --release                   # 26 Rust unit tests
-pytest -q                              # 27 Python tests: scanpy / R-DESeq2 / harmonypy / skmisc / skimage parity
+pytest -q                              # 29 Python tests: scanpy / R-DESeq2 / skmisc / skimage parity + behaviour tests
 pip install -r docs/requirements.txt && sphinx-build -W -b html docs docs/_build/html   # docs
 ```
 
@@ -105,7 +106,8 @@ pip install -r docs/requirements.txt && sphinx-build -W -b html docs docs/_build
 | tests | `tests/test_crest.py`, `tests/data/` |
 | paper benchmark | `scripts/crest_paper_bench.sh` → `bench/paper/{datasets,run_one,run_all,monitor,accuracy,summarize}.py` |
 | module benchmarks | `bench/{deseq2,harmony,doublets,ingest}/` (results in `results/`) |
-| user docs (Read the Docs) | `docs/*.md`, `docs/conf.py`, `.readthedocs.yaml`, `docs/readthedocs.md` |
+| user docs (Read the Docs) | `docs/*.md`, `docs/conf.py`, `.readthedocs.yaml` (setup notes: `docs/development.md`) |
+| contributing, code of conduct, citation | `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `CITATION.cff` |
 | design / validation notes | `docs/concepts.md`, `docs/memory_model.md`, `docs/deseq2.md`, `docs/downstream.md`, `docs/benchmarks.md` |
 | history | `work.md`, `CHANGELOG.md` |
 

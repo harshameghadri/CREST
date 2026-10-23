@@ -1,11 +1,18 @@
 # Developer guide
 
+## Support and contributing
+
+Report bugs or ask questions at <https://github.com/harshameghadri/CREST/issues>. Pull
+requests go into `dev`; see
+[CONTRIBUTING.md](https://github.com/harshameghadri/CREST/blob/main/CONTRIBUTING.md) for the
+checklist. CREST is maintained by one person on a best-effort basis.
+
 ## Build and test
 
 ```bash
 maturin develop --release -E test     # (re)build the Rust extension into crest/
 cargo test --release                  # Rust unit tests
-pytest -q                             # Python tests: scanpy, R-DESeq2, harmonypy, skmisc, skimage parity
+pytest -q                             # Python tests: scanpy, R-DESeq2, skmisc, skimage parity + behaviour tests
 ```
 
 A Python change needs no rebuild. A Rust change needs `maturin develop --release` before
@@ -16,7 +23,8 @@ Build these docs locally:
 
 ```bash
 pip install -r docs/requirements.txt
-sphinx-build -b html docs docs/_build/html     # open docs/_build/html/index.html
+sphinx-build -W -b html docs docs/_build/html     # open docs/_build/html/index.html
+sphinx-build -n -b html docs docs/_build/html     # optional: also report broken cross-references
 ```
 
 ## Repository layout
@@ -44,6 +52,7 @@ sphinx-build -b html docs docs/_build/html     # open docs/_build/html/index.htm
 | `bench/<module>/` | module comparisons with their `results/` |
 | `scripts/` | `crest_paper_bench.sh`, `crest_git_housekeeping.sh` |
 | `docs/` | this documentation (Sphinx + MyST); `.readthedocs.yaml` at the root |
+| `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `CITATION.cff` | contribution guide, code of conduct, citation metadata |
 
 ## The chunk protocol (how Python talks to Rust)
 
@@ -127,3 +136,26 @@ and merges per-thread partial results.
   update both.
 * CI (`.github/workflows/CI.yml`) runs `cargo test` + `pytest` on pushes to main and on
   pull requests, and builds wheels for all platforms; a tag publishes them to PyPI.
+
+## Read the Docs
+
+The site <https://crest-sc.readthedocs.io> is built by Read the Docs from
+`.readthedocs.yaml` (Ubuntu 24.04, Python 3.12, `docs/requirements.txt`, warnings are
+errors as in CI). The package is not installed there: `docs/conf.py` imports `crest` from the
+source tree and mocks the compiled Rust module (`autodoc_mock_imports`), so no Rust build is
+needed and a build takes about a minute.
+
+* **Versions.** The default branch is `main`, so `latest` shows the released code and
+  `stable` the newest tag. Activate each release tag (e.g. `v0.4.0`) in the **Versions** tab
+  so it stays readable, and `dev` for a development version.
+* **Pull request previews.** Settings → Pull request builds → *Build pull requests for this
+  project*: each pull request gets a docs preview and a GitHub check.
+* **Editing.** Function documentation comes from the docstrings in `crest/*.py`. A new public
+  function also needs a line in `docs/api.md` (`.. autofunction:: crest.<module>.<name>`); a
+  new page needs its file name in a `toctree` in `docs/index.md`.
+
+| message in the build log | fix |
+|---|---|
+| `Config file not found` / `.readthedocs.yaml` missing | the branch being built doesn't have the file; check **Settings → Default branch** |
+| `No module named ...` during `autodoc` | a module imports a package at top level that isn't in `docs/requirements.txt`: add it there, or to `autodoc_mock_imports` in `docs/conf.py` if it is heavy or compiled |
+| `Extension error` / `Could not import extension` | a package in `extensions` of `docs/conf.py` is missing from `docs/requirements.txt` |
