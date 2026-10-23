@@ -51,7 +51,8 @@ sphinx-build -b html docs docs/_build/html     # open docs/_build/html/index.htm
 
 ```text
 (genes u32[nnz], values f32[nnz], cell_map i64[n_store_cells], gene_map i32[n_store_genes],
- target_sum f64, log1p bool, cells u32[nnz] | None, indptr i64[k+1] | None, first_cell int)
+ target_sum f64, log1p bool, cell_totals f64[n_store_cells] | None,
+ cells u32[nnz] | None, indptr i64[k+1] | None, first_cell int)
 ```
 
 * `genes` / `values` are raw entries of the store. `cells` (COO) or `indptr` + `first_cell`
@@ -59,6 +60,11 @@ sphinx-build -b html docs docs/_build/html     # open docs/_build/html/index.htm
 * `cell_map[store_cell]` is the current row, or −1 if the cell is filtered out. `gene_map`
   does the same for columns. This is how filtering works without copying.
 * `target_sum` > 0 means normalise to it; `log1p` means apply log1p after that.
+* `cell_totals` (only with `target_sum` > 0) is what each cell is divided by, indexed by
+  store cell id. `None`, the usual case, means the cell's total over the genes kept by
+  `gene_map`. It is set when a gene filter follows `normalize_total`
+  (`BioFrame.cell_totals`), so the values do not change when genes are dropped, as in
+  scanpy. `py.rs` checks its length and that it is finite and ≥ 0 for every kept cell.
 
 Each streaming native function takes `*ctx` followed by its own inputs and **preallocated
 NumPy outputs that it accumulates into**, for example:

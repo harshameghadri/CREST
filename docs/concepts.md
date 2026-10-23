@@ -14,7 +14,7 @@ metadata:
 | you call | what CREST stores |
 |---|---|
 | `pp.filter_cells`, `pp.filter_genes`, `bf.filter_cells(expr)` | which cells / genes are kept (`obs["cell_id"]`, `var["gene_id"]` point into the raw store) |
-| `pp.normalize_total(bf, 1e4)` | `("normalize_total", 1e4)` appended to `bf.ops` |
+| `pp.normalize_total(bf, 1e4)` | `("normalize_total", 1e4)` appended to `bf.ops`; a gene filter applied afterwards also stores each cell's total in `bf.cell_totals`, so the values do not change when genes are dropped (as in scanpy) |
 | `pp.log1p(bf)` | `("log1p",)` appended to `bf.ops` |
 | `pp.scale(bf, max_value=10)` | `bf.uns["scale"] = {"max_value": 10}` |
 
@@ -48,6 +48,7 @@ fields:
 | `uns` | `dict` | everything else: parameters, the kNN graph, DE tables |
 | `ops` | `list[tuple]` | the recorded transforms, in order, e.g. `[("normalize_total", 10000.0), ("log1p",)]` |
 | `chunk_nnz` | `int` | target non-zeros per chunk for the in-memory stores (default 2²⁴ ≈ 16.8 M); the Parquet store ignores it (one chunk = one file) |
+| `cell_totals` | `ndarray` or `None` | per-cell totals for `normalize_total`, by store cell id; set only by a gene filter applied after `normalize_total`, otherwise `None` (the total over the kept genes) |
 
 There is no `X`: the counts are only reachable through `store`, and the current (filtered,
 transformed) matrix is materialised only if you ask for it with `bf.to_scipy()` or

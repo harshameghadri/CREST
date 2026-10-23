@@ -30,9 +30,15 @@ genes, never with cells × genes:
 ## Why the results are unchanged
 
 Every kernel sees exactly the values scanpy would hold in memory: per cell it
-applies the gene filter, divides by the cell's total over kept genes, multiplies by
-`target_sum`, then `log1p`. Nothing is approximated; only *when* the arithmetic
-happens changes. PCA with `scale(max_value)` uses the identity
+applies the gene filter, divides by the cell's total over the genes that were kept
+*when `normalize_total` was called*, multiplies by `target_sum`, then `log1p`. In the
+usual order (filter genes, then normalise) that total is the sum over the genes kept
+now, computed on the fly. If genes are removed *after* `normalize_total` (dropping
+MT- genes, `highly_variable_genes(subset=True)`), scanpy's values do not change, so
+the first such filter stores each cell's total (one pass over the raw counts, 8 B per
+cell, indexed by store cell id so later cell filters keep working) and the kernels
+divide by the stored total from then on. Nothing is approximated; only *when* the
+arithmetic happens changes. PCA with `scale(max_value)` uses the identity
 `Z = 1 bᵀ + S` (every implicit zero of gene *j* maps to the constant
 `b_j = clip(−μ_j/σ_j)`; `S` is sparse with entries `clip((x−μ)/σ) − b_j`); centring
 removes `1 bᵀ`, so the PCA of the dense scaled matrix equals the PCA of the sparse

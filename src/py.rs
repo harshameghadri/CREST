@@ -157,15 +157,31 @@ fn umap<'py>(
 
 type Arr<'py, T> = PyReadonlyArrayDyn<'py, T>;
 
-/// Common chunk arguments: raw genes/values, filters, transform, and either
-/// per-entry `cells` or a CSR `indptr` for cells `first_cell ..`.
+/// Common chunk arguments: raw genes/values, filters, transform (with optional
+/// stored per-cell totals), and either per-entry `cells` or a CSR `indptr` for
+/// cells `first_cell ..`.
+#[allow(clippy::too_many_arguments)]
 fn view<'a>(
     genes: &'a Arr<'_, u32>, values: &'a Arr<'_, f32>, cell_map: &'a Arr<'_, i64>, gene_map: &'a Arr<'_, i32>,
-    target_sum: f64, log1p: bool, cells: &'a Option<Arr<'_, u32>>, indptr: &'a Option<Arr<'_, i64>>, first_cell: u32,
+    target_sum: f64, log1p: bool, cell_totals: &'a Option<Arr<'_, f64>>,
+    cells: &'a Option<Arr<'_, u32>>, indptr: &'a Option<Arr<'_, i64>>, first_cell: u32,
 ) -> PyResult<(ChunkView<'a>, usize)> {
     let (g, v) = (sl(genes, "genes")?, sl(values, "values")?);
     check_len("genes, values", &[g.len(), v.len()])?;
     let (cm, gm) = (sl(cell_map, "cell_map")?, sl(gene_map, "gene_map")?);
+    let totals = match cell_totals {
+        None => None,
+        Some(t) => {
+            let t = sl(t, "cell_totals")?;
+            if t.len() != cm.len() {
+                return Err(pyo3::exceptions::PyValueError::new_err("cell_totals must have one entry per store cell (as cell_map)"));
+            }
+            if cm.iter().zip(t).any(|(&m, &x)| m >= 0 && !(x.is_finite() && x >= 0.0)) {
+                return Err(pyo3::exceptions::PyValueError::new_err("cell_totals must be finite and >= 0 for every kept cell"));
+            }
+            Some(t)
+        }
+    };
     let cells = match (cells, indptr) {
         (Some(c), None) => {
             let c = sl(c, "cells")?;
@@ -185,7 +201,7 @@ fn view<'a>(
         _ => return Err(pyo3::exceptions::PyValueError::new_err("pass exactly one of cells / indptr")),
     };
     let n_rows = cm.iter().copied().max().map_or(0, |m| (m + 1).max(0) as usize);
-    Ok((ChunkView { cells, genes: g, values: v, cell_map: cm, gene_map: gm, target_sum, log1p }, n_rows))
+    Ok((ChunkView { cells, genes: g, values: v, cell_map: cm, gene_map: gm, target_sum, log1p, cell_totals: totals }, n_rows))
 }
 
 fn n_var(gene_map: &[i32]) -> usize {
@@ -196,14 +212,15 @@ macro_rules! chunk_fn {
     ($(#[$m:meta])* fn $name:ident<$py:lifetime>($pyv:ident, $v:ident, $nrows:ident, $nvar:ident $(, $a:ident : $t:ty)*) -> $ret:ty $body:block) => {
         $(#[$m])*
         #[pyfunction]
-        #[pyo3(signature = (genes, values, cell_map, gene_map, target_sum, log1p, cells, indptr, first_cell $(, $a)*))]
+        #[pyo3(signature = (genes, values, cell_map, gene_map, target_sum, log1p, cell_totals, cells, indptr, first_cell $(, $a)*))]
         #[allow(clippy::too_many_arguments)]
         fn $name<$py>(
             $pyv: Python<$py>, genes: Arr<$py, u32>, values: Arr<$py, f32>, cell_map: Arr<$py, i64>, gene_map: Arr<$py, i32>,
-            target_sum: f64, log1p: bool, cells: Option<Arr<$py, u32>>, indptr: Option<Arr<$py, i64>>, first_cell: u32
+            target_sum: f64, log1p: bool, cell_totals: Option<Arr<$py, f64>>,
+            cells: Option<Arr<$py, u32>>, indptr: Option<Arr<$py, i64>>, first_cell: u32
             $(, $a: $t)*
         ) -> $ret {
-            let ($v, $nrows) = view(&genes, &values, &cell_map, &gene_map, target_sum, log1p, &cells, &indptr, first_cell)?;
+            let ($v, $nrows) = view(&genes, &values, &cell_map, &gene_map, target_sum, log1p, &cell_totals, &cells, &indptr, first_cell)?;
             let $nvar = n_var(sl(&gene_map, "gene_map")?);
             $body
         }

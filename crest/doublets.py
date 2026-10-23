@@ -98,6 +98,8 @@ def _scrublet_one(bf: BioFrame, sim_doublet_ratio, expected_doublet_rate, stdev_
     import scipy.sparse as sp
     from . import pp
 
+    bf = bf.copy()
+    bf.ops = []  # Scrublet reads raw counts; also avoids storing normalisation totals in the filter below
     sub = pp.filter_genes(bf, min_cells=min_counts_genes)
     sub = pp.filter_cells(sub, min_genes=min_counts_genes)
     kept_cells = sub.obs["cell_id"].to_numpy()
