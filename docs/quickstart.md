@@ -65,9 +65,9 @@ hand the whole object over with `bf.to_anndata()`.
 ## 3. Normalise, select genes, reduce
 
 ```python
-crest.pp.normalize_total(bf, target_sum=1e4)  # lazy: noted in bf.ops, nothing computed yet
+crest.pp.normalize_total(bf, target_sum=1e4)  # noted in bf.ops + per-cell totals (one pass)
 crest.pp.log1p(bf)                            # lazy: noted in bf.ops, nothing computed yet
-print(bf.ops)                                 # [('normalize_total', 10000.0), ('log1p',)]
+print(bf.ops)                                 # [('normalize_total', 10000.0, '<fingerprint>'), ('log1p',)]
 
 crest.pp.highly_variable_genes(bf, n_top_genes=2000, flavor="seurat")
 crest.pp.scale(bf, max_value=10)              # lazy: noted in bf.uns["scale"]; used by PCA only
@@ -75,8 +75,9 @@ crest.tl.pca(bf, n_comps=50)                  # obsm["X_pca"], varm["PCs"], uns[
 ```
 
 **What "lazy" means here.** In scanpy, `sc.pp.normalize_total` and `sc.pp.log1p` rewrite
-`adata.X` immediately. In CREST these two calls finish instantly: they only add an entry to
-the list `bf.ops`, and the count matrix is left untouched. Every later step that needs
+`adata.X` immediately. In CREST these two calls only add an entry to the list `bf.ops`
+(`normalize_total` also stores each cell's total, one number per cell, from a single pass),
+and the count matrix is left untouched. Every later step that needs
 normalised values (`highly_variable_genes`, `pca`, `rank_genes_groups`, `score_genes`) reads the
 raw counts chunk by chunk and applies the operations in `bf.ops` on the fly, inside its Rust
 kernel, so it sees exactly the values scanpy would have in `adata.X`. Nothing normalised is
