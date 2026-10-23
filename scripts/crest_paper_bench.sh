@@ -3,9 +3,10 @@
 #
 #   cd /mnt/scratch                                # any roomy disk: everything is written below the current directory
 #   curl -LO https://raw.githubusercontent.com/harshameghadri/CREST/dev/scripts/crest_paper_bench.sh
-#   bash crest_paper_bench.sh                      # standard tier (several hours; scanpy dominates)
-#   bash crest_paper_bench.sh --tier quick         # 3 small datasets, 2 repeats, short thread scan (~30-60 min)
+#   bash crest_paper_bench.sh                      # standard tier (~10-20 h on 64 threads; run count + estimate printed first)
+#   bash crest_paper_bench.sh --tier quick         # 3 small datasets, 2 repeats, short thread scan (~1 h)
 #   bash crest_paper_bench.sh --tier full          # adds the 647k COVID atlas, 1.3M neurons, 500k/1M synthetic
+#   bash crest_paper_bench.sh --tier smoke         # PBMC 3k + a tiny synthetic series: checks the harness (minutes)
 #
 # Nothing is written to $HOME: the source, venv, data, results and every cache (uv packages and
 # Pythons, cargo registry, numba, matplotlib, temp files) live under --workdir, which defaults to
@@ -13,32 +14,43 @@
 #
 # What it does (every step logged under $WORKDIR/results/<host>-<date>/):
 #   1. preflight: git, curl, uv (installs it with --install-uv), Rust (installs with --install-rust), disk, RAM
-#   2. clones harshameghadri/CREST at --ref into a throwaway uv venv, builds CREST in release mode
+#   2. clones harshameghadri/CREST at --ref into a throwaway uv venv, builds CREST in release mode, and
+#      installs the pinned benchmark environment (bench/paper/requirements-bench.txt: scanpy 1.11.x etc.)
 #   3. runs the test suites (cargo test, pytest incl. scanpy and R-DESeq2 parity); stops if they fail
 #   4. records the machine: CPU model/cache/governor/turbo, cores, RAM, OS, compilers, BLAS, every package
 #   5. downloads and converts the datasets (resumable, size-checked, SHA-256 recorded)
 #   6. runs every (dataset x tool x repeat) in its own process, interleaved and shuffled: the core
-#      workflow at --main-threads (for matched and best-thread comparisons), separate runs of the
-#      optional modules, and a thread scan; per step: wall and CPU time, parallelism, peak/timeline memory, per-core utilisation and
-#      clock, context switches, I/O, energy (RAPL, if readable); OOM/timeouts recorded as failures
-#   7. agreement with scanpy (ARI/NMI, kNN, PCA subspace, HVG, DE markers, UMAP trustworthiness, ...)
-#   8. module benchmarks: DESeq2 vs R/pydeseq2, Harmony vs harmonypy, Scrublet vs scanpy (demuxlet truth),
-#      label transfer vs scanpy.tl.ingest
-#   9. statistics (medians, IQR, CV, bootstrap CIs of speedups, Mann-Whitney, Hodges-Lehmann, scaling
-#      exponents, Amdahl fits), tables (CSV + LaTeX), figures (PDF + PNG), report.md, and a .tar.gz
+#      workflow of every dataset at every --main-threads count (CREST and scanpy; matched and best-thread
+#      comparisons), out-of-core CREST at --ooc-threads, separate runs of the optional modules, and a
+#      full thread scan of one dataset; per step: wall and CPU time, parallelism, peak (absolute and
+#      minus baseline) and timeline memory, per-core utilisation and clock, context switches, I/O, energy
+#      (RAPL, if readable); OOM/timeouts recorded as failures; every attempt appended to attempts.jsonl
+#   7. agreement with scanpy (ARI/NMI, the two tools' actual kNN graphs, kNN recall vs brute force,
+#      same-graph Leiden + igraph modularity, PCA subspace, HVG, DE markers, UMAP trustworthiness, ...)
+#   8. module benchmarks: DESeq2 vs R/pydeseq2 (thread-matched), Harmony vs harmonypy, Scrublet vs scanpy
+#      (demuxlet truth), label transfer vs scanpy.tl.ingest, 20-seed Leiden modularity vs leidenalg
+#   9. statistics (medians, min-max, IQR, speedups at every matched thread count and best vs best,
+#      Mann-Whitney, Hodges-Lehmann, scaling exponents on the synthetic series, Amdahl fits up to the
+#      peak), tables (CSV + LaTeX), figures (PDF + PNG), report.md, and a .tar.gz
+#  10. copies the report, tables, figures, module results and environment record into
+#      <workdir>/CREST/bench/paper/results/<host>-<date>/ (with commit, host and versions), ready to
+#      commit; see bench/paper/results/README.md
 #
 # Options:
 #   --workdir DIR          everything goes here                      (default: ./crest-bench)
 #   --ref REF              branch/tag/commit to benchmark            (default: dev)
 #   --repo URL             repository                                (default: https://github.com/harshameghadri/CREST)
-#   --tier T               quick | standard | full                   (default: standard)
+#   --tier T               smoke | quick | standard | full           (default: standard)
 #   --datasets "a b"       explicit dataset list (overrides --tier; see --list-datasets)
-#   --repeats K            repeats per configuration                 (default: 5; 2 in the quick tier)
+#   --repeats K            repeats per configuration                 (default: 5; 2 in the quick/smoke tiers)
 #   --threads "1 2 4 8"    thread counts for the strong-scaling scan (default: powers of two up to all cores;
-#                          quick tier: 1, 8 and all cores)
+#                          quick tier: 1, 8 and all cores; smoke: 1, 2, 4)
 #   --thread-dataset NAME  dataset for the thread scan               (default: pbmc68k; pbmc10k in the quick tier)
-#   --main-threads "8 64"  thread counts for the main core-workflow runs (default: 8 and all cores)
-#   --module-repeats K     repeats of the optional-module runs       (default: 3; 2 in the quick tier)
+#   --main-threads "8 64"  thread counts of the main core-workflow runs of CREST and scanpy, on EVERY dataset
+#                          (default: standard/full 8 16 32 64 (those <= all cores, plus all cores);
+#                          quick: 8 and all cores; smoke: 2 and 4)
+#   --ooc-threads "8 64"   thread counts of the out-of-core CREST runs (default: 8 and all cores)
+#   --module-repeats K     repeats of the optional-module runs       (default: 3; 2 in the quick/smoke tiers)
 #   --scrublet-max-cells N skip Scrublet in module runs above N cells (default: 150000; 0 = never skip)
 #   --scanpy-max-cells N   skip scanpy above N cells (0 = never; default: from RAM, ~12.5k cells per GB)
 #   --timeout SEC          per-run limit                             (default: 7200)
@@ -76,6 +88,7 @@ TIMEOUT=7200
 PYVER="3.11"
 PROFILE="full"
 MAIN_THREADS=""
+OOC_THREADS=""
 MODULE_REPEATS=""
 SCRUBLET_MAX=150000
 NO_PIN=0; SKIP_TESTS=0; SKIP_MODULES=0; SKIP_SCAN=0; SKIP_BUILD=0; INSTALL_UV=0; INSTALL_RUST=0
@@ -96,6 +109,7 @@ while [[ $# -gt 0 ]]; do
     --python) PYVER="$2"; shift 2 ;;
     --profile) PROFILE="$2"; shift 2 ;;
     --main-threads) MAIN_THREADS="$2"; shift 2 ;;
+    --ooc-threads) OOC_THREADS="$2"; shift 2 ;;
     --module-repeats) MODULE_REPEATS="$2"; shift 2 ;;
     --scrublet-max-cells) SCRUBLET_MAX="$2"; shift 2 ;;
     --no-pin) NO_PIN=1; shift ;;
@@ -158,13 +172,24 @@ fi
 # crate downloads for the build go under the work directory too (the toolchain stays where it is)
 export CARGO_HOME="$C/cargo"
 FREE_GB=$(df -Pk "$WORKDIR" | awk 'NR==2 {print int($4/1048576)}')
-NEED_GB=$([[ "$TIER" == "full" ]] && echo 60 || ([[ "$TIER" == "quick" ]] && echo 3 || echo 10))
+NEED_GB=$([[ "$TIER" == "full" ]] && echo 60 || ([[ "$TIER" == "quick" || "$TIER" == "smoke" ]] && echo 3 || echo 12))
 echo "  free disk in $WORKDIR: ${FREE_GB} GB (tier '$TIER' needs ~${NEED_GB} GB)"
 [[ $FREE_GB -ge $NEED_GB ]] || die "not enough disk space"
 if [[ -z "$SCANPY_MAX" ]]; then SCANPY_MAX=$(( RAM_GB * 12500 )); fi
-if [[ -z "$REPEATS" ]]; then REPEATS=$([[ "$TIER" == "quick" ]] && echo 2 || echo 5); fi
-if [[ -z "$MODULE_REPEATS" ]]; then MODULE_REPEATS=$([[ "$TIER" == "quick" ]] && echo 2 || echo 3); fi
-if [[ -z "$MAIN_THREADS" ]]; then MAIN_THREADS="$(echo 8 "$NCPU" | tr ' ' '\n' | awk -v n="$NCPU" '$1<=n' | sort -nu | xargs)"; fi
+SMALL=0; [[ "$TIER" == "quick" || "$TIER" == "smoke" ]] && SMALL=1
+if [[ -z "$REPEATS" ]]; then REPEATS=$([[ $SMALL -eq 1 ]] && echo 2 || echo 5); fi
+if [[ -z "$MODULE_REPEATS" ]]; then MODULE_REPEATS=$([[ $SMALL -eq 1 ]] && echo 2 || echo 3); fi
+clip() { echo "$@" | tr ' ' '\n' | awk -v n="$NCPU" 'NF && $1<=n' | sort -nu | xargs; }
+if [[ -z "$MAIN_THREADS" ]]; then
+  case "$TIER" in
+    smoke) MAIN_THREADS="$(clip 2 4)" ;;
+    quick) MAIN_THREADS="$(clip 8 "$NCPU")" ;;
+    *)     MAIN_THREADS="$(clip 8 16 32 64 "$NCPU")" ;;
+  esac
+fi
+if [[ -z "$OOC_THREADS" ]]; then
+  if [[ "$TIER" == "smoke" ]]; then OOC_THREADS="$(clip 4)"; else OOC_THREADS="$(clip 8 "$NCPU")"; fi
+fi
 echo "  scanpy is skipped above $SCANPY_MAX cells (--scanpy-max-cells 0 disables the cap)"
 
 STAMP="$(hostname -s 2>/dev/null || hostname)-$(date +%Y%m%d-%H%M)"
@@ -194,6 +219,18 @@ if [[ $SKIP_BUILD -eq 0 || ! -x "$PY" ]]; then
   uv pip install -q --python "$PY" maturin
   ( cd "$SRC" && VIRTUAL_ENV="$VENV" PATH="$VENV/bin:$PATH" maturin develop --release -E test,bench ) \
     > "$OUT/logs/build.log" 2>&1 || { tail -30 "$OUT/logs/build.log"; die "build failed (see logs/build.log)"; }
+fi
+PINS="$SRC/bench/paper/requirements-bench.txt"
+if [[ -f "$PINS" ]]; then
+  echo "  pinning the benchmark environment ($PINS)"
+  uv pip install -q --python "$PY" -r "$PINS" >> "$OUT/logs/build.log" 2>&1 || die "could not install the pinned versions (logs/build.log)"
+  grep -E '^[A-Za-z]' "$PINS" | sed 's/==.*//' | while read -r pkg; do
+    want="$(grep -E "^$pkg==" "$PINS" | cut -d= -f3)"
+    have="$("$PY" -c "from importlib.metadata import version; print(version('$pkg'))" 2>/dev/null || echo missing)"
+    [[ "$want" == "$have" ]] || die "$pkg is $have, pinned $want"
+  done
+else
+  echo "  WARNING: $PINS not found at $REF: the benchmark environment is NOT pinned"
 fi
 echo "  built: $("$PY" -c 'import crest; print(crest.__file__)')"
 
@@ -226,8 +263,17 @@ uv pip freeze --python "$PY" > "$E/pip_freeze.txt"
 echo "$COMMIT" > "$E/crest_commit.txt"
 "$PY" - > "$E/python_env.json" <<'PYEOF'
 import json, numpy, platform, psutil
+from importlib import metadata
 from threadpoolctl import threadpool_info
-print(json.dumps({"python": platform.python_version(), "numpy": numpy.__version__,
+import crest, scanpy  # noqa: F401  (load both tools' thread pools before listing them)
+vers = {}
+for d in ("crest-sc", "scanpy", "anndata", "numpy", "scipy", "pandas", "polars", "h5py", "scikit-learn", "pynndescent",
+          "umap-learn", "numba", "llvmlite", "igraph", "leidenalg", "harmonypy", "pydeseq2", "threadpoolctl"):
+    try:
+        vers[d] = metadata.version(d)
+    except metadata.PackageNotFoundError:
+        vers[d] = None
+print(json.dumps({"python": platform.python_version(), "numpy": numpy.__version__, "versions": vers,
                   "logical_cores": psutil.cpu_count(), "physical_cores": psutil.cpu_count(logical=False),
                   "ram_gb": psutil.virtual_memory().total / 1e9, "threadpools": threadpool_info()}, indent=1, default=str))
 PYEOF
@@ -235,7 +281,7 @@ CPU_MODEL="$( (grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2) ||
 cat > "$E/summary.md" <<EOF
 **Machine** $(echo $CPU_MODEL | xargs), $NCPU logical cores, ${RAM_GB} GB RAM, $OS ($(uname -r)); governor: $(cat "$E/governor.txt" 2>/dev/null || echo n/a).
 **Software** CREST $COMMIT ($REF), Python $("$PY" -c 'import platform;print(platform.python_version())'), $(rustc -V).
-**Protocol** core workflow at $MAIN_THREADS threads, $REPEATS repeats per configuration; optional modules in separate runs ($([[ "$PROFILE" == "full" ]] && echo "$MODULE_REPEATS repeats, Scrublet skipped above $SCRUBLET_MAX cells" || echo "not run")); interleaved in shuffled order, fresh process per run, JIT warm-up excluded.
+**Protocol** core workflow of every dataset at $MAIN_THREADS threads (CREST, scanpy; out-of-core CREST at $OOC_THREADS), $REPEATS repeats per configuration; optional modules in separate runs ($([[ "$PROFILE" == "full" ]] && echo "$MODULE_REPEATS repeats, Scrublet skipped above $SCRUBLET_MAX cells" || echo "not run")); interleaved in shuffled order, fresh process per run, JIT warm-up excluded.
 EOF
 cat "$E/summary.md"
 
@@ -256,10 +302,12 @@ bold "6. Benchmark runs"
 if [[ -z "$THREAD_DS" ]]; then
   if [[ " $DATASETS " == *" pbmc68k "* ]]; then THREAD_DS=pbmc68k
   elif [[ " $DATASETS " == *" pbmc10k "* ]]; then THREAD_DS=pbmc10k
+  elif [[ " $DATASETS " == *" pbmc3k "* ]]; then THREAD_DS=pbmc3k
   else THREAD_DS="$(echo $DATASETS | awk '{print $NF}')"; fi
 fi
 if [[ -z "$THREADS" ]]; then
-  if [[ "$TIER" == "quick" ]]; then THREADS="1 $(( NCPU < 8 ? NCPU : 8 ))"
+  if [[ "$TIER" == "smoke" ]]; then THREADS="$(clip 1 2 4)"
+  elif [[ "$TIER" == "quick" ]]; then THREADS="1 $(( NCPU < 8 ? NCPU : 8 ))"
   else p=1; THREADS=""; while [[ $p -lt $NCPU ]]; do THREADS="$THREADS $p"; p=$((p*2)); done; fi
 fi
 echo "  thread scan on $THREAD_DS: threads $(echo $THREADS $NCPU | tr ' ' '\n' | sort -nu | xargs); $REPEATS repeats"
@@ -267,7 +315,7 @@ SCAN_ARGS=(--threads-scan $THREADS --thread-dataset "$THREAD_DS")
 [[ $SKIP_SCAN -eq 1 ]] && SCAN_ARGS=()
 PIN_ARGS=(); [[ $NO_PIN -eq 1 ]] && PIN_ARGS=(--no-pin)
 "$PY" bench/paper/run_all.py --data-dir "$DATA" --out "$OUT" --datasets $DATASETS --repeats "$REPEATS" \
-  --profile "$PROFILE" --main-threads $MAIN_THREADS --module-repeats "$MODULE_REPEATS" \
+  --profile "$PROFILE" --main-threads $MAIN_THREADS --ooc-threads $OOC_THREADS --module-repeats "$MODULE_REPEATS" \
   --scrublet-max-cells "$SCRUBLET_MAX" \
   --scanpy-max-cells "$SCANPY_MAX" --timeout "$TIMEOUT" "${SCAN_ARGS[@]}" "${PIN_ARGS[@]}" \
   $([[ $DRY -eq 1 ]] && echo --dry-run)
@@ -289,20 +337,49 @@ if [[ $SKIP_MODULES -eq 0 ]]; then
   }
   R_ARGS=(); command -v Rscript >/dev/null && Rscript -e 'suppressMessages(library(DESeq2))' 2>/dev/null || R_ARGS=(--skip-r)
   [[ ${#R_ARGS[@]} -gt 0 ]] && echo "  (R DESeq2 not found: DESeq2 is compared with pydeseq2 only)"
-  run_mod deseq2_kang "$PY" bench/deseq2/kang_pseudobulk.py --data "$KANG" --out "$M/deseq2" "${R_ARGS[@]}"
+  # thread-matched DESeq2: 1, 8 and 64 threads (all cores instead of 64 on smaller machines)
+  DE_THREADS="$(clip 1 8 64 $([[ $NCPU -lt 64 ]] && echo "$NCPU"))"
+  run_mod deseq2_kang "$PY" bench/deseq2/kang_pseudobulk.py --data "$KANG" --out "$M/deseq2" --threads $DE_THREADS "${R_ARGS[@]}"
   if [[ ${#R_ARGS[@]} -eq 0 ]]; then run_mod deseq2_simulated "$PY" bench/deseq2/compare_r.py --out "$M/deseq2"; fi
   run_mod harmony "$PY" bench/harmony/compare_harmonypy.py --data "$KANG" --out "$M/harmony"
   run_mod scrublet "$PY" bench/doublets/compare_scrublet.py --data "$KANG" --out "$M/doublets"
   run_mod ingest "$PY" bench/ingest/compare_scanpy_ingest.py --data "$KANG" --out "$M/ingest"
+  # 20-seed Leiden modularity vs leidenalg on one graph (the docs' "+0.0015 over 20 seeds" check)
+  SWEEP_DS=pbmc68k; [[ -f "$DATA/$SWEEP_DS.h5" ]] || SWEEP_DS="$THREAD_DS"
+  run_mod modularity_sweep "$PY" bench/paper/modularity_sweep.py --data "$DATA/$SWEEP_DS.h5" --out "$M/modularity" --seeds 20
   for f in "$M"/*/*.md; do [[ -f "$f" ]] && cp "$f" "$M/$(basename "$(dirname "$f")")_$(basename "$f")"; done
 fi
 
 # ------------------------------------------------------------------ 9. statistics, figures, archive
 bold "9. Statistics, tables, figures"
 "$PY" bench/paper/summarize.py "$OUT" 2>&1 | tee "$OUT/logs/summarize.log"
+# ------------------------------------------------------------------ 10. committable copy
+bold "10. Committable results"
+KEEP="$SRC/bench/paper/results/$STAMP"
+mkdir -p "$KEEP"/{tables,figures,modules,environment}
+cp "$OUT/report.md" "$KEEP/" 2>/dev/null || true
+for f in accuracy.json plan.json attempts.jsonl; do [[ -f "$OUT/$f" ]] && cp "$OUT/$f" "$KEEP/"; done
+cp "$OUT"/tables/*.csv "$KEEP/tables/" 2>/dev/null || true
+cp "$OUT"/figures/*.png "$KEEP/figures/" 2>/dev/null || true
+if [[ -d "$OUT/modules" ]]; then
+  ( cd "$OUT/modules" && find . -type f \( -name '*.md' -o -name '*.csv' -o -name '*.json' \) -size -5M \
+      -exec sh -c 'mkdir -p "$1/$(dirname "$2")" && cp "$2" "$1/$2"' _ "$KEEP/modules" {} \; )
+fi
+for f in summary.md python_env.json pip_freeze.txt toolchain.txt crest_commit.txt uname.txt os.txt governor.txt \
+         turbo.txt lscpu.txt data_checksums.json; do [[ -f "$E/$f" ]] && cp "$E/$f" "$KEEP/environment/"; done
+"$PY" - "$KEEP/meta.json" <<PYEOF
+import json, sys
+json.dump({"stamp": "$STAMP", "host": "$(hostname -s 2>/dev/null || hostname)", "commit": "$COMMIT", "ref": "$REF",
+           "repo": "$REPO", "tier": "$TIER", "datasets": "$DATASETS".split(), "repeats": $REPEATS,
+           "main_threads": "$MAIN_THREADS".split(), "ooc_threads": "$OOC_THREADS".split(),
+           "thread_scan": "$THREADS".split(), "thread_dataset": "$THREAD_DS", "profile": "$PROFILE",
+           "versions": json.load(open("$E/python_env.json")).get("versions")}, open(sys.argv[1], "w"), indent=1)
+PYEOF
+echo "  $KEEP  ($(du -sh "$KEEP" | cut -f1); commit it as described in bench/paper/results/README.md)"
 TAR="$WORKDIR/results/crest-bench-$STAMP.tar.gz"
 tar -czf "$TAR" -C "$WORKDIR/results" --exclude='*.outputs.npz' --exclude='_ooc_*' "$STAMP"
 bold "Done"
 echo "  report:  $OUT/report.md"
 echo "  figures: $OUT/figures/"
 echo "  archive: $TAR  (send this back; it has everything except the large per-cell outputs)"
+echo "  to commit: cd $SRC && git checkout -b bench/results-$STAMP && git add bench/paper/results/$STAMP && git commit -m 'bench: results $STAMP'"
