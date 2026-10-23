@@ -66,6 +66,8 @@ Validated against the demuxlet doublet calls of Kang 2018 (27,848 droplets, 3,16
 
 Scores correlate with scanpy's at Spearman 0.98. Simulated doublet pairs come from a different random generator, so the scores are equivalent statistically, not bit for bit.
 
+**The automatic threshold is unstable on these data, in both tools.** The median above hides it: CREST seed 1 called 3 cells. Simulated doublet scores take only ~k distinct values (k = number of neighbours), and a few of them are saturated at the maximum score. `threshold_minimum` then often splits the histogram between its main mode and that tail, so the threshold lands near 0.67 and almost nothing is called. Over 24–30 seeds per tool, the `stim` batch failed in every run of both tools (scanpy 24/24, CREST 30/30). The `ctrl` batch failed in scanpy 5/24 and CREST 11/30 (Fisher p = 0.24). CREST's `threshold_minimum` returns skimage's value on every one of these arrays. `crest.pp.scrublet` keeps scanpy's threshold but warns when a batch's threshold failed or is *degenerate* (fewer than 1% of simulated doublets score above it). It records `threshold_status` per batch, and with `batch_key` also `uns['scrublet']['thresholds']`. Inspect `doublet_scores_sim` and pass `threshold=` when you see the warning. `bench/doublets/compare_scrublet.py` reports every seed and every batch's threshold.
+
 ## seurat_v3 highly variable genes (`flavor="seurat_v3"`)
 
 Variance-stabilising HVG selection on raw counts, with an optional `batch_key`. The loess mean-variance trend is a port of netlib `dloess`, the code behind R `loess` and `skmisc.loess`:
