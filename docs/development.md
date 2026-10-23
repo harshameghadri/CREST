@@ -12,7 +12,7 @@ checklist. CREST is maintained by one person on a best-effort basis.
 ```bash
 maturin develop --release -E test     # (re)build the Rust extension into crest/
 cargo test --release                  # Rust unit tests
-pytest -q                             # Python tests: scanpy, R-DESeq2, harmonypy, skmisc, skimage parity
+pytest -q                             # Python tests: scanpy, R-DESeq2, skmisc, skimage parity + behaviour tests
 ```
 
 A Python change needs no rebuild. A Rust change needs `maturin develop --release` before
