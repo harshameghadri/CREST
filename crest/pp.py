@@ -12,7 +12,7 @@ from typing import Optional, Sequence
 import numpy as np
 import polars as pl
 
-from .core import BioFrame
+from .core import BioFrame, totals_fingerprint
 from . import crest as _native
 
 __all__ = [
@@ -86,23 +86,25 @@ def filter_genes(bf: BioFrame, min_cells: Optional[int] = None, min_counts: Opti
 def normalize_total(bf: BioFrame, target_sum: float = 1e4) -> BioFrame:
     """Scale each cell to ``target_sum`` total counts (applied lazily).
 
-    Each cell is divided by its total over the genes kept *now*, as in scanpy: genes
-    removed later (``filter_genes``, ``highly_variable_genes(subset=True)``, dropping
-    MT- genes) keep the values they had, they are not renormalised over the remaining
-    genes. Calling ``normalize_total`` again (after a gene filter) normalises over the
-    genes kept at that point, which is also what scanpy does.
+    As in scanpy, each cell is divided by its total over the genes kept *now*. Those
+    totals are computed here, in one streamed pass over the raw counts, and stored in
+    ``bf.cell_totals`` (8 bytes per cell); genes removed later (``filter_genes``,
+    ``highly_variable_genes(subset=True)``, dropping MT- genes) keep the values they
+    had and are not renormalised over the remaining genes. Calling ``normalize_total``
+    again recomputes the totals over the genes kept at that point, also as in scanpy.
+    The recorded op is ``("normalize_total", target_sum, <totals fingerprint>)``.
     """
     if target_sum is None or target_sum <= 0:
         raise ValueError("target_sum must be positive")
     if any(op[0] == "log1p" for op in bf.ops):
         raise ValueError("normalize_total must come before log1p")
-    bf.ops = [op for op in bf.ops if op[0] != "normalize_total"] + [("normalize_total", float(target_sum))]
-    if bf.cell_totals is not None:
-        # The values change (renormalised over the kept genes) although ops look the same:
-        # disown the HVG scale cache (replace, don't mutate: uns is shared with the parent).
-        if "ops" in bf.uns.get("hvg", {}):
-            bf.uns["hvg"] = {k: v for k, v in bf.uns["hvg"].items() if k != "ops"}
-        bf.cell_totals = None  # totals over the genes kept now (stored by a later gene filter)
+    totals = bf._kept_gene_totals()
+    # A data-dependent target (e.g. the median total) must be resolved here, from these
+    # totals at call time, and recorded as a number: a later cell filter would change it.
+    target = float(target_sum)
+    bf.cell_totals = totals
+    bf.ops = [op for op in bf.ops if op[0] != "normalize_total"] + [
+        ("normalize_total", target, totals_fingerprint(totals))]
     return bf
 
 

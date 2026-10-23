@@ -14,7 +14,7 @@ metadata:
 | you call | what CREST stores |
 |---|---|
 | `pp.filter_cells`, `pp.filter_genes`, `bf.filter_cells(expr)` | which cells / genes are kept (`obs["cell_id"]`, `var["gene_id"]` point into the raw store) |
-| `pp.normalize_total(bf, 1e4)` | `("normalize_total", 1e4)` appended to `bf.ops`; a gene filter applied afterwards also stores each cell's total in `bf.cell_totals`, so the values do not change when genes are dropped (as in scanpy) |
+| `pp.normalize_total(bf, 1e4)` | `("normalize_total", 1e4, <totals fingerprint>)` appended to `bf.ops`; each cell's total over the kept genes (one pass) in `bf.cell_totals`, so later filters do not renormalise (as in scanpy) |
 | `pp.log1p(bf)` | `("log1p",)` appended to `bf.ops` |
 | `pp.scale(bf, max_value=10)` | `bf.uns["scale"] = {"max_value": 10}` |
 
@@ -46,9 +46,9 @@ fields:
 | `obsm` | `dict[str, ndarray]` | per-cell embeddings: `X_pca`, `X_umap`, `X_pca_harmony` |
 | `varm` | `dict[str, ndarray]` | per-gene matrices: `PCs` |
 | `uns` | `dict` | everything else: parameters, the kNN graph, DE tables |
-| `ops` | `list[tuple]` | the recorded transforms, in order, e.g. `[("normalize_total", 10000.0), ("log1p",)]` |
+| `ops` | `list[tuple]` | the recorded transforms, in order, e.g. `[("normalize_total", 10000.0, "3f9c…"), ("log1p",)]` (the last element fingerprints `cell_totals`) |
 | `chunk_nnz` | `int` | target non-zeros per chunk for the in-memory stores (default 2²⁴ ≈ 16.8 M); the Parquet store ignores it (one chunk = one file) |
-| `cell_totals` | `ndarray` or `None` | per-cell totals for `normalize_total`, by store cell id; set only by a gene filter applied after `normalize_total`, otherwise `None` (the total over the kept genes) |
+| `cell_totals` | `ndarray` or `None` | the per-cell totals `normalize_total` divides by (over the genes kept when it was called), by store cell id; carried by every filter |
 
 There is no `X`: the counts are only reachable through `store`, and the current (filtered,
 transformed) matrix is materialised only if you ask for it with `bf.to_scipy()` or

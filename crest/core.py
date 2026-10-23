@@ -10,12 +10,13 @@ Raw counts are never modified. Cell/gene filters and the ``normalize_total`` /
 ``log1p`` transforms are recorded and applied on the fly to each chunk by native
 kernels, so no normalised, scaled or densified copy of the matrix is ever held.
 As in scanpy, ``normalize_total`` divides each cell by its total over the genes kept
-when it was called: a gene filter applied afterwards first stores those per-cell
-totals (``BioFrame.cell_totals``), so dropping genes later does not renormalise.
+when it is called: it computes those per-cell totals in one streamed pass and stores
+them (``BioFrame.cell_totals``), so later gene or cell filters do not renormalise.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -165,18 +166,21 @@ class BioFrame:
     uns : dict
         Everything else: parameters, the neighbour graph, result tables.
     ops : list of tuple
-        Recorded transforms in order, e.g. ``[("normalize_total", 10000.0), ("log1p",)]``.
+        Recorded transforms in order, e.g.
+        ``[("normalize_total", 10000.0, "<totals fingerprint>"), ("log1p",)]``. The third
+        element of ``normalize_total`` identifies the stored :attr:`cell_totals`, so caches
+        keyed on ``ops`` notice when the totals change.
     chunk_nnz : int
         Target non-zeros per chunk for the in-memory stores (default 2**24).
     cell_totals : numpy.ndarray or None
         Per-cell totals that ``normalize_total`` divides by, indexed by store cell id
-        (``float64``, length ``store.n_cells``; 8 bytes per cell). ``None`` (the usual
-        case) means "the total over the currently kept genes". It is set by the first
-        gene filter applied after ``normalize_total`` (one streamed pass over the raw
-        counts, totals over the genes kept before that filter), carried unchanged by
-        every later cell or gene filter, and cleared by ``normalize_total``. This is
-        what makes ``normalize_total`` → gene filter match scanpy, which fixes the
-        totals when it normalises.
+        (``float64``, length ``store.n_cells``; 8 bytes per cell). ``normalize_total``
+        computes them in one streamed pass over the raw counts, as each cell's total over
+        the genes kept at that moment (what scanpy divides by), and every later cell or
+        gene filter carries them unchanged, so dropping genes afterwards does not
+        renormalise. Calling ``normalize_total`` again replaces them. ``None`` (no
+        ``normalize_total`` yet, or ``ops`` set by hand) makes the kernels fall back to
+        each cell's total over the currently kept genes.
     """
 
     store: Store
@@ -187,7 +191,7 @@ class BioFrame:
     uns: dict = field(default_factory=dict)
     ops: list = field(default_factory=list)  # [("normalize_total", target), ("log1p",)]
     chunk_nnz: int = DEFAULT_CHUNK_NNZ
-    cell_totals: Optional[np.ndarray] = None  # normalize_total totals by store cell id; see above
+    cell_totals: Optional[np.ndarray] = None  # normalize_total divisors by store cell id; see above
 
     # ---- construction
     @classmethod
@@ -281,8 +285,8 @@ class BioFrame:
 
         Kernels apply the cell/gene filters and (if ``transform``) the recorded
         normalize_total/log1p on the fly; raw data is never copied. ``cell_totals``
-        is :attr:`cell_totals` when it is set and the data are normalised, else
-        ``None`` (each cell's total over the kept genes).
+        is :attr:`cell_totals` when the data are normalised (``None`` otherwise, or
+        when no totals are stored: then each cell's total over the kept genes).
         """
         cmap, gmap = self._cell_map(), self._gene_map()
         target, log = self._transform() if transform else (0.0, False)
@@ -300,9 +304,10 @@ class BioFrame:
         for ctx in self.iter_ctx(transform):
             yield _native.materialize(*ctx)
 
-    # ---- subsetting
+    # ---- normalisation totals
     def _kept_gene_totals(self) -> np.ndarray:
-        """Raw per-cell totals over the currently kept genes, by store cell id (NaN elsewhere)."""
+        """Raw per-cell totals over the currently kept genes, by store cell id (NaN for
+        cells not kept). One streamed pass; used by ``normalize_total``."""
         ct = np.zeros(self.n_obs, np.float64)
         cn, cf = np.zeros(self.n_obs, np.uint32), np.zeros(self.n_obs, np.float64)
         gn, gt = np.zeros(self.n_vars, np.uint32), np.zeros(self.n_vars, np.float64)
@@ -313,13 +318,8 @@ class BioFrame:
         totals[self.obs["cell_id"].to_numpy().astype(np.int64)] = ct
         return totals
 
+    # ---- subsetting
     def _subset(self, obs_mask=None, var_mask=None) -> "BioFrame":
-        totals = self.cell_totals
-        if (totals is None and var_mask is not None and not np.all(var_mask)
-                and any(op[0] == "normalize_total" for op in self.ops)):
-            # Normalised before this gene filter: fix each cell's total over the genes
-            # kept now (what scanpy divided by), so dropping genes does not renormalise.
-            totals = self._kept_gene_totals()
         obs = self.obs if obs_mask is None else self.obs.filter(pl.Series(obs_mask))
         var = self.var if var_mask is None else self.var.filter(pl.Series(var_mask))
         obsm = {k: v[obs_mask] for k, v in self.obsm.items()} if obs_mask is not None else dict(self.obsm)
@@ -327,7 +327,7 @@ class BioFrame:
         uns = dict(self.uns)
         if obs_mask is not None:
             uns.pop("neighbors", None)
-        return BioFrame(self.store, obs, var, obsm, varm, uns, list(self.ops), self.chunk_nnz, totals)
+        return BioFrame(self.store, obs, var, obsm, varm, uns, list(self.ops), self.chunk_nnz, self.cell_totals)
 
     def filter_cells(self, condition: Union[pl.Expr, np.ndarray]) -> "BioFrame":
         """Keep cells where ``condition`` (Polars expression on obs, or boolean mask) holds."""
@@ -431,6 +431,11 @@ class BioFrame:
         flush()
         self.obs.with_columns(pl.Series("cell_id", np.arange(self.n_obs, dtype=np.uint32))).write_parquet(path / "obs.parquet")
         self.var.with_columns(pl.Series("gene_id", np.arange(self.n_vars, dtype=np.uint32))).write_parquet(path / "var.parquet")
+
+
+def totals_fingerprint(totals: np.ndarray) -> str:
+    """Short content hash of stored ``cell_totals`` (recorded in the ``normalize_total`` op)."""
+    return hashlib.blake2b(np.ascontiguousarray(totals, np.float64).tobytes(), digest_size=8).hexdigest()
 
 
 def _to_pandas(df: pl.DataFrame):

@@ -8,9 +8,9 @@
 //! turn processes any size with memory = one raw chunk + small accumulators.
 //!
 //! `normalize_total` divides by each cell's total over the genes kept when it
-//! was called (as scanpy). By default that is the total over the genes kept
-//! now; after a gene filter applied later, the totals are fixed in
-//! `cell_totals` instead, so dropping genes never renormalises the cells.
+//! was called (as scanpy): Python computes those totals once and passes them as
+//! `cell_totals`, so filtering genes later never renormalises the cells.
+//! Without `cell_totals` the kernels use the total over the genes kept now.
 
 use faer::{Mat, Side};
 use rayon::prelude::*;

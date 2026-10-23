@@ -60,11 +60,11 @@ sphinx-build -b html docs docs/_build/html     # open docs/_build/html/index.htm
 * `cell_map[store_cell]` is the current row, or −1 if the cell is filtered out. `gene_map`
   does the same for columns. This is how filtering works without copying.
 * `target_sum` > 0 means normalise to it; `log1p` means apply log1p after that.
-* `cell_totals` (only with `target_sum` > 0) is what each cell is divided by, indexed by
-  store cell id. `None`, the usual case, means the cell's total over the genes kept by
-  `gene_map`. It is set when a gene filter follows `normalize_total`
-  (`BioFrame.cell_totals`), so the values do not change when genes are dropped, as in
-  scanpy. `py.rs` checks its length and that it is finite and ≥ 0 for every kept cell.
+* `cell_totals` (passed when `target_sum` > 0) is what each cell is divided by, indexed by
+  store cell id: the totals `normalize_total` computed over the genes kept at that time
+  (`BioFrame.cell_totals`), so filtering genes later does not change the values, as in
+  scanpy. `None` falls back to each cell's total over the genes kept by `gene_map`.
+  `py.rs` checks its length and that it is finite and ≥ 0 for every kept cell.
 
 Each streaming native function takes `*ctx` followed by its own inputs and **preallocated
 NumPy outputs that it accumulates into**, for example:

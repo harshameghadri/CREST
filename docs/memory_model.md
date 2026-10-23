@@ -31,14 +31,12 @@ genes, never with cells × genes:
 
 Every kernel sees exactly the values scanpy would hold in memory: per cell it
 applies the gene filter, divides by the cell's total over the genes that were kept
-*when `normalize_total` was called*, multiplies by `target_sum`, then `log1p`. In the
-usual order (filter genes, then normalise) that total is the sum over the genes kept
-now, computed on the fly. If genes are removed *after* `normalize_total` (dropping
-MT- genes, `highly_variable_genes(subset=True)`), scanpy's values do not change, so
-the first such filter stores each cell's total (one pass over the raw counts, 8 B per
-cell, indexed by store cell id so later cell filters keep working) and the kernels
-divide by the stored total from then on. Nothing is approximated; only *when* the
-arithmetic happens changes. PCA with `scale(max_value)` uses the identity
+*when `normalize_total` was called*, multiplies by `target_sum`, then `log1p`.
+`normalize_total` computes those totals in one pass over the raw counts and stores
+them (`bf.cell_totals`, 8 B per cell, indexed by store cell id), so later gene
+filters (dropping MT- genes, `highly_variable_genes(subset=True)`) leave the values
+unchanged, as in scanpy, and later cell filters keep each cell's own total. Nothing
+is approximated; only *when* the arithmetic happens changes. PCA with `scale(max_value)` uses the identity
 `Z = 1 bᵀ + S` (every implicit zero of gene *j* maps to the constant
 `b_j = clip(−μ_j/σ_j)`; `S` is sparse with entries `clip((x−μ)/σ) − b_j`); centring
 removes `1 bᵀ`, so the PCA of the dense scaled matrix equals the PCA of the sparse
@@ -49,7 +47,8 @@ dense reference.
 ## The cost
 
 * Each step is one (or two, for PCA) pass over the raw counts, recomputing the
-  normalisation. The fused kernels make this cheaper than scanpy's single
+  normalisation (`normalize_total` itself makes one pass, to compute the per-cell
+  totals). The fused kernels make this cheaper than scanpy's single
   materialised pass: at 100k cells in the 0.2.0 benchmark every step was 1.9–17×
   faster. On very small data (PBMC 3k) two steps have a fixed cost that makes them
   slower than scanpy: PCA (~1 s, mostly the 2,000 × 2,000 eigendecomposition) and

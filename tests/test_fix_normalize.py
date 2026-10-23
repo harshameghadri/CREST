@@ -3,7 +3,8 @@
 A gene filter applied after ``normalize_total`` (dropping MT- genes, or
 ``highly_variable_genes(subset=True)``) must not renormalise the cells over the
 genes that remain: scanpy divides by the totals over the genes present at
-``normalize_total`` time and later subsets leave the values unchanged.
+``normalize_total`` time and later subsets leave the values unchanged. CREST
+computes those totals when ``normalize_total`` is called and stores them.
 """
 
 import numpy as np
@@ -147,10 +148,16 @@ def test_normalize_again_after_gene_filter_matches_scanpy(data, store, tmp_path)
 
     bf = _crest(store, X, names, tmp_path)
     crest.pp.normalize_total(bf, 1e4)
+    first_op = bf.ops[-1]
     bf = _not_mt(bf)
-    assert bf.cell_totals is not None
+    old = bf.cell_totals
     crest.pp.normalize_total(bf, 1e4)
-    assert bf.cell_totals is None  # the stored totals are discarded
+    assert bf.cell_totals is not old and bf.ops[-1] != first_op  # replaced, with a new fingerprint
+    ids = bf.obs["cell_id"].to_numpy()
+    kept = X[:, bf.var["gene_id"].to_numpy()]
+    np.testing.assert_allclose(bf.cell_totals[ids], np.asarray(kept.sum(1)).ravel(), rtol=1e-6)
+    assert np.all(old[ids] > bf.cell_totals[ids])  # the MT counts are no longer in the totals
+    assert [op[0] for op in bf.ops] == ["normalize_total"]
     crest.pp.log1p(bf)
     Y = bf.to_scipy().toarray()
     np.testing.assert_allclose(Y, _dense(a), rtol=1e-5, atol=1e-5)
@@ -177,7 +184,8 @@ def test_normalize_again_discards_hvg_scale_cache(data, store, tmp_path):
     parent = _not_mt(bf)
     child = parent.copy()
     crest.pp.normalize_total(child, 1e4)
-    assert "ops" not in child.uns["hvg"] and "ops" in parent.uns["hvg"]  # replaced, not mutated
+    assert child.uns["hvg"]["ops"] != child.ops  # new totals fingerprint: the cache is stale
+    assert parent.uns["hvg"]["ops"] == parent.ops  # the parent's totals and cache are unchanged
     crest.pp.scale(child, max_value=10)
     crest.tl.pca(child, n_comps=20)
     assert child.var.filter(pl.col("highly_variable"))["gene_name"].to_list() == list(a.var_names)
@@ -185,8 +193,42 @@ def test_normalize_again_discards_hvg_scale_cache(data, store, tmp_path):
     assert _max_angle_deg(child.obsm["X_pca"][:, :10], a.obsm["X_pca"][:, :10]) < 0.01
 
 
+@pytest.mark.parametrize("store", STORES)
+def test_cell_filter_after_normalize_matches_scanpy(data, store, tmp_path):
+    """normalize -> filter cells: every kept cell keeps its own total."""
+    X, names = data
+    keep = np.arange(X.shape[0]) % 5 >= 2
+    a = _scanpy(X, names)
+    sc.pp.normalize_total(a, target_sum=1e4)
+    a = a[keep].copy()
+    sc.pp.log1p(a)
+
+    bf = _crest(store, X, names, tmp_path)
+    crest.pp.normalize_total(bf, 1e4)
+    bf = bf.filter_cells(keep)
+    crest.pp.log1p(bf)
+    np.testing.assert_allclose(bf.to_scipy().toarray(), _dense(a), rtol=1e-5, atol=1e-5)
+
+
+def test_same_totals_same_fingerprint(data):
+    """Re-normalising over the same genes records the same op, so ops-keyed caches stay valid."""
+    X, names = data
+    bf = crest.BioFrame.from_scipy(X, var=pl.DataFrame({"gene_name": names}))
+    crest.pp.normalize_total(bf, 1e4)
+    crest.pp.log1p(bf)
+    crest.pp.highly_variable_genes(bf, n_top_genes=200)
+    op = bf.ops[0]
+    assert len(op) == 3 and op[:2] == ("normalize_total", 1e4)
+    again = bf.copy()
+    again.ops = []
+    crest.pp.normalize_total(again, 1e4)
+    assert again.ops[0] == op
+    sub = bf.filter_cells(np.arange(bf.n_obs) % 2 == 0)
+    assert sub.ops == bf.ops and sub.cell_totals is bf.cell_totals  # carried, not recomputed
+
+
 def test_gene_filter_before_normalize_unchanged(data):
-    """The benchmark path (filter genes, then normalize) stores no totals."""
+    """The benchmark path (filter genes, then normalize): totals over the kept genes."""
     X, names = data
     bf = crest.BioFrame.from_scipy(X, var=pl.DataFrame({"gene_name": names}))
     bf = crest.pp.filter_genes(bf, min_cells=3)
@@ -195,7 +237,6 @@ def test_gene_filter_before_normalize_unchanged(data):
     crest.pp.log1p(bf)
     crest.pp.highly_variable_genes(bf, n_top_genes=200)
     bf = bf.filter_cells(np.arange(bf.n_obs) % 2 == 0)
-    assert bf.cell_totals is None
     D = X.toarray()[::2][:, bf.var["gene_id"].to_numpy()]
     ref = np.log1p(D / D.sum(1, keepdims=True) * 1e4)
     np.testing.assert_allclose(bf.to_scipy().toarray(), ref, rtol=1e-5, atol=1e-5)
