@@ -2,12 +2,14 @@
 
 CREST is held to two claims, and both are measured:
 
-1. **Same results as the reference tool.** This is checked by the test suite on every
-   change, and on real data in the module benchmarks.
+1. **Same results as the reference tool.** Parity for HVG, marker genes, `score_genes`, PCA,
+   DESeq2, loess and `threshold_minimum` is checked by the test suite (CI, on pull requests
+   and pushes to `main`); the other steps are checked on real data in the module benchmarks
+   and the paper benchmark.
 2. **Faster and leaner.** This is measured by the paper benchmark, on your own machine, with
    a protocol designed to be reported honestly.
 
-## Accuracy (what the tests pin)
+## Accuracy (tests and real-data checks)
 
 | step | reference | agreement |
 |---|---|---|
