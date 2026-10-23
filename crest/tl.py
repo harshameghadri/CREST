@@ -101,7 +101,13 @@ def _graph(bf: BioFrame):
 
 def leiden(bf: BioFrame, resolution: float = 1.0, n_iterations: int = 2, random_state: int = 0,
            key_added: str = "leiden") -> BioFrame:
-    """Leiden clustering of the neighbour graph (labels ordered by cluster size, "0" largest)."""
+    """Leiden clustering of the neighbour graph (labels ordered by cluster size, "0" largest).
+
+    ``n_iterations`` is the number of Leiden iterations, as in scanpy; iterating
+    stops early once the partition no longer changes, and a negative value
+    (scanpy's ``-1``) iterates until that happens (capped at 10,000 iterations,
+    with a ``RuntimeWarning`` if the cap is reached).
+    """
     rows, cols, w = _graph(bf)
     lab = _native.leiden(bf.n_obs, rows, cols, w, resolution, n_iterations, random_state)
     sizes = np.bincount(lab)
@@ -152,7 +158,8 @@ def leiden_sweep(bf: BioFrame, resolutions: Sequence[float] = (0.1, 0.2, 0.4, 0.
     resolution: ``n_clusters``, ``ari_prev`` (agreement with the next lower
     resolution; clustree-style stability) and, with ``n_seeds > 1``,
     ``ari_seeds`` (mean pairwise ARI across seeds: how reproducible the
-    partition is). Also stored in ``uns['leiden_sweep']``.
+    partition is). Also stored in ``uns['leiden_sweep']``. ``n_iterations`` is as
+    in :func:`leiden` (negative = until the partition no longer changes).
     """
     rows, cols, w = _graph(bf)
     res = [float(r) for r in resolutions]

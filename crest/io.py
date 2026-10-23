@@ -82,9 +82,12 @@ def read_10x_h5(path: Union[str, Path], gex_only: bool = True, backed: Optional[
                 hi = min(max(hi, lo + 1), n)
                 a, b = int(indptr[lo]), int(indptr[hi])
                 cells = np.repeat(np.arange(lo, hi, dtype=np.uint32), np.diff(indptr[lo:hi + 1]))
+                genes = m["indices"][a:b].astype(np.uint32)
+                if len(genes) and int(genes.max()) >= n_genes:  # checked once, at conversion
+                    raise ValueError(f"gene index {int(genes.max())} out of range for n_genes={n_genes}")
                 pl.DataFrame({
                     "cell_id": cells,
-                    "gene_id": m["indices"][a:b].astype(np.uint32),
+                    "gene_id": genes,
                     "count": m["data"][a:b].astype(np.float32),
                 }).write_parquet(out / f"part-{part:05d}.parquet", compression="zstd")
                 lo, part = hi, part + 1
