@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use CREST in your work, please cite it using the metadata in this file."
+type: software
+title: "CREST"
+abstract: >-
+  CREST (Chunked Rust Engine for Single-cell Transcriptomics) runs the scanpy single-cell
+  RNA-seq workflow with native Rust kernels behind a scanpy-compatible Python API, streaming
+  raw counts chunk by chunk from memory or from disk.
+authors:
+  - family-names: "Meghadri"
+    given-names: "Sri Harsha"
+    orcid: "https://orcid.org/0000-0001-8765-5162"
+    affiliation: "Newgenia"
+version: "0.4.0"
+date-released: "2026-10-03"
+license: MIT
+repository-code: "https://github.com/harshameghadri/CREST"
+url: "https://crest-sc.readthedocs.io"
+keywords:
+  - single-cell
+  - scRNA-seq
+  - bioinformatics
+  - scanpy
+  - rust
+  - out-of-core

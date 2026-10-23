@@ -12,8 +12,8 @@ sys.path.insert(0, str(ROOT))  # import crest from the source tree; no Rust buil
 
 # -- project -------------------------------------------------------------------------------
 project = "CREST"
-author = "harshameghadri"
-copyright = "2026, harshameghadri"
+author = "Sri Harsha Meghadri"
+copyright = "2026, Sri Harsha Meghadri"
 _cargo = (ROOT / "Cargo.toml").read_text()
 release = re.search(r'^version\s*=\s*"([^"]+)"', _cargo, re.M).group(1)  # single source of truth
 version = release
