@@ -51,9 +51,16 @@ Building from source needs a Rust toolchain and [maturin](https://www.maturin.rs
 
 ## What is validated against scanpy
 
-Every step is checked against its reference implementation in the test suite
-(`tests/test_crest.py`, run by CI on every change) and on real data in the module
-benchmarks (`bench/<module>/`). On PBMC3k with the scanpy tutorial parameters:
+The test suite (`tests/test_crest.py`, run by CI on pull requests and on pushes to `main`)
+checks parity with the reference implementation for HVG selection (`seurat` and `seurat_v3`
+vs scanpy), `rank_genes_groups` (t-test and Wilcoxon vs scanpy), `score_genes` (vs scanpy),
+`scale` + PCA (vs dense NumPy), DESeq2 Wald and LRT (vs stored R DESeq2 1.42 output), the
+loess port (vs `skmisc`) and `threshold_minimum` (vs `skimage`). Harmony, Scrublet, ingest,
+neighbours, Leiden and UMAP are tested for expected behaviour (batch mixing, recovery of
+planted clusters, doublets and labels, kNN recall, determinism) and validated against their
+reference tools on real data in `bench/` (the module benchmarks and the paper benchmark's
+accuracy checks). Tested with scanpy 1.11 (1.11.5). On PBMC3k with the scanpy tutorial
+parameters:
 
 | step | agreement with scanpy |
 |---|---|
@@ -61,11 +68,11 @@ benchmarks (`bench/<module>/`). On PBMC3k with the scanpy tutorial parameters:
 | `highly_variable_genes` (seurat) | identical gene set; `dispersions_norm` within 2e-6 |
 | `scale` + `pca` | identical subspace (0.000° principal angles), variance ratio within 5e-9 |
 | `neighbors` connectivities | identical given the same kNN (within 1e-5) |
-| `leiden` | same number of clusters, equal or higher modularity |
+| `leiden` | similar number of clusters; modularity typically within ~0.002 of the reference (leidenalg; see [benchmarks](https://crest-sc.readthedocs.io/en/latest/benchmarks.html)) |
 | `umap` | equal kNN preservation / silhouette (stochastic layout) |
 | `rank_genes_groups` t-test, Wilcoxon | scores within 1e-4 (1e-7 on identical input), same p-values and log fold-changes |
 | `score_genes` | identical, including scanpy's control-gene sampling (within 3e-7) |
-| `DESeq2` (pseudobulk) | R DESeq2 1.42: size factors, dispersions, log2FC, p-values within ~1e-9 on simulated designs; identical calls on 5 of 8 Kang 2018 cell types, >99% on the rest ([docs/deseq2.md](docs/deseq2.md)); LRT statistics within 1e-6 |
+| `DESeq2` (pseudobulk) | R DESeq2 1.42: size factors, dispersions, log2FC, p-values within ~1e-9 on simulated designs; identical significant sets in 6 of 8 Kang 2018 cell types; FCGR3A+ monocytes 1468/1469, CD4 T cells 1350 of R's 1365 shared (21 discordant genes) ([docs/deseq2.md](docs/deseq2.md)); LRT statistics within 1e-6 |
 | `highly_variable_genes(flavor="seurat_v3")` | identical gene sets and ranks, `variances_norm` within 1e-14 (loess port matches `skmisc` to 1e-14) |
 | `harmony` | same integration quality as harmonypy 2.0 (iLISI 1.81 vs 1.81, cLISI 1.01, ARI 0.82) at 3.5× the speed; neighbourhoods as close to harmonypy's as two harmonypy seeds are to each other |
 | `scrublet` | AUROC 0.863 vs 0.863 on Kang 2018 demuxlet doublets, 49× faster |
@@ -99,9 +106,9 @@ binomial thinning), so sparsity, library size and cluster structure are realisti
 
 The figures above come from the 0.2.0 run on a 4-core cloud VM
 (`bench/whitepaper/results/`). On a 64-thread workstation (0.4.0, 5 repeats, CPU governor
-`performance`), best-vs-best core-workflow speed-up ranges from **1.20× (PBMC 3k, 2,700
-cells) to 16.70× (synthetic 200k cells)**, including **10.28×** on PBMC 68k (9.13 s with
-CREST vs 210 s with scanpy at 64 threads, 93.8 s at scanpy's own best of 8 threads), with
+`performance`), the headline core-workflow speed-up (the smaller of matched-thread and
+best-vs-best) ranges from **1.20× (PBMC 3k, 2,700 cells) to 16.70× (synthetic 200k
+cells)**, including **10.28×** on PBMC 68k (9.13 s with CREST vs 210 s with scanpy at 64 threads, 93.8 s at scanpy's own best of 8 threads), with
 1.6×–4.7× less memory. Comparing at matched 64 threads overstates CREST's advantage on
 larger datasets, since scanpy slows down at high thread counts (it's 2.2× slower at 64
 threads than at its own best of 8, on PBMC 68k). CREST is *not* faster for `seurat_v3` HVG
@@ -142,14 +149,17 @@ PDF/PNG figures and a `.tar.gz`. The pieces live in `bench/paper/`
   above 20k cells an inverted-file index — cells bucketed by k-means, each bucket
   searched against its 20 nearest buckets, like cell lists in molecular dynamics —
   polished by NN-descent (99.7% recall on 108k PBMC cells).
-* **UMAP.** umap-learn's objective and defaults, optimised in parallel by domain
-  decomposition: each thread owns a range of cells, writes only those, and reads
-  the rest from a snapshot refreshed 16× per epoch.
+* **UMAP.** umap-learn's objective and default parameters, with CREST's own iterative
+  spectral initialisation. With more than one thread (and ≥ 1,000 cells) it is optimised in
+  parallel by domain decomposition: each thread owns a range of cells, writes only those, and reads the rest
+  from a snapshot refreshed 16× per epoch. 1-thread and multi-thread runs use different SGD
+  schedules, so layouts differ by thread count.
 * **Leiden.** Traag et al. (2019): fast local moving, refinement, aggregation.
 * **DESeq2 in Rust.** A step-by-step port of DESeq2's `DESeq()` / `results()`, one
   parallel pass over genes per stage, with the NB likelihood evaluated without
   the cancellation R suffers at tiny dispersions. Pseudobulk DE for 8 cell types
-  of Kang 2018 takes 7 s (R: 131 s, pydeseq2: 202 s).
+  of Kang 2018 takes 7 s on 4 cores (R DESeq2, single-threaded: 131 s; pydeseq2, all cores:
+  202 s).
 * **Sparse Wilcoxon.** All implicit zeros of a gene form one tie block with a
   closed-form rank, so only non-zero values are sorted.
 * **Harmony in Rust.** The harmony2 algorithm with cells sorted by batch, so the

@@ -11,12 +11,12 @@ CREST is held to two claims, and both are measured:
 
 | step | reference | agreement |
 |---|---|---|
-| QC, filters | scanpy 1.11 | identical |
+| QC, filters | scanpy 1.11 (tested with 1.11.5) | identical |
 | HVG `seurat`, `cell_ranger` | scanpy | identical gene set; `dispersions_norm` within 2e-6 |
 | HVG `seurat_v3` | scanpy + skmisc loess | identical sets and ranks; `variances_norm` within 1e-14 |
 | scale + PCA | scanpy (dense) | identical subspace (0.000° principal angles) |
 | neighbours (connectivities) | scanpy / umap-learn | identical given the same kNN (1e-5) |
-| Leiden | leidenalg | similar number of clusters; modularity typically equal or higher (mean +0.0015 over 20 seeds at resolution 1 on PBMC 68k), occasionally ~0.002 lower on a given seed — both tools' own seed-to-seed variation is of the same order, so this is not a per-seed guarantee |
+| Leiden | scanpy 1.11 `sc.tl.leiden(flavor="igraph", n_iterations=2)` (ARI, in the paper benchmark); leidenalg (modularity sweep) | similar number of clusters; modularity typically equal or higher than leidenalg's (mean +0.0015 over 20 seeds at resolution 1 on PBMC 68k), occasionally ~0.002 lower on a given seed — both tools' own seed-to-seed variation is of the same order, so this is not a per-seed guarantee. The modularity-sweep script is not yet in the repository |
 | t-test, Wilcoxon | scanpy | scores within 1e-4, same p-values |
 | `score_genes` | scanpy | identical incl. control-gene sampling (3e-7) |
 | DESeq2 Wald / LRT | R DESeq2 1.42 | ~1e-9 (Wald, simulated), 1e-6 (LRT) |
@@ -30,7 +30,7 @@ Details: {doc}`downstream`, {doc}`deseq2`.
 
 ```bash
 cd /a/disk/with/space          # everything is written under ./crest-bench (nothing in $HOME)
-curl -LO https://raw.githubusercontent.com/harshameghadri/CREST/dev/scripts/crest_paper_bench.sh
+curl -LO https://raw.githubusercontent.com/harshameghadri/CREST/v0.4.0/scripts/crest_paper_bench.sh
 bash crest_paper_bench.sh --tier quick      # ~35 min: 3 datasets, 2 repeats
 bash crest_paper_bench.sh --tier standard   # ~1 day on 64 cores: 6 datasets, 5 repeats, thread scan
 bash crest_paper_bench.sh --tier full       # adds the 647k COVID atlas and 1.3M neurons
@@ -39,7 +39,7 @@ bash crest_paper_bench.sh --tier full       # adds the 647k COVID atlas and 1.3M
 The script:
 
 1. checks the tools (git, curl, uv, Rust) and the free disk;
-2. clones CREST at `--ref` (default `dev`) into a throwaway uv venv and builds it in release mode;
+2. clones CREST at `--ref` (default `dev`; pass `--ref v0.4.0` to reproduce the release) into a throwaway uv venv and builds it in release mode;
 3. runs `cargo test` and `pytest`, and stops if they fail;
 4. records the machine: CPU model, caches, governor, cores, RAM, disk, OS, compilers, BLAS
    and every package version;
@@ -109,14 +109,14 @@ These rules apply to every number CREST publishes:
   are reported, not hidden.
 * Every speed-up has a confidence interval and the number of repeats.
 
-## Results: `dev` (`d75475e`), standard tier, performance governor — final paper run
+## Results: 0.4.0 (commit `d75475e`), standard tier, performance governor
 
 Same Threadripper PRO 3975WX (32 cores / 64 threads, 123 GB), CPU governor set to
 `performance`, 5 repeats, current protocol (core runs at 8 and 64 threads, modules in separate
 3-repeat runs, Scrublet skipped above 150,000 cells). Commit `d75475e` is `dev` with both
 Leiden parallelisations merged (phases 2 and 3; phase 1 stays single-threaded, see below) and
 the `read_h5ad`/`from_anndata` I/O work. 284/284 runs succeeded, zero failures. This
-supersedes the 0.3.0 numbers above for every dataset (those used `powersave` and only had a
+supersedes the 0.3.0 numbers below for every dataset (those used `powersave` and only had a
 thread scan on PBMC 68k); the full `report.md` and figures are archived at
 `crest-bench-rinamochana-20261002-0323.tar.gz` on rinamochana.
 
@@ -156,8 +156,9 @@ threads, 2.08×) then *regresses* to 210 s at 64 (Amdahl serial fraction 0.59).
 cells^0.74 (r²=0.995), CREST out-of-core ∝ cells^0.78 (r²=0.997), scanpy ∝ cells^0.91
 (r²=0.999) — CREST scales sublinearly in this range, scanpy close to linear.
 
-**Agreement with scanpy:** PCA subspace cosine 1.000 and 15-NN graph Jaccard 1.000 on every
-dataset; HVG Jaccard 0.994–1.000 (`seurat`) and 0.998–1.000 (`seurat_v3`); Leiden ARI
+**Agreement with scanpy:** PCA subspace cosine 1.000 and 15-NN neighbour-set Jaccard in the
+two PCA spaces 1.000 (both computed with CREST's kNN; each tool builds and clusters its own
+graph) on every dataset; HVG Jaccard 0.994–1.000 (`seurat`) and 0.998–1.000 (`seurat_v3`); Leiden ARI
 0.70–0.94 / NMI 0.86–0.94 (same range as 0.3.0); UMAP trustworthiness 0.86–0.96, matching
 scanpy's own to within 0.01; top-50 marker overlap 0.90–0.96.
 
@@ -169,8 +170,9 @@ Scrublet-equivalent doublet detection vs `scanpy.pp.scrublet` on Kang is **49× 
 identical AUROC (0.863 both, Spearman 0.983 on doublet scores); `ingest` label transfer is
 **17.6× faster** and *more accurate* (90.7% vs 89.8%, label agreement 96.4%); pseudobulk
 DESeq2 on Kang (8 cell types) matches R's significant-gene calls almost exactly (identical
-counts in 6 of 8 cell types, off by 1 and by 9 genes in the other two) at 63–78× R's time and
-41–79× pydeseq2's — pydeseq2 itself diverges from R noticeably more than CREST does on some
+significant sets in 6 of 8 cell types; 1 and 21 discordant genes in the other two) and is
+63–78× faster than R DESeq2 (single-threaded R vs CREST at 64 threads; not thread-matched) and
+41–79× faster than pydeseq2 (all cores) — pydeseq2 itself diverges from R noticeably more than CREST does on some
 cell types (e.g. 914 vs R's 794 significant genes on B cells).
 
 ## Results: 0.3.0, standard tier
@@ -215,8 +217,9 @@ Amdahl serial fraction 0.24). scanpy 193 s → 94.3 s at 8 threads (its best), 2
 Scrublet 21–50× on 10k–29k cells but only 1.2–2.7× at 68k–200k (both tools' neighbour
 search grows roughly with cells²; 2,590 s vs 3,020 s at 200k).
 
-**Agreement with scanpy:** PCA subspaces identical (cosine 1.000000), 15-NN graphs identical
-(Jaccard ≥ 0.99999), HVG sets 99.4–100% identical (Jaccard), Leiden ARI 0.80–0.94 with the
+**Agreement with scanpy:** PCA subspaces identical (cosine 1.000000), 15-NN neighbour-set
+Jaccard in the two PCA spaces ≥ 0.99999 (both computed with CREST's kNN; each tool builds and
+clusters its own graph), HVG sets 99.4–100% identical (Jaccard), Leiden ARI 0.80–0.94 with the
 same number of clusters on 4 of 6 datasets (57 vs 59 and 64 vs 62 on the synthetic sets), UMAP
 trustworthiness equal or slightly higher (0.862–0.959 vs 0.863–0.957), top-50 marker overlap
 0.92–0.99.
@@ -259,11 +262,11 @@ the UMAP/graph-copy fixes) — together still 77% of the time. At 8 threads: 44.
 the dominant cost either way. The resolution-sweep number below (484 s, 68 GB peak) predates
 this commit's graph-copy fix and still needs remeasuring.
 
-**Agreement with scanpy (1M):** identical PCA subspace, 15-NN graph (Jaccard 1.0) and HVG
-sets; UMAP trustworthiness 0.944 vs 0.946; top-50 marker overlap 0.94. **Leiden ARI is 0.66**
-(27 vs 27 clusters), lower than on the smaller datasets (0.80–0.94), although both tools
-cluster the identical graph. **Seed-to-seed baseline** (2 extra untimed Leiden runs per tool,
-same graph): CREST seed-to-seed ARI 0.73, scanpy seed-to-seed ARI 0.64, CREST-vs-scanpy
+**Agreement with scanpy (1M):** identical PCA subspace and HVG sets, 15-NN neighbour-set
+Jaccard in the two PCA spaces 1.0 (both computed with CREST's kNN); UMAP trustworthiness 0.944 vs 0.946; top-50 marker overlap 0.94. **Leiden ARI is 0.66**
+(27 vs 27 clusters), lower than on the smaller datasets (0.80–0.94), although the two PCA
+spaces give the same 15-NN sets (each tool still builds and clusters its own graph).
+**Seed-to-seed baseline** (2 extra untimed Leiden runs per tool, each on that tool's own graph): CREST seed-to-seed ARI 0.73, scanpy seed-to-seed ARI 0.64, CREST-vs-scanpy
 cross-seed mean ARI 0.67. So CREST-vs-scanpy disagreement (0.66) is close to scanpy's own
 seed noise (0.64) and a bit below CREST's own seed noise (0.73): **most of the gap is ordinary
 Leiden seed variation on a million-node graph, not a correctness difference**, though CREST's
@@ -273,16 +276,18 @@ agree at 0.82 (0.97–0.98 on Kang).
 
 ### Leiden, parallelised phase by phase
 
-The above numbers predate the parallel Leiden work in `CHANGELOG.md` (Unreleased). Profiling
+The above numbers predate the parallel Leiden work in `CHANGELOG.md` (0.4.0). Profiling
 Leiden's own three phases directly (temporary timers, `parse_pbmc_1m`, 64 threads) gives their
 share of its wall time: phase 1 (`fast_move_nodes`) ~73%, phase 3 (`aggregate`) ~21%, phase 2
 (`refine_partition`) ~3%.
 
 **Phase 2 (refinement):** each unrefined community now runs on its own thread instead of one
 sequential pass over all nodes. Measured separately (not through the harness above, same
-machine, FRASER-quiet, median of 5 `crest.tl.leiden` calls on the 1M-cell graph at 64
+machine, "FRASER-quiet", i.e. with the shared machine's other heavy jobs not running; the same
+applies below; median of 5 `crest.tl.leiden` calls on the 1M-cell graph at 64
 threads): **20.1 s vs 23.9 s before, ~16% faster**, modularity unchanged (within the seed
-noise quantified above against leidenalg).
+noise quantified above against leidenalg; the 20-seed modularity-sweep script is not yet in
+the repository).
 
 **Phase 3 (aggregation):** each community's outgoing edges now compute on its own thread too
 (no RNG involved, so this is bit-identical for any thread count — verified by diffing labels
