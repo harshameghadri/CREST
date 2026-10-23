@@ -10,9 +10,11 @@ Reporting rules (CLAUDE.md, "honest benchmarks"):
   * the headline compares the CORE workflow (read ... Wilcoxon); optional modules
     (seurat_v3 HVG, Scrublet, resolution sweep, Harmony, pseudobulk DESeq2) are a
     separate table;
-  * the speedup is computed at EVERY thread count both tools were measured at and best vs
-    best (each tool at its fastest measured thread count); the headline is the minimum of
-    all of them. A row is flagged when only one common thread count was measured, and a
+  * headline candidates = the --main-threads set, identical for every dataset; thread-scan
+    counts appear only in the thread-scaling table (and in informational per-thread
+    columns). Within that set the speedup is computed at EVERY thread count both tools
+    were measured at and best vs best (each tool at its fastest main thread count); the
+    headline is the minimum of all of them. A row is flagged when only one common thread count was measured, and a
     tool's best thread count is flagged when it is at the edge of the scanned range;
   * a table lists every step where CREST is not clearly faster (< 1.2x);
   * every failed attempt is listed, from the append-only attempts.jsonl (a resumed run
@@ -164,8 +166,31 @@ def _core_samples(df: pl.DataFrame) -> dict:
     return out
 
 
-def _best_threads(samp: dict, ds: str, tool: str):
-    th = sorted(k[2] for k in samp if k[0] == ds and k[1] == tool)
+def main_thread_sets(res: Path, samp: dict, ncpu: int | None) -> dict:
+    """{tool: thread counts of the MAIN runs} - the only counts the headline may use.
+
+    Read from plan.json (``args.main_threads`` for CREST / scanpy, ``args.ooc_threads`` for
+    out-of-core CREST, defaulting to the main set), clamped to the core count exactly as
+    run_all.plan() does. The thread-scan counts (--threads-scan on --thread-dataset) are
+    not in it, so every dataset's headline answers the same question. Without plan.json:
+    the thread counts present on every dataset the tool was run on."""
+    plan = res / "plan.json"
+    if plan.exists():
+        args = json.loads(plan.read_text()).get("args", {})
+        n = ncpu or 1
+        main = sorted({min(int(q), n) for q in (args.get("main_threads") or [n])})
+        ooc = sorted({min(int(q), n) for q in (args.get("ooc_threads") or main)})
+        return {"crest": set(main), "scanpy": set(main), "crest-ooc": set(ooc)}
+    out = {}
+    for t in TOOLS:
+        per_ds = [{k[2] for k in samp if k[0] == ds and k[1] == t} for ds in {k[0] for k in samp if k[1] == t}]
+        out[t] = set.intersection(*per_ds) if per_ds else set()
+    return out
+
+
+def _best_threads(samp: dict, ds: str, tool: str, allowed: set | None = None):
+    """Fastest measured thread count of ``tool`` on ``ds`` among ``allowed`` (None = any)."""
+    th = sorted(k[2] for k in samp if k[0] == ds and k[1] == tool and (allowed is None or k[2] in allowed))
     if not th:
         return None, th
     med = {p: float(np.median(samp[(ds, tool, p)]["t"])) for p in th}
@@ -184,14 +209,18 @@ def _edge(best, th, ncpu) -> str | None:
     return None
 
 
-def main_table(df: pl.DataFrame, ncpu: int | None = None) -> pl.DataFrame:
+def main_table(df: pl.DataFrame, ncpu: int | None = None, main_sets: dict | None = None) -> pl.DataFrame:
     """Headline: core workflow, CREST vs scanpy.
 
-    The speed-up is computed at EVERY thread count both tools were measured at (matched)
-    and best vs best (each tool at its own fastest measured thread count). The headline is
-    the minimum of all of these, and the Mann-Whitney test and Hodges-Lehmann shift are
+    Headline candidates = the --main-threads set (``main_sets``), identical for every
+    dataset; thread-scan counts appear only in the thread-scaling table (and, for
+    information, in the per-thread time columns and ``{tool}_best_threads_any``). The
+    speed-up is computed at EVERY main thread count both tools were measured at (matched)
+    and best vs best (each tool at its fastest main thread count). The headline is the
+    minimum of all of these, and the Mann-Whitney test and Hodges-Lehmann shift are
     computed on the two samples behind the headline."""
     samp = _core_samples(df)
+    main_sets = main_sets or {t: None for t in TOOLS}
     rows = []
     datasets = df.group_by("dataset").agg(pl.col("n_cells").max()).sort("n_cells")
     for ds, n in datasets.iter_rows():
@@ -200,19 +229,22 @@ def main_table(df: pl.DataFrame, ncpu: int | None = None) -> pl.DataFrame:
         for t in TOOLS:
             fail = df.filter((pl.col("dataset") == ds) & (pl.col("tool") == t) & (pl.col("status") != "ok")).height
             row[f"{t}_failed"] = fail
-            best, th[t] = _best_threads(samp, ds, t)
+            best, th[t] = _best_threads(samp, ds, t, main_sets.get(t))
+            best_any, th_any = _best_threads(samp, ds, t)
             if not th[t]:
                 continue
             top = max(th[t])
             x = samp[(ds, t, top)]["t"]
             bx = samp[(ds, t, best)]["t"]
-            row.update({f"{t}_n": len(x), f"{t}_threads_measured": " ".join(map(str, th[t])),
+            row.update({f"{t}_n": len(x), f"{t}_threads_main": " ".join(map(str, th[t])),
+                        f"{t}_threads_measured": " ".join(map(str, th_any)),
+                        f"{t}_best_threads_any": best_any,  # informational only, never the headline
                         f"{t}_time_median": float(np.median(x)), f"{t}_time_min": float(x.min()),
                         f"{t}_time_max": float(x.max()), f"{t}_time_iqr": iqr(x), f"{t}_source": samp[(ds, t, top)]["src"],
                         f"{t}_best_threads": best, f"{t}_best_time": float(np.median(bx)),
                         f"{t}_best_time_min": float(bx.min()), f"{t}_best_time_max": float(bx.max()),
                         f"{t}_best_edge": _edge(best, th[t], ncpu)})
-            for p in th[t]:
+            for p in th_any:  # every measured count, scan counts included (information)
                 row[f"{t}_time_t{p}"] = float(np.median(samp[(ds, t, p)]["t"]))
         common = sorted(set(th["crest"]) & set(th["scanpy"]))
         if not common:
@@ -419,9 +451,9 @@ def fig_steps(steps: pl.DataFrame, figs, dataset: str):
     plt.close(fig)
 
 
-def fig_scaling(df, figs) -> list[dict]:
+def fig_scaling(df, figs, main_sets: dict | None = None) -> list[dict]:
     """Core-workflow time vs cells over the synthetic series only (one generator and one
-    source dataset, so only the cell count changes), each tool at its best measured thread
+    source dataset, so only the cell count changes), each tool at its best main (--main-threads) thread
     count per dataset, core-profile runs preferred (as in the main table)."""
     plt = _style()
     samp = _core_samples(df)
@@ -432,7 +464,7 @@ def fig_scaling(df, figs) -> list[dict]:
     for t in TOOLS:
         pts = []
         for ds in synth:
-            best, _ = _best_threads(samp, ds, t)
+            best, _ = _best_threads(samp, ds, t, (main_sets or {}).get(t))
             if best is not None and ncell.get(ds):
                 pts.append((ncell[ds], float(np.median(samp[(ds, t, best)]["t"])), best, ds))
         if len(pts) < 2:
@@ -609,7 +641,8 @@ def main():
         return
     mach = _machine(raw)
     df.write_csv(tables / "runs.csv")
-    main_t = main_table(df, mach["logical"])
+    main_sets = main_thread_sets(res, _core_samples(df), mach["logical"])
+    main_t = main_table(df, mach["logical"], main_sets)
     steps = step_table(df)
     th = thread_table(df, mach["physical"])
     attempts = load_attempts(res)
@@ -622,7 +655,7 @@ def main():
     fig_totals(df, figs)
     for ds in df["dataset"].unique().to_list():
         fig_steps(steps, figs, ds)
-    fits = fig_scaling(df, figs)
+    fits = fig_scaling(df, figs, main_sets)
     if fits:
         pl.DataFrame(fits).write_csv(tables / "scaling.csv")
     fig_threads(th, figs)
@@ -644,8 +677,9 @@ def main():
         fh.write(f"# CREST benchmark report\n\n{env}\n\n## Core workflow: CREST vs scanpy\n\n")
         fh.write("Core workflow = read, QC filter, normalize + log1p, HVG, scale + PCA, neighbours, Leiden, UMAP, "
                  "t-test and Wilcoxon marker genes (the sum of these steps; interpreter start-up and JIT warm-up "
-                 "excluded). Times are medians [min-max] over repeats at the highest thread count; *best* is each "
-                 "tool's fastest measured thread count. Speedup = scanpy / CREST, given at every thread count both "
+                 "excluded). Headline candidates = the --main-threads set, identical for every dataset; "
+                 "thread-scan counts appear only in the thread-scaling table. Times are medians [min-max] over "
+                 "repeats at the highest main thread count; *best* is each tool's fastest main thread count. Speedup = scanpy / CREST, given at every thread count both "
                  "tools were measured at (*matched*) and *best vs best*, each with its min-max envelope "
                  "[min(scanpy)/max(CREST), max(scanpy)/min(CREST)] (no bootstrap CIs: with 5 repeats they are not "
                  "meaningful). The **headline** is the minimum of all of these; Mann-Whitney p and the "
@@ -679,7 +713,7 @@ def main():
         fh.write("\n## Scaling with cells (core workflow)\n\n")
         if fits:
             fh.write("Log-log OLS fit of core-workflow time on cell count over the **synthetic series only** "
-                     "(one generator and source, so only the cell count varies), each tool at its best measured "
+                     "(one generator and source, so only the cell count varies), each tool at its best main "
                      "thread count per dataset (`best_threads`). `alpha` is the exponent (time ∝ cells^alpha) with "
                      "its 95% t-interval; `n_points` is the number of datasets in the fit. With few points the "
                      "interval is wide: read alpha together with it.\n\n")
