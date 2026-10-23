@@ -1,7 +1,11 @@
 """Input validation and edge cases: bad ids raise, tiny approximate kNN, Leiden
 ``n_iterations=-1``, Scrublet ignores unfilled neighbour slots."""
 
+import subprocess
+import sys
+import textwrap
 import types
+import warnings
 
 import numpy as np
 import polars as pl
@@ -105,6 +109,55 @@ def test_leiden_negative_iterations_runs_until_unchanged(graph_bf):
     assert tab.height == 2
     crest.tl.leiden(bf, resolution=0.5, n_iterations=-1, key_added="r05")
     assert (bf.obs["sw_0.5"] == bf.obs["r05"]).all()
+
+
+def _ring_of_cliques(n_cliques=40, size=5):
+    """Identical cliques joined in a ring by single edges: every clique is
+    interchangeable, so Leiden sees many exact ties."""
+    rows, cols = [], []
+    for c in range(n_cliques):
+        base = c * size
+        for i in range(size):
+            for j in range(i + 1, size):
+                rows.append(base + i)
+                cols.append(base + j)
+        rows.append(base + size - 1)
+        cols.append(((c + 1) % n_cliques) * size)
+    return n_cliques * size, np.asarray(rows, np.uint32), np.asarray(cols, np.uint32), np.ones(len(rows), np.float32)
+
+
+def test_leiden_until_stable_terminates_on_ties():
+    """n_iterations=-1 releases the GIL, so a non-terminating loop would hang
+    uninterruptibly: run it in a subprocess with a hard timeout."""
+    code = textwrap.dedent("""
+        import warnings, numpy as np, sys
+        sys.path.insert(0, %r)
+        from test_fix_validation import _ring_of_cliques
+        from crest import crest as N
+        warnings.simplefilter("error")  # the iteration cap must not be hit
+        n, r, c, w = _ring_of_cliques()
+        for res in (0.5, 1.0, 2.0):
+            for seed in range(6):
+                a = N.leiden(n, r, c, w, res, -1, seed)
+                b = N.leiden(n, r, c, w, res, 10_000, seed)
+                assert (a == b).all()
+        N.leiden_sweep(n, r, c, w, [0.5, 1.0, 2.0] * 2, list(range(6)), -1)
+        print("ok")
+    """) % str(__import__("pathlib").Path(__file__).parent)
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0 and out.stdout.strip() == "ok", out.stderr
+
+
+def test_leiden_iteration_cap_warns():
+    n, r, c, w = _ring_of_cliques()
+    with pytest.warns(RuntimeWarning, match="cap of 1 iterations"):
+        _native.leiden(n, r, c, w, 1.0, -1, 0, max_iterations=1)  # 1st iteration always changes it
+    with pytest.warns(RuntimeWarning, match="cap of 1 iterations"):
+        _native.leiden_sweep(n, r, c, w, [1.0], [0], -1, max_iterations=1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _native.leiden(n, r, c, w, 1.0, 1, 0)  # an explicit count never warns
+        _native.leiden(n, r, c, w, 1.0, -1, 0)
 
 
 # --------------------------------------------------------------------------- (4) scrublet

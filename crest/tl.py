@@ -105,7 +105,8 @@ def leiden(bf: BioFrame, resolution: float = 1.0, n_iterations: int = 2, random_
 
     ``n_iterations`` is the number of Leiden iterations, as in scanpy; iterating
     stops early once the partition no longer changes, and a negative value
-    (scanpy's ``-1``) iterates until that happens.
+    (scanpy's ``-1``) iterates until that happens (capped at 10,000 iterations,
+    with a ``RuntimeWarning`` if the cap is reached).
     """
     rows, cols, w = _graph(bf)
     lab = _native.leiden(bf.n_obs, rows, cols, w, resolution, n_iterations, random_state)

@@ -392,18 +392,36 @@ fn aggregate(g: &Graph, by: &[usize], k: usize) -> Graph {
 }
 
 /// Leiden community detection. Returns a community id per node (0..k).
+#[cfg(test)]
 pub(crate) fn leiden_partition(
     graph: &Graph,
     resolution: f64,
     n_iterations: usize,
     seed: u64,
 ) -> Vec<usize> {
+    leiden_partition_stable(graph, resolution, n_iterations, seed).0
+}
+
+/// [`leiden_partition`], also returning whether it stopped because an iteration
+/// left the partition unchanged (`false`: it ran all `n_iterations`).
+///
+/// "Unchanged" is the analogue of leidenalg's stop for `n_iterations < 0` (an
+/// iteration with no quality improvement): the final partition only changes
+/// through `fast_move_nodes`, which moves a node only for a strictly positive
+/// gain (zero-gain merges in the refinement only shape the aggregate graph), so
+/// an iteration changes the partition iff it raises the quality.
+pub(crate) fn leiden_partition_stable(
+    graph: &Graph,
+    resolution: f64,
+    n_iterations: usize,
+    seed: u64,
+) -> (Vec<usize>, bool) {
     let n = graph.n();
     if n == 0 {
-        return vec![];
+        return (vec![], true);
     }
     if graph.two_m <= 0.0 {
-        return (0..n).collect();
+        return ((0..n).collect(), true);
     }
     let theta = 0.01;
     let mut rng = StdRng::seed_from_u64(seed);
@@ -449,10 +467,10 @@ pub(crate) fn leiden_partition(
         let changed = next != result;
         result = next;
         if !changed {
-            break;
+            return (result, true);
         }
     }
-    result
+    (result, false)
 }
 
 /// Modularity of a partition (for tests and diagnostics).

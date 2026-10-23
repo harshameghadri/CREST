@@ -98,20 +98,35 @@ fn connectivities<'py>(
     Ok((PyArray1::from_vec_bound(py, r), PyArray1::from_vec_bound(py, c), PyArray1::from_vec_bound(py, w)))
 }
 
-/// scanpy / leidenalg `n_iterations`: a negative value means "iterate until the
-/// partition no longer changes" (each iteration that changes it strictly raises
-/// the quality, so this terminates). 0 runs one iteration, as before.
-fn leiden_iterations(n_iterations: i64) -> usize {
+/// Upper bound on Leiden iterations for `n_iterations < 0` ("until the partition
+/// no longer changes"). Each iteration that changes the partition strictly raises
+/// the quality, so the loop ends on its own; the cap only guards against a
+/// floating-point cycle, which would otherwise hang with the GIL released.
+const LEIDEN_MAX_ITERATIONS: usize = 10_000;
+
+/// scanpy / leidenalg `n_iterations`: negative = until unchanged (capped at
+/// `max_iterations`); 0 runs one iteration, as before.
+fn leiden_iterations(n_iterations: i64, max_iterations: usize) -> usize {
     if n_iterations < 0 {
-        usize::MAX
+        max_iterations.max(1)
     } else {
         n_iterations as usize
     }
 }
 
+fn warn_leiden_cap(py: Python<'_>, max_iterations: usize) -> PyResult<()> {
+    PyErr::warn_bound(
+        py,
+        &py.get_type_bound::<pyo3::exceptions::PyRuntimeWarning>(),
+        &format!("leiden: n_iterations=-1 stopped at the cap of {} iterations before the partition stabilised", max_iterations),
+        1,
+    )
+}
+
 /// Leiden community detection (modularity, RB configuration) on an undirected weighted graph.
 #[pyfunction]
-#[pyo3(signature = (n, rows, cols, weights, resolution=1.0, n_iterations=2, seed=0))]
+#[pyo3(signature = (n, rows, cols, weights, resolution=1.0, n_iterations=2, seed=0, max_iterations=LEIDEN_MAX_ITERATIONS))]
+#[allow(clippy::too_many_arguments)]
 fn leiden<'py>(
     py: Python<'py>,
     n: usize,
@@ -121,8 +136,10 @@ fn leiden<'py>(
     resolution: f64,
     n_iterations: i64,
     seed: u64,
+    max_iterations: usize,
 ) -> PyResult<Bound<'py, PyArray1<u32>>> {
-    let n_iterations = leiden_iterations(n_iterations);
+    let until_stable = n_iterations < 0;
+    let n_iterations = leiden_iterations(n_iterations, max_iterations);
     if !(resolution > 0.0 && resolution.is_finite()) {
         return Err(pyo3::exceptions::PyValueError::new_err("resolution must be positive and finite"));
     }
@@ -130,8 +147,12 @@ fn leiden<'py>(
     let labels = py.allow_threads(move || {
         let g = crate::leiden::Graph::from_edges(n, &e);
         drop(e);
-        crate::leiden::leiden_partition(&g, resolution, n_iterations, seed)
+        crate::leiden::leiden_partition_stable(&g, resolution, n_iterations, seed)
     });
+    let (labels, stable) = labels;
+    if until_stable && !stable {
+        warn_leiden_cap(py, n_iterations)?;
+    }
     Ok(PyArray1::from_vec_bound(py, labels.into_iter().map(|c| c as u32).collect()))
 }
 
@@ -185,8 +206,9 @@ fn view<'a>(
             if c.windows(2).any(|w| w[0] > w[1]) {
                 return Err(pyo3::exceptions::PyValueError::new_err("chunk must be sorted by cell"));
             }
-            // sorted, so checking the last id is enough (O(1)). Gene ids are checked
-            // once when the store is built (crest/core.py), not on every chunk.
+            // Sortedness is enforced just above (and FrameStore / ParquetStore parts are
+            // sorted by cell), so the last id is the largest: an O(1) range check.
+            // Gene ids are checked once when the store is built (crest/core.py).
             check_ids(&c[c.len().saturating_sub(1)..], cm.len(), "cell")?;
             Cells::Ids(c)
         }
@@ -195,7 +217,9 @@ fn view<'a>(
             if p.is_empty() || p.windows(2).any(|w| w[0] > w[1]) || (p[p.len() - 1] - p[0]) as usize != g.len() {
                 return Err(pyo3::exceptions::PyValueError::new_err("indptr must be non-decreasing and span the chunk"));
             }
-            if first_cell as usize + (p.len() - 1) > cm.len() {
+            // p is non-empty here (checked above); checked arithmetic regardless
+            let n_ptr_cells = p.len().saturating_sub(1);
+            if (first_cell as usize).checked_add(n_ptr_cells).map_or(true, |end| end > cm.len()) {
                 return Err(pyo3::exceptions::PyValueError::new_err("cell index out of range"));
             }
             Cells::Ptr { indptr: p, first: first_cell }
@@ -613,7 +637,7 @@ fn harmony<'py>(
 /// Leiden for many (resolution, seed) pairs on one graph, the runs in parallel.
 /// Returns an (n_runs, n) uint32 array of labels.
 #[pyfunction]
-#[pyo3(signature = (n, rows, cols, weights, resolutions, seeds, n_iterations=2))]
+#[pyo3(signature = (n, rows, cols, weights, resolutions, seeds, n_iterations=2, max_iterations=LEIDEN_MAX_ITERATIONS))]
 #[allow(clippy::too_many_arguments)]
 fn leiden_sweep<'py>(
     py: Python<'py>,
@@ -624,8 +648,10 @@ fn leiden_sweep<'py>(
     resolutions: Vec<f64>,
     seeds: Vec<u64>,
     n_iterations: i64,
+    max_iterations: usize,
 ) -> PyResult<Bound<'py, PyArray2<u32>>> {
-    let n_iterations = leiden_iterations(n_iterations);
+    let until_stable = n_iterations < 0;
+    let n_iterations = leiden_iterations(n_iterations, max_iterations);
     if resolutions.len() != seeds.len() || resolutions.is_empty() {
         return Err(pyo3::exceptions::PyValueError::new_err("resolutions and seeds must be non-empty and of equal length"));
     }
@@ -637,13 +663,18 @@ fn leiden_sweep<'py>(
     let flat = py.allow_threads(move || {
         let g = crate::leiden::Graph::from_edges(n, &e);
         drop(e);
-        let labels: Vec<Vec<usize>> = resolutions
+        let labels: Vec<(Vec<usize>, bool)> = resolutions
             .par_iter()
             .zip(seeds.par_iter())
-            .map(|(&r, &s)| crate::leiden::leiden_partition(&g, r, n_iterations, s))
+            .map(|(&r, &s)| crate::leiden::leiden_partition_stable(&g, r, n_iterations, s))
             .collect();
-        labels.into_iter().flatten().map(|c| c as u32).collect::<Vec<u32>>()
+        let stable = labels.iter().all(|x| x.1);
+        (labels.into_iter().flat_map(|x| x.0).map(|c| c as u32).collect::<Vec<u32>>(), stable)
     });
+    let (flat, stable) = flat;
+    if until_stable && !stable {
+        warn_leiden_cap(py, n_iterations)?;
+    }
     Ok(PyArray1::from_vec_bound(py, flat).reshape([runs, n])?)
 }
 
