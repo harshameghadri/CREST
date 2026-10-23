@@ -30,6 +30,8 @@ A port of the harmony2 algorithm that R `harmony` ≥ 1.2 and `harmonypy` 2.x sh
 * the per-cluster ridge "mixture of experts" correction, with the automatic ridge λ = α·E;
 * multiple batch covariates, the same objective and convergence tests, and the same defaults.
 
+With several batch covariates (`key=["donor", "chemistry"]`), a cell's diversity penalties are multiplied across covariates, as in harmonypy 2.x. R `harmony` 2.0 adds them instead, so multi-covariate results follow harmonypy, not R. `tests/test_fix_harmony.py` checks two covariates against harmonypy.
+
 The two O(cells × clusters × PCs) steps run as GEMMs per batch level. Everything that works per cell runs in parallel.
 
 Harmony's k-means initialisation is random, so the comparison with harmonypy is on outcomes, over 3 seeds each. Kang 2018 (24,679 cells, 50 PCs, batch = ctrl/stim), `bench/harmony/`:
