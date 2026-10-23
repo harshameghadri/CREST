@@ -317,7 +317,7 @@ PIN_ARGS=(); [[ $NO_PIN -eq 1 ]] && PIN_ARGS=(--no-pin)
 "$PY" bench/paper/run_all.py --data-dir "$DATA" --out "$OUT" --datasets $DATASETS --repeats "$REPEATS" \
   --profile "$PROFILE" --main-threads $MAIN_THREADS --ooc-threads $OOC_THREADS --module-repeats "$MODULE_REPEATS" \
   --scrublet-max-cells "$SCRUBLET_MAX" \
-  --scanpy-max-cells "$SCANPY_MAX" --timeout "$TIMEOUT" "${SCAN_ARGS[@]}" "${PIN_ARGS[@]}" \
+  --scanpy-max-cells "$SCANPY_MAX" --timeout "$TIMEOUT" ${SCAN_ARGS[@]+"${SCAN_ARGS[@]}"} ${PIN_ARGS[@]+"${PIN_ARGS[@]}"} \
   $([[ $DRY -eq 1 ]] && echo --dry-run)
 [[ $DRY -eq 1 ]] && exit 0
 
@@ -339,7 +339,7 @@ if [[ $SKIP_MODULES -eq 0 ]]; then
   [[ ${#R_ARGS[@]} -gt 0 ]] && echo "  (R DESeq2 not found: DESeq2 is compared with pydeseq2 only)"
   # thread-matched DESeq2: 1, 8 and 64 threads (all cores instead of 64 on smaller machines)
   DE_THREADS="$(clip 1 8 64 $([[ $NCPU -lt 64 ]] && echo "$NCPU"))"
-  run_mod deseq2_kang "$PY" bench/deseq2/kang_pseudobulk.py --data "$KANG" --out "$M/deseq2" --threads $DE_THREADS "${R_ARGS[@]}"
+  run_mod deseq2_kang "$PY" bench/deseq2/kang_pseudobulk.py --data "$KANG" --out "$M/deseq2" --threads $DE_THREADS ${R_ARGS[@]+"${R_ARGS[@]}"}
   if [[ ${#R_ARGS[@]} -eq 0 ]]; then run_mod deseq2_simulated "$PY" bench/deseq2/compare_r.py --out "$M/deseq2"; fi
   run_mod harmony "$PY" bench/harmony/compare_harmonypy.py --data "$KANG" --out "$M/harmony"
   run_mod scrublet "$PY" bench/doublets/compare_scrublet.py --data "$KANG" --out "$M/doublets"
