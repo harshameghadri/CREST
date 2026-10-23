@@ -98,6 +98,17 @@ fn connectivities<'py>(
     Ok((PyArray1::from_vec_bound(py, r), PyArray1::from_vec_bound(py, c), PyArray1::from_vec_bound(py, w)))
 }
 
+/// scanpy / leidenalg `n_iterations`: a negative value means "iterate until the
+/// partition no longer changes" (each iteration that changes it strictly raises
+/// the quality, so this terminates). 0 runs one iteration, as before.
+fn leiden_iterations(n_iterations: i64) -> usize {
+    if n_iterations < 0 {
+        usize::MAX
+    } else {
+        n_iterations as usize
+    }
+}
+
 /// Leiden community detection (modularity, RB configuration) on an undirected weighted graph.
 #[pyfunction]
 #[pyo3(signature = (n, rows, cols, weights, resolution=1.0, n_iterations=2, seed=0))]
@@ -108,9 +119,10 @@ fn leiden<'py>(
     cols: numpy::PyReadonlyArrayDyn<'py, u32>,
     weights: numpy::PyReadonlyArrayDyn<'py, f32>,
     resolution: f64,
-    n_iterations: usize,
+    n_iterations: i64,
     seed: u64,
 ) -> PyResult<Bound<'py, PyArray1<u32>>> {
+    let n_iterations = leiden_iterations(n_iterations);
     if !(resolution > 0.0 && resolution.is_finite()) {
         return Err(pyo3::exceptions::PyValueError::new_err("resolution must be positive and finite"));
     }
@@ -173,12 +185,18 @@ fn view<'a>(
             if c.windows(2).any(|w| w[0] > w[1]) {
                 return Err(pyo3::exceptions::PyValueError::new_err("chunk must be sorted by cell"));
             }
+            // sorted, so checking the last id is enough (O(1)). Gene ids are checked
+            // once when the store is built (crest/core.py), not on every chunk.
+            check_ids(&c[c.len().saturating_sub(1)..], cm.len(), "cell")?;
             Cells::Ids(c)
         }
         (None, Some(p)) => {
             let p = sl(p, "indptr")?;
             if p.is_empty() || p.windows(2).any(|w| w[0] > w[1]) || (p[p.len() - 1] - p[0]) as usize != g.len() {
                 return Err(pyo3::exceptions::PyValueError::new_err("indptr must be non-decreasing and span the chunk"));
+            }
+            if first_cell as usize + (p.len() - 1) > cm.len() {
+                return Err(pyo3::exceptions::PyValueError::new_err("cell index out of range"));
             }
             Cells::Ptr { indptr: p, first: first_cell }
         }
@@ -605,8 +623,9 @@ fn leiden_sweep<'py>(
     weights: numpy::PyReadonlyArrayDyn<'py, f32>,
     resolutions: Vec<f64>,
     seeds: Vec<u64>,
-    n_iterations: usize,
+    n_iterations: i64,
 ) -> PyResult<Bound<'py, PyArray2<u32>>> {
+    let n_iterations = leiden_iterations(n_iterations);
     if resolutions.len() != seeds.len() || resolutions.is_empty() {
         return Err(pyo3::exceptions::PyValueError::new_err("resolutions and seeds must be non-empty and of equal length"));
     }

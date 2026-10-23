@@ -135,7 +135,7 @@ def _scrublet_one(bf: BioFrame, sim_doublet_ratio, expected_doublet_rate, stdev_
     # k_adj is large (~3 * 0.5 * sqrt(n)): tiled exact search is faster than
     # NN-descent refinement up to ~150k points
     idx, _ = _native.knn_graph(M, k_adj, exact=len(M) <= 150_000, seed=random_state)
-    nd = (idx >= n).sum(1).astype(np.float64)
+    nd = ((idx >= n) & (idx < len(M))).sum(1).astype(np.float64)  # u32::MAX = unfilled slot, not a doublet
     rho, r, kk = expected_doublet_rate, n_sim / float(n), float(idx.shape[1])
     q = (nd + 1) / (kk + 2)
     ld = q * rho / r / (1 - rho - q * (1 - rho - rho / r))

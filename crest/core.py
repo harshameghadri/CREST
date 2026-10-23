@@ -46,6 +46,13 @@ class CSRStore:
         self.data = np.ascontiguousarray(data, dtype=np.float32)
         self.n_cells = len(self.indptr) - 1
         self.n_genes = int(n_genes)
+        # validated once here, so the per-chunk kernels need not scan ids (they
+        # would otherwise silently drop out-of-range entries)
+        if self.n_cells < 0 or self.indptr[0] != 0 or self.indptr[-1] != len(self.indices) \
+                or len(self.data) != len(self.indices) or np.any(np.diff(self.indptr) < 0):
+            raise ValueError("CSR indptr must start at 0, be non-decreasing and end at len(indices) == len(data)")
+        if len(self.indices) and int(self.indices.max()) >= self.n_genes:
+            raise ValueError(f"gene index {int(self.indices.max())} out of range for n_genes={self.n_genes}")
 
     @property
     def nnz(self) -> int:
@@ -89,6 +96,11 @@ class FrameStore:
         self._cells = self.df["cell_id"].to_numpy()
         self._genes = self.df["gene_id"].to_numpy()
         self._vals = self.df["count"].to_numpy()
+        if len(self._cells):  # sorted by cell, so the last id is the largest
+            if int(self._cells[-1]) >= self.n_cells:
+                raise ValueError(f"cell index {int(self._cells[-1])} out of range for n_cells={self.n_cells}")
+            if int(self._genes.max()) >= self.n_genes:
+                raise ValueError(f"gene index {int(self._genes.max())} out of range for n_genes={self.n_genes}")
 
     @property
     def nnz(self) -> int:
@@ -181,7 +193,8 @@ class BioFrame:
     def from_triplets(cls, df: pl.DataFrame, n_cells: Optional[int] = None, n_genes: Optional[int] = None,
                       obs: Optional[pl.DataFrame] = None, var: Optional[pl.DataFrame] = None,
                       cell_col: str = "cell_id", gene_col: str = "gene_id", value_col: str = "count") -> "BioFrame":
-        """Wrap a Polars DataFrame of (cell, gene, count) triplets with integer ids."""
+        """Wrap a Polars DataFrame of (cell, gene, count) triplets with integer ids.
+        Raises ``ValueError`` if a cell or gene id is ``>= n_cells`` / ``n_genes``."""
         n_cells = n_cells if n_cells is not None else (obs.height if obs is not None else int(df[cell_col].max()) + 1)
         n_genes = n_genes if n_genes is not None else (var.height if var is not None else int(df[gene_col].max()) + 1)
         store = FrameStore(df, n_cells, n_genes, cell_col, gene_col, value_col)
@@ -189,7 +202,8 @@ class BioFrame:
 
     @classmethod
     def from_csr(cls, indptr, indices, data, n_genes: int, obs=None, var=None) -> "BioFrame":
-        """From CSR arrays of raw counts (cells × genes); ``obs``/``var`` are optional Polars frames."""
+        """From CSR arrays of raw counts (cells × genes); ``obs``/``var`` are optional Polars frames.
+        Raises ``ValueError`` for a malformed ``indptr`` or a gene index ``>= n_genes``."""
         return cls._with_store(CSRStore(indptr, indices, data, n_genes), obs, var)
 
     @classmethod
