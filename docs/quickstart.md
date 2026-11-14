@@ -194,6 +194,7 @@ files too large for that, convert to `.h5ad` and use `crest.read_h5ad` instead.
 | `sc.pp.scale` densifies | `crest.pp.scale` is recorded and applied exactly inside PCA |
 | results in `adata.uns[...]` as recarrays | results returned as Polars DataFrames (and stored in `bf.uns`) |
 | plotting in `sc.pl` | convert with `bf.to_anndata()` |
+| `sc.tl.rank_genes_groups(reference=..., corr_method=..., pts=..., layer=..., use_raw=...)`, `method="t-test_overestim_var"` or `"logreg"` | not supported: `crest.tl.rank_genes_groups` always compares each group with every other cell (`reference="rest"`, which includes cells of unselected groups and cells without a label), supports `method="t-test"` and `"wilcoxon"`, adjusts with Benjamini-Hochberg (`corr_method`) and does not compute `pts`. Unknown names in `groups` and groups with fewer than two cells raise `ValueError` |
 
 ## Defaults that differ from scanpy
 

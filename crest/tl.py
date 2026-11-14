@@ -278,21 +278,50 @@ def rank_genes_groups(bf: BioFrame, groupby: str, method: str = "t-test", groups
     pvals_adj) with the top ``n_genes`` per group by score; also stored in
     ``uns['rank_genes_groups']``.
 
-    Differs from scanpy: the default is ``n_genes=100``; scanpy's default
-    (``None``) keeps every gene. Pass ``n_genes=None`` for all genes.
-    """
-    labels = bf.obs[groupby].cast(pl.Utf8).to_numpy()
-    cats = sorted({x for x in labels if x is not None}, key=_natural_key)
-    if groups != "all":
-        cats = [c for c in cats if c in set(groups)]
-    code = {c: i for i, c in enumerate(cats)}
-    grp = np.array([code.get(x, np.iinfo(np.uint32).max) if x is not None else np.iinfo(np.uint32).max
-                    for x in labels], dtype=np.uint32)
-    G, V = len(cats), bf.n_vars
-    sizes = np.bincount(grp[grp != np.iinfo(np.uint32).max], minlength=G).astype(np.float64)
-    N = sizes.sum()
+    The reference ("rest") of each group is every other cell of the frame, as in scanpy:
+    the cells of groups that are not selected through ``groups`` and the cells whose label
+    is null count as "rest" as well. ``groups`` is ``"all"``, one group name or a list of
+    names; an unknown name raises ``ValueError`` (scanpy raises ``IndexError``), as does a
+    group with fewer than two cells or one that holds every cell.
 
-    s = np.zeros((G, V)); q = np.zeros((G, V)); z = np.zeros((G, V))
+    Differs from scanpy: the default is ``n_genes=100``; scanpy's default
+    (``None``) keeps every gene. Pass ``n_genes=None`` for all genes. The arguments
+    ``reference``, ``corr_method``, ``pts``, ``layer`` and ``use_raw`` and
+    ``method="t-test_overestim_var"`` / ``"logreg"`` are not supported; the adjusted
+    p-values are always Benjamini-Hochberg.
+    """
+    if method not in ("t-test", "wilcoxon"):
+        raise ValueError('method must be "t-test" or "wilcoxon"')
+    labels = bf.obs[groupby].cast(pl.Utf8).to_numpy()
+    all_cats = sorted({x for x in labels if x is not None}, key=_natural_key)
+    if isinstance(groups, str):
+        groups = "all" if groups == "all" else [groups]
+    if isinstance(groups, str) and groups == "all":
+        cats = all_cats
+    else:
+        wanted = [str(g) for g in groups]
+        unknown = [g for g in dict.fromkeys(wanted) if g not in set(all_cats)]
+        if unknown:
+            raise ValueError(f"groups {unknown} are not categories of {groupby!r}; available: {all_cats}")
+        cats = [c for c in all_cats if c in set(wanted)]
+    if not cats:
+        raise ValueError("no groups selected")
+    code = {c: i for i, c in enumerate(cats)}
+    G, V = len(cats), bf.n_vars
+    # unselected groups and null labels form one extra pseudo-group G: together with the other
+    # selected groups it is the "rest" of every group (all n_obs cells take part in the sums)
+    grp = np.array([code.get(x, G) if x is not None else G for x in labels], dtype=np.uint32)
+    sizes_full = np.bincount(grp, minlength=G + 1).astype(np.float64)
+    sizes = sizes_full[:G]
+    N = float(sizes_full.sum())
+    small = [c for c, n in zip(cats, sizes) if n < 2]
+    if small:
+        raise ValueError(f"groups {small} have fewer than two cells; statistics cannot be computed")
+    whole = [c for c, n in zip(cats, sizes) if N - n < 1]
+    if whole:
+        raise ValueError(f"group {whole} holds every cell, so there is no rest to compare with")
+
+    s = np.zeros((G + 1, V)); q = np.zeros((G + 1, V)); z = np.zeros((G + 1, V))
     for ctx in bf.iter_ctx():
         _native.group_gene_sums(*ctx, grp, s, q, z, None)
     S_all, Q_all = s.sum(0), q.sum(0)
@@ -311,15 +340,14 @@ def rank_genes_groups(bf: BioFrame, groupby: str, method: str = "t-test", groups
             parts = [_native.collect_gene_block(*ctx, grp, lo, hi) for ctx in bf.iter_ctx()]
             cat = [np.concatenate([p[i] for p in parts]) if len(parts) > 1 else parts[0][i] for i in range(3)]
             del parts
-            rs, ties = _native.wilcoxon_rank_sums(cat[0], cat[1], cat[2], hi - lo, sizes.astype(np.uint64))
+            rs, ties = _native.wilcoxon_rank_sums(cat[0], cat[1], cat[2], hi - lo, sizes_full.astype(np.uint64))
+            rs = rs[:G]
             del cat
             T = 1.0 - ties / (N ** 3 - N) if tie_correct else np.ones(hi - lo)
             std = np.sqrt(T[None, :] * sizes[:, None] * (N - sizes)[:, None] * (N + 1) / 12.0)
             with np.errstate(divide="ignore", invalid="ignore"):
                 wscores[:, lo:hi] = (rs - sizes[:, None] * (N + 1) / 2.0) / std
             lo = hi
-    elif method != "t-test":
-        raise ValueError('method must be "t-test" or "wilcoxon"')
 
     names = np.array(bf.var_names, dtype=object)
     frames, uns = [], {"params": {"groupby": groupby, "method": method, "reference": "rest"}, "groups": cats}
