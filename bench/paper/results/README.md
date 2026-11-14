@@ -13,8 +13,10 @@ traced to a commit. It holds:
 | `accuracy.json` | agreement with scanpy, per dataset |
 | `attempts.jsonl` | every run attempt, including failed ones that a resume later retried |
 | `plan.json` | the planned runs, in execution order |
+| `tuning.json` | the untimed tuning pilot's choice of thread settings per tool and thread count (only for runs made with `--pilot`) |
+| `missing_files.txt` | required result files that were missing (only for a draft made with `--allow-incomplete`) |
 | `modules/` | the module benchmarks (DESeq2 vs R / pydeseq2, Harmony, Scrublet, ingest, modularity sweep) |
-| `environment/` | machine and software record (`summary.md`, `python_env.json`, `R_versions.txt` / `R_versions.json` (R, DESeq2 and BiocParallel of the DESeq2 reference), `pip_freeze.txt`, `lscpu.txt`, ...) |
+| `environment/` | machine and software record (`summary.md`, `python_env.json` with the numba threading layer, `R_versions.txt` / `R_versions.json` / `R_sessionInfo.txt` (R, DESeq2 and BiocParallel of the DESeq2 reference), `pip_freeze.txt`, `lscpu.txt`, `smt_siblings.txt`, `dataset_manifest.json`, `verification.json`, ...) |
 
 Raw per-run JSON, timelines and per-cell outputs are not committed (too large); they are in
 the `crest-bench-<stamp>.tar.gz` archive the script writes next to the results.

@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import types
 from argparse import Namespace
 from pathlib import Path
@@ -265,12 +266,13 @@ def test_monitor_baseline_is_the_rss_when_the_monitor_starts(run_one):
         mon.stop()
 
 
-def test_driver_default_main_threads_scan_below_the_maximum():
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"NCPU=64")
+def test_driver_default_main_threads_are_the_full_grid_up_to_the_core_count():
     block = _shell_block(r"clip\(\) \{", r"\n  esac\nfi\n")
-    for ncpu, want in ((64, "8 16 32 64"), (16, "8 16"), (8, "8")):
+    for ncpu, want in ((64, "1 2 4 8 16 32 64"), (16, "1 2 4 8 16"), (8, "1 2 4 8"), (10, "1 2 4 8 10")):
         out = _bash(f'NCPU={ncpu}; TIER=standard; MAIN_THREADS=""; {block}\necho "$MAIN_THREADS"')
         assert out.returncode == 0, out.stderr
-        assert out.stdout.strip() == want, f"NCPU={ncpu}"
+        assert out.stdout.strip() == want, f"NCPU={ncpu}: {out.stdout.strip()!r} != {want!r}"
 
 
 def test_run_plan_runs_every_main_thread_count_for_both_tools(run_all, monkeypatch):
@@ -281,7 +283,21 @@ def test_run_plan_runs_every_main_thread_count_for_both_tools(run_all, monkeypat
     jobs = run_all.plan(a)
     for tool in ("crest", "scanpy"):
         assert sorted({j["threads"] for j in jobs if j["tool"] == tool}) == [8, 16, 32, 64]
-    assert all(j["pin"] is (j["threads"] < 64) for j in jobs)     # pinned unless all logical cores are used
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"pin")
+def test_every_run_is_pinned_the_same_way_at_every_thread_count(run_all, monkeypatch):
+    """One pinning policy for 8 and 64 threads, module runs included; --no-pin turns it off for all alike."""
+    monkeypatch.setattr(os, "cpu_count", lambda: 64)
+    a = Namespace(main_threads=[8, 64], ooc_threads=None, profile="full", datasets=["pbmc3k"],
+                  tools=["crest", "scanpy"], scanpy_max_cells=0, no_pin=False, thread_dataset=None,
+                  threads_scan=None, module_repeats=None, repeats=1, seed=0)
+    jobs = run_all.plan(a)
+    assert {j["profile"] for j in jobs} == {"core", "full"}
+    assert all(j["pin"] is True for j in jobs), "runs pinned differently: " + str(
+        [(j["threads"], j["profile"], j["pin"]) for j in jobs if j["pin"] is not True])
+    a.no_pin = True
+    assert all(j["pin"] is False for j in run_all.plan(a))
 
 
 # --------------------------------------------------------------------------- accuracy helpers
@@ -842,3 +858,1105 @@ def test_environment_record_without_r_says_so(tmp_path):
 
 def test_driver_script_passes_bash_syntax_check():
     assert subprocess.run(["bash", "-n", str(REPO / "scripts" / "crest_paper_bench.sh")]).returncode == 0
+
+
+# =========================================================================== protocol v2
+# Tolerances and constants of the protocol tests (named, never inline).
+FOREIGN_LOAD_BELOW = 0.5          # median foreign busy cores of a quiet run in the fake samples
+FOREIGN_LOAD_ABOVE = 2.0          # ... of a violating one
+THREAD_GRID_DEFAULT = [1, 2, 4, 8, 16, 32, 64]
+TUNING_WIN = 1.5                  # a variant this many times faster than the default must be chosen
+TUNING_NOISE = 1.02               # a variant this much faster than the default must not be chosen (margin 5%)
+STEP_RATIO_CEILING = 1000.0       # no per-stage ratio above this is ever printed
+LAZY_STEP_SECONDS = 1.5e-5        # CREST's recorded normalize_log1p step: applied lazily, takes ~0 s
+RTOL = 1e-9
+CORE_STEPS = ["read", "qc_filter", "normalize_log1p", "hvg", "scale_pca", "neighbors", "leiden", "umap",
+              "de_ttest", "de_wilcoxon"]
+FORBIDDEN_PUBLIC = re.compile(r"\b(?:F|PY|WP|G|D|B|SB|BL)-\d+[ab]?\b|\bB\d{1,2}[ab]?\b")   # internal item identifiers (shape only)
+
+
+def _need(name: str):
+    """Import a bench module; a missing one is a failed assertion (not an import error) in the test."""
+    import importlib
+    try:
+        return importlib.import_module(name)
+    except ImportError as e:
+        raise AssertionError(f"bench/paper/{name}.py is missing: {e}") from None
+
+
+def _has(mod, attr: str):
+    assert hasattr(mod, attr), f"{mod.__name__}.{attr} is missing"
+    return getattr(mod, attr)
+
+
+# --------------------------------------------------------------------------- thread grid and pinning
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"thread counts")
+def test_thread_grid_default_is_one_to_sixty_four(run_all, monkeypatch):
+    monkeypatch.setattr(os, "cpu_count", lambda: 64)
+    a = Namespace(main_threads=[], ooc_threads=[], profile="core", datasets=["pbmc3k"], tools=["crest", "scanpy"],
+                  scanpy_max_cells=0, no_pin=False, thread_dataset=None, threads_scan=None, module_repeats=None,
+                  repeats=1, seed=0)
+    for tool in ("crest", "scanpy"):
+        got = sorted({j["threads"] for j in run_all.plan(a) if j["tool"] == tool})
+        assert got == THREAD_GRID_DEFAULT, f"{tool} thread counts {got}"
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"thread counts")
+def test_thread_grid_is_configurable_and_clamped_to_the_cpus(run_all, monkeypatch):
+    monkeypatch.setattr(os, "cpu_count", lambda: 10)
+    a = Namespace(main_threads=[], ooc_threads=[], thread_grid=[1, 3, 64], profile="core", datasets=["pbmc3k"],
+                  tools=["crest"], scanpy_max_cells=0, no_pin=False, thread_dataset=None, threads_scan=None,
+                  module_repeats=None, repeats=1, seed=0)
+    got = sorted({j["threads"] for j in run_all.plan(a)})
+    assert got == [1, 3, 10], f"thread counts {got}"
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_clamp_grid_is_sorted_distinct_and_at_least_one():
+    protocol = _need("protocol")
+    assert protocol.clamp_grid([64, 8, 16, 8, 0], 12) == [1, 8, 12]
+    assert protocol.clamp_grid(protocol.THREAD_GRID, 64) == THREAD_GRID_DEFAULT
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_cpu_list_syntax():
+    protocol = _need("protocol")
+    assert protocol.parse_cpu_list("0,32") == [0, 32]
+    assert protocol.parse_cpu_list("0-3\n") == [0, 1, 2, 3]
+    assert protocol.parse_cpu_list("0-1,8-9") == [0, 1, 8, 9]
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_pin_order_takes_one_context_per_core_before_any_sibling():
+    protocol = _need("protocol")
+    smt_adjacent = {c: (c - c % 2, c - c % 2 + 1) for c in range(8)}       # siblings 0,1 / 2,3 / ...
+    assert protocol.pin_cpus(4, range(8), smt_adjacent) == [0, 2, 4, 6]
+    assert protocol.pin_cpus(6, range(8), smt_adjacent) == [0, 2, 4, 6, 1, 3]
+    smt_far = {c: (c % 4, c % 4 + 4) for c in range(8)}                    # siblings i, i + 4 (the Threadripper layout)
+    assert protocol.pin_cpus(4, range(8), smt_far) == [0, 1, 2, 3]
+    assert protocol.pin_cpus(8, range(8), smt_far) == list(range(8))
+    assert protocol.pin_cpus(3, [5, 2, 9], None) == [2, 5, 9]              # no topology: numerical order
+    assert protocol.pin_cpus(99, range(4), smt_far) == [0, 1, 2, 3]
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_smt_siblings_are_read_from_a_sysfs_tree(tmp_path):
+    protocol = _need("protocol")
+    for cpu, sib in ((0, "0,2"), (1, "1,3"), (2, "0,2"), (3, "1,3")):
+        d = tmp_path / f"cpu{cpu}" / "topology"
+        d.mkdir(parents=True)
+        (d / "thread_siblings_list").write_text(sib + "\n")
+    (tmp_path / "cpufreq").mkdir()
+    assert protocol.read_smt_siblings(str(tmp_path)) == {0: (0, 2), 1: (1, 3), 2: (0, 2), 3: (1, 3)}
+    assert protocol.read_smt_siblings(str(tmp_path / "nothing")) == {}
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"threading layer")
+def test_environment_record_has_the_numba_threading_layer_and_thread_count(run_one, monkeypatch):
+    """The numba threading layer the process actually used, its thread count and the requested layer are
+    recorded in every run, and the SMT sibling map next to them."""
+    psutil = pytest.importorskip("psutil")
+    if not hasattr(psutil, "cpu_count"):
+        pytest.skip("psutil is not installed")
+    fake = types.ModuleType("numba")
+    fake.config = types.SimpleNamespace(NUMBA_NUM_THREADS=8)
+    fake.threading_layer = lambda: "omp"
+    fake.get_num_threads = lambda: 8
+    monkeypatch.setitem(sys.modules, "numba", fake)
+    monkeypatch.setenv("NUMBA_THREADING_LAYER", "omp")
+    env = run_one.environment()
+    assert env.get("numba_threading_layer") == "omp", "threading layer not recorded"
+    assert env.get("numba_num_threads") == 8 and env.get("numba_get_num_threads") == 8
+    assert env["thread_env"].get("NUMBA_THREADING_LAYER") == "omp"
+    assert "smt_siblings" in env
+
+
+# --------------------------------------------------------------------------- tuning pilot
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_thread_settings_of_the_default_variant_set_every_variable_to_p():
+    protocol = _need("protocol")
+    for tool in ("crest", "crest-ooc", "scanpy", "scanpy-lean"):
+        s = protocol.variant_settings(tool, "default", 16)
+        env = protocol.settings_env(s)
+        assert {env[v] for v in ("RAYON_NUM_THREADS", "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                                 "NUMBA_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")} == {"16"}
+        assert s["n_jobs"] == 16 and "NUMBA_THREADING_LAYER" not in env
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_thread_settings_variants_change_only_what_they_name():
+    protocol = _need("protocol")
+    s = protocol.variant_settings("scanpy", "numba_cap8", 64)
+    assert (s["numba_threads"], s["blas_threads"], s["omp_threads"], s["n_jobs"]) == (8, 64, 64, 64)
+    assert protocol.variant_settings("scanpy", "numba_cap8", 4)["numba_threads"] == 4     # a cap never raises
+    s = protocol.variant_settings("scanpy", "blas1", 64)
+    assert (s["numba_threads"], s["blas_threads"], s["omp_threads"]) == (64, 1, 1)
+    assert protocol.settings_env(protocol.variant_settings("scanpy", "workqueue", 8))["NUMBA_THREADING_LAYER"] == "workqueue"
+    s = protocol.variant_settings("crest", "rayon_half", 64)
+    assert s["rayon_threads"] == 32 and protocol.variant_settings("crest", "rayon_half", 1)["rayon_threads"] == 1
+    assert protocol.variant_settings("crest", "rayon_cap8", 64)["rayon_threads"] == 8
+    with pytest.raises(KeyError):
+        protocol.variant_settings("crest", "workqueue", 8)
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_both_tools_get_the_same_tuning_budget():
+    protocol = _need("protocol")
+    assert protocol.tuning_budget_is_equal()
+    assert len(protocol.VARIANTS["scanpy"]) == len(protocol.VARIANTS["crest"])
+    assert all(protocol.DEFAULT_VARIANT in v for v in protocol.VARIANTS.values())
+
+
+def _pilot(tool, ds, p, variant, seconds):
+    return {"tool": tool, "dataset": ds, "threads": p, "variant": variant, "seconds": seconds}
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_tuning_choice_picks_a_clearly_faster_variant_and_keeps_the_default_otherwise():
+    protocol = _need("protocol")
+    rec = []
+    for ds in ("a", "b"):
+        rec += [_pilot("scanpy", ds, 64, "default", 100.0), _pilot("scanpy", ds, 64, "numba_cap8", 100.0 / TUNING_WIN),
+                _pilot("scanpy", ds, 8, "default", 50.0), _pilot("scanpy", ds, 8, "numba_cap8", 50.0 / TUNING_NOISE),
+                _pilot("crest", ds, 8, "default", 10.0), _pilot("crest", ds, 8, "rayon_half", 12.0)]
+    t = protocol.choose_tuning(rec)
+    assert t["variant"]["scanpy"]["64"] == "numba_cap8"
+    assert t["variant"]["scanpy"]["8"] == "default"          # 2% faster is inside the margin
+    assert t["variant"]["crest"]["8"] == "default"
+    assert protocol.tuned_variant(t, "scanpy", 64) == "numba_cap8"
+    assert protocol.tuned_variant(t, "scanpy-lean", 64) == "numba_cap8"   # a profile of the same tool
+    assert protocol.tuned_variant(t, "scanpy", 2) == "default"             # never piloted: the default
+    assert protocol.tuned_variant(None, "crest", 8) == "default"
+    assert t["pilot_runs_per_tool"] == {"scanpy": 8, "crest": 4}
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_tuning_choice_ignores_a_variant_that_failed_on_a_dataset_and_finds_the_best_thread_count():
+    protocol = _need("protocol")
+    rec = [_pilot("scanpy", "a", 8, "default", 40.0), _pilot("scanpy", "b", 8, "default", 80.0),
+           _pilot("scanpy", "a", 8, "workqueue", 10.0), _pilot("scanpy", "b", 8, "workqueue", None),   # failed on b
+           _pilot("scanpy", "a", 64, "default", 90.0), _pilot("scanpy", "b", 64, "default", 160.0)]
+    t = protocol.choose_tuning(rec)
+    assert t["variant"]["scanpy"]["8"] == "default"          # workqueue is not eligible: it has no run on b
+    assert t["best_threads"]["scanpy"] == {"a": 8, "b": 8}
+
+
+def _plan_args(**kw):
+    base = dict(main_threads=[8, 64], ooc_threads=[], profile="core", datasets=["pbmc3k"], tools=["crest", "scanpy"],
+                scanpy_max_cells=0, no_pin=False, thread_dataset=None, threads_scan=None, module_repeats=None,
+                repeats=1, seed=0)
+    base.update(kw)
+    return Namespace(**base)
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"settings")
+def test_run_plan_carries_the_tuned_settings_of_every_run(run_all, monkeypatch):
+    monkeypatch.setattr(os, "cpu_count", lambda: 64)
+    tuning = {"variant": {"scanpy": {"64": "numba_cap8"}}, "best_threads": {}}
+    jobs = run_all.plan(_plan_args(tuning_data=tuning))
+    sc64 = next(j for j in jobs if j["tool"] == "scanpy" and j["threads"] == 64)
+    assert sc64.get("variant") == "numba_cap8" and sc64.get("settings", {}).get("numba_threads") == 8, "no settings in the run"
+    sc8 = next(j for j in jobs if j["tool"] == "scanpy" and j["threads"] == 8)
+    assert sc8["variant"] == "default" and sc8["settings"]["numba_threads"] == 8
+    cr = next(j for j in jobs if j["tool"] == "crest" and j["threads"] == 64)
+    assert cr["variant"] == "default" and cr["settings"]["rayon_threads"] == 64
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_pilot_plan_runs_every_variant_at_every_thread_count_for_both_tools(run_all, monkeypatch):
+    monkeypatch.setattr(os, "cpu_count", lambda: 64)
+    protocol = _need("protocol")
+    a = _plan_args(pilot_datasets=["pbmc3k", "kang"], main_threads=[], thread_grid=[1, 8, 64])
+    jobs = _has(run_all, "plan_pilot")(a)
+    per_tool = {t: len([j for j in jobs if j["tool"] == t]) for t in ("crest", "scanpy")}
+    # a variant with the same resolved settings as the default is not run (it would only add noise):
+    # crest runs 1 / 3 / 4 variants and scanpy 2 / 3 / 4 at 1 / 8 / 64 threads, on two datasets
+    assert per_tool == {"crest": 2 * (1 + 3 + 4), "scanpy": 2 * (2 + 3 + 4)}, per_tool
+    assert {(j["tool"], j["variant"]) for j in jobs if j["threads"] == 1} == {
+        ("crest", "default"), ("scanpy", "default"), ("scanpy", "workqueue")}
+    assert {j["variant"] for j in jobs if j["tool"] == "crest" and j["threads"] == 8} == {"default", "blas1", "rayon_half"}
+    assert len({protocol.job_tag(j) for j in jobs}) == len(jobs)             # every pilot run has its own files
+    assert all(j["repeat"] == 0 and j["profile"] == "core" and not j["save"] for j in jobs)
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_a_run_gets_exactly_the_environment_of_its_settings(run_all, tmp_path, monkeypatch):
+    protocol = _need("protocol")
+    seen = {}
+
+    class FakeProc:
+        pid = 1
+
+        def __init__(self, cmd, env=None, **kw):
+            seen["cmd"], seen["env"] = cmd, env
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(run_all.subprocess, "Popen", FakeProc)
+    monkeypatch.setenv("NUMBA_THREADING_LAYER", "inherited-from-the-shell")
+    raw, logs = tmp_path / "raw", tmp_path / "logs"
+    raw.mkdir()
+    logs.mkdir()
+    job = {"tool": "scanpy", "dataset": "pbmc3k", "profile": "core", "threads": 64, "repeat": 0, "save": False,
+           "pin": True, "variant": "workqueue", "control": None,
+           "settings": protocol.variant_settings("scanpy", "workqueue", 64)}
+    a = Namespace(out=str(tmp_path), data_dir=str(tmp_path), timeout=5, scrublet_max_cells=0, sample_interval=0.05)
+    run_all.run(job, a, logs)
+    env = seen["env"]
+    assert env.get("NUMBA_THREADING_LAYER") == "workqueue", "threading layer not set"
+    assert abs(float(env["CREST_BENCH_SPAWN_TIME"]) - time.time()) < 60.0     # the spawn timestamp run_one measures from
+    assert env["NUMBA_NUM_THREADS"] == "64" and env["OPENBLAS_NUM_THREADS"] == "64"
+    assert "--pin" in seen["cmd"] and seen["cmd"][seen["cmd"].index("--n-jobs") + 1] == "64"
+    job2 = dict(job, variant="default", settings=protocol.variant_settings("scanpy", "default", 64))
+    run_all.run(job2, a, logs)
+    assert "NUMBA_THREADING_LAYER" not in seen["env"], "a layer set in the shell leaked into a default run"
+
+
+# --------------------------------------------------------------------------- controls and tags
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_run_tags_of_controls_and_pilot_runs_never_collide_with_main_runs():
+    protocol = _need("protocol")
+    main = protocol.run_tag("crest", "d", "core", 8, 2)
+    assert main == "crest__d__core__t8__r2"
+    tags = {main, protocol.run_tag("crest", "d", "core", 8, 2, "unpinned"),
+            protocol.run_tag("crest", "d", "core", 8, 2, "default-settings"),
+            protocol.run_tag("crest", "d", "core", 8, 2, None, "blas1")}
+    assert len(tags) == 4
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"control")
+def test_controls_are_planned_next_to_the_main_runs_and_never_replace_them(run_all, monkeypatch):
+    monkeypatch.setattr(os, "cpu_count", lambda: 64)
+    tuning = {"variant": {"scanpy": {"64": "numba_cap8"}}, "best_threads": {}}
+    a = _plan_args(tuning_data=tuning, thread_dataset="pbmc3k", controls=["unpinned", "default-settings"],
+                   control_datasets=[], control_threads=[8, 64])
+    jobs = run_all.plan(a)
+    ctl = [j for j in jobs if j.get("control")]
+    assert {(j["tool"], j["threads"], j["control"], j["pin"]) for j in ctl} == {
+        ("crest", 8, "unpinned", False), ("scanpy", 8, "unpinned", False),
+        ("scanpy", 64, "default-settings", True)}, "control runs"
+    assert all(j["variant"] == "default" for j in ctl if j["control"] == "default-settings")
+    main = [j for j in jobs if not j.get("control")]
+    assert {(j["tool"], j["threads"]) for j in main} == {(t, p) for t in ("crest", "scanpy") for p in (8, 64)}
+    assert [j["variant"] for j in main if j["tool"] == "scanpy" and j["threads"] == 64] == ["numba_cap8"]
+
+
+# --------------------------------------------------------------------------- quiet host
+def _samples(foreign_cores, proc_cores=4.0, n_logical=16, n=40):
+    """Monitor samples in which the machine is busy with ``proc_cores`` of this process and ``foreign_cores`` of others."""
+    total = (proc_cores + foreign_cores) / n_logical * 100.0
+    return [{"core_util": [total] * n_logical, "proc_cores": proc_cores} for _ in range(n)]
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_foreign_load_is_the_machine_load_minus_the_runs_own_cores(run_one):
+    stats = _has(_need("monitor"), "foreign_busy_stats")(_samples(FOREIGN_LOAD_BELOW))
+    assert stats["median_foreign_busy_cores"] == pytest.approx(FOREIGN_LOAD_BELOW, rel=RTOL) and not stats["violated"]
+    stats = _need("monitor").foreign_busy_stats(_samples(FOREIGN_LOAD_ABOVE))
+    assert stats["median_foreign_busy_cores"] == pytest.approx(FOREIGN_LOAD_ABOVE, rel=RTOL) and stats["violated"]
+    assert stats["threshold"] == 1.0 and stats["n_samples"] == 40
+    # a process using more cores than the machine reports busy (sampling skew) never gives negative load
+    assert _need("monitor").foreign_busy_stats(_samples(0.0, proc_cores=6.0)[:3] + [
+        {"core_util": [10.0] * 16, "proc_cores": 6.0}])["median_foreign_busy_cores"] >= 0.0
+    assert _need("monitor").foreign_busy_stats([])["violated"] is False
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_the_quiet_rule_judges_the_median_not_a_spike(run_one):
+    monitor = _need("monitor")
+    _has(monitor, "foreign_busy_stats")
+    quiet = _samples(0.2, n=39) + _samples(14.0, n=1)          # one burst of foreign load in 40 samples
+    assert not monitor.foreign_busy_stats(quiet)["violated"]
+    busy = _samples(0.2, n=19) + _samples(FOREIGN_LOAD_ABOVE, n=21)
+    assert monitor.foreign_busy_stats(busy)["violated"]
+    assert monitor.foreign_busy_stats(_samples(1.0))["violated"]  # the threshold itself violates: "below 1" is the rule
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_quiet_decision_reruns_once_then_flags():
+    protocol = _need("protocol")
+    assert protocol.quiet_decision(False, 1) == "accept" and protocol.quiet_decision(False, 2) == "accept"
+    assert protocol.quiet_decision(True, 1) == "rerun"
+    assert protocol.quiet_decision(True, 2) == "flag"
+    assert protocol.quiet_decision(True, 2, max_reruns=2) == "rerun"
+
+
+def _quiet_cell(tmp_path, a):
+    """A finished run that violated the quiet-host rule: its JSON, one ok attempt, and a job record."""
+    raw, logs = tmp_path / "raw", tmp_path / "logs"
+    raw.mkdir(exist_ok=True)
+    logs.mkdir(exist_ok=True)
+    job = {"tool": "crest", "dataset": "d", "profile": "core", "threads": 8, "repeat": 0, "save": False, "pin": True,
+           "variant": "default", "control": None}
+    tag = "crest__d__core__t8__r0"
+    return raw, logs, job, tag
+
+
+def _fake_run_factory(run_all, tmp_path, tag, outcomes):
+    """A stand-in for run(): writes a result JSON with the next quiet outcome and logs an ok attempt."""
+    calls = []
+
+    def fake(job, a, log_dir, raw=None, force=False):
+        violated = outcomes[len(calls)]
+        calls.append(force)
+        raw = raw or Path(a.out) / "raw"
+        (raw / f"{tag}.json").write_text(json.dumps({"status": "ok", "quiet": {
+            "violated": violated, "median_foreign_busy_cores": 3.0 if violated else 0.1, "threshold": 1.0}}))
+        (raw / f"{tag}.timeline.csv").write_text("t\n0\n")
+        run_all._log_attempt(a, {"tag": tag, "status": "ok", "quiet_violation": violated,
+                                 "median_foreign_busy_cores": 3.0 if violated else 0.1})
+        return "ok"
+
+    return fake, calls
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_a_violating_run_is_rerun_once_and_a_second_violation_is_flagged_not_dropped(run_all, tmp_path, monkeypatch):
+    a = Namespace(out=str(tmp_path))
+    raw, logs, job, tag = _quiet_cell(tmp_path, a)
+    fake, calls = _fake_run_factory(run_all, tmp_path, tag, [True, True, True])
+    monkeypatch.setattr(run_all, "run", fake)
+    fake(job, a, logs, raw)                                     # the first attempt violates
+    notes = _has(run_all, "quiet_pass")([job], a, logs, raw)
+    assert calls == [False, True], "exactly one re-run"
+    rec = json.loads((raw / f"{tag}.json").read_text())
+    assert "flag" in rec["quiet"] and "2 attempts" in rec["quiet"]["flag"]
+    assert (raw / "_quiet" / f"{tag}.attempt1.json").exists()   # the first attempt stays on disk, outside the loader's glob
+    assert any("flagged" in n for n in notes)
+    again = run_all.quiet_pass([job], a, logs, raw)             # a second pass never re-runs it again
+    assert calls == [False, True] and again == [n for n in again if "flagged" in n]
+    attempts = [json.loads(x) for x in (tmp_path / "attempts.jsonl").read_text().splitlines()]
+    assert [x["status"] for x in attempts] == ["ok", "ok", "flagged"]
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_a_rerun_that_is_quiet_is_accepted_and_a_quiet_run_is_left_alone(run_all, tmp_path, monkeypatch):
+    a = Namespace(out=str(tmp_path))
+    raw, logs, job, tag = _quiet_cell(tmp_path, a)
+    fake, calls = _fake_run_factory(run_all, tmp_path, tag, [True, False])
+    monkeypatch.setattr(run_all, "run", fake)
+    fake(job, a, logs, raw)
+    _has(run_all, "quiet_pass")([job], a, logs, raw)
+    assert calls == [False, True]
+    assert "flag" not in json.loads((raw / f"{tag}.json").read_text())["quiet"]
+    fake2, calls2 = _fake_run_factory(run_all, tmp_path, tag, [False])
+    monkeypatch.setattr(run_all, "run", fake2)
+    fake2(job, a, logs, raw)
+    run_all.quiet_pass([job], a, logs, raw)
+    assert calls2 == [False]                                   # no re-run of a quiet run
+
+
+# --------------------------------------------------------------------------- required result files
+def _plan_dir(tmp_path, jobs, files=(), statuses=None):
+    res = tmp_path / "res"
+    (res / "raw").mkdir(parents=True)
+    (res / "plan.json").write_text(json.dumps({"args": {"main_threads": [8]}, "runs": jobs}))
+    for i, j in enumerate(jobs):
+        tag = f"{j['tool']}__{j['dataset']}__{j['profile']}__t{j['threads']}__r{j['repeat']}"
+        for f in files:
+            if f == "json":
+                (res / "raw" / f"{tag}.json").write_text(json.dumps({"status": (statuses or {}).get(i, "ok")}))
+            else:
+                (res / "raw" / f"{tag}.{f}").write_text("x")
+    return res
+
+
+def _job(tool="crest", dataset="d", threads=8, repeat=0, save=False, profile="core"):
+    return {"tool": tool, "dataset": dataset, "profile": profile, "threads": threads, "repeat": repeat, "save": save,
+            "control": None}
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_required_files_per_run_depend_on_its_outcome():
+    protocol = _need("protocol")
+    plain, saving = _job(), _job(save=True)
+    assert protocol.required_files(plain, "ok") == ["crest__d__core__t8__r0.json", "crest__d__core__t8__r0.timeline.csv"]
+    assert protocol.required_files(saving, "ok")[-1] == "crest__d__core__t8__r0.outputs.npz"
+    assert protocol.required_files(dict(saving, repeat=1), "ok")[-1].endswith(".timeline.csv")   # only repeat 0 saves
+    assert protocol.required_files(saving, "failed") == ["crest__d__core__t8__r0.json"]           # a failure leaves its JSON
+    assert protocol.required_files(dict(plain, control="unpinned"))[0] == "crest__d__core__t8__r0__ctl-unpinned.json"
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_missing_result_files_lists_every_gap(tmp_path):
+    protocol = _need("protocol")
+    jobs = [_job(), _job(repeat=1), _job(tool="scanpy"), _job(tool="scanpy", dataset="e", repeat=1, save=True)]
+    res = _plan_dir(tmp_path / "a", jobs, files=("json", "timeline.csv"))
+    assert protocol.missing_result_files(res) == []             # the saving job is repeat 1: it saves nothing
+    jobs[3]["repeat"] = 0                                       # now it saves: the per-cell outputs are required
+    res = _plan_dir(tmp_path / "b", jobs, files=("json", "timeline.csv"))
+    assert protocol.missing_result_files(res) == ["scanpy__e__core__t8__r0.outputs.npz"]
+    (res / "raw" / "crest__d__core__t8__r1.json").unlink()
+    (res / "raw" / "scanpy__d__core__t8__r0.timeline.csv").unlink()
+    assert sorted(protocol.missing_result_files(res)) == sorted([
+        "crest__d__core__t8__r1.json",                      # no JSON: only the JSON is demanded (its status is unknown)
+        "scanpy__d__core__t8__r0.timeline.csv", "scanpy__e__core__t8__r0.outputs.npz"])
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_a_failed_run_needs_only_its_json_and_no_plan_is_one_missing_entry(tmp_path):
+    protocol = _need("protocol")
+    res = _plan_dir(tmp_path, [_job(save=True)], files=("json",), statuses={0: "failed"})
+    assert protocol.missing_result_files(res) == []
+    assert protocol.missing_result_files(tmp_path / "empty") == ["plan.json"]
+
+
+# --------------------------------------------------------------------------- hand-built result directories
+def _tag(tool, dataset, profile, threads, repeat, control=None):
+    return f"{tool}__{dataset}__{profile}__t{threads}__r{repeat}" + (f"__ctl-{control}" if control else "")
+
+
+def _steps(**over):
+    """Step seconds of a run: every core step at 1 s unless overridden."""
+    return {s: over.get(s, 1.0) for s in CORE_STEPS}
+
+
+def _write_json_run(raw: Path, tool, threads, steps, *, dataset="ds", repeat=0, profile="core", untracked=0.2,
+                    startup=1.0, control=None, quiet=None, peak=2.0, baseline=0.5, n_cells=1000, kind=None,
+                    parent=None, status="ok", with_endpoints=True):
+    """One run JSON + timeline in the layout run_one writes; returns the plan entry of the run."""
+    st = {s: {"seconds": v, "peak_rss_gb": peak, "parallelism": 1.0} for s, v in steps.items()}
+    total = sum(steps.values()) + untracked
+    rec = {"tool": tool, "dataset": dataset, "profile": profile, "threads": threads, "repeat": repeat, "status": status,
+           "n_cells": n_cells, "total_seconds": total, "peak_rss_gb": peak, "baseline_rss_gb": baseline,
+           "peak_rss_minus_baseline_gb": peak - baseline, "steps": st, "control": control,
+           "env": {"logical_cores": 64, "physical_cores": 32}, "pinned": True}
+    if with_endpoints:
+        rec.update({"startup_seconds": startup, "import_seconds": startup * 0.9, "end_to_end_seconds": startup + total,
+                    "untracked_seconds": untracked, "quiet": quiet or {"median_foreign_busy_cores": 0.1,
+                                                                        "threshold": 1.0, "violated": False}})
+    if kind:
+        rec["dataset_meta"] = {"kind": kind, "parent": parent}
+    tag = _tag(tool, dataset, profile, threads, repeat, control)
+    (raw / f"{tag}.json").write_text(json.dumps(rec))
+    (raw / f"{tag}.timeline.csv").write_text("t,step,rss_gb,proc_cores,util_0,util_1\n0.0,read,1.0,1.0,50,50\n1.0,read,1.0,1.0,50,50\n")
+    return {"tool": tool, "dataset": dataset, "profile": profile, "threads": threads, "repeat": repeat, "save": False,
+            "control": control}
+
+
+def _write_results(res: Path, runs: list[dict], main_threads=(8, 64), attempts=()):
+    """A results directory: raw/ files from ``runs`` (kwargs of _write_json_run, with tool, threads, steps), a
+    complete plan.json and an attempts.jsonl."""
+    raw = res / "raw"
+    raw.mkdir(parents=True)
+    jobs = [_write_json_run(raw, **r) for r in runs]
+    (res / "plan.json").write_text(json.dumps({"args": {"main_threads": list(main_threads)}, "runs": jobs,
+                                                "main_threads": list(main_threads), "ooc_threads": list(main_threads)}))
+    if attempts:
+        (res / "attempts.jsonl").write_text("\n".join(json.dumps(a) for a in attempts) + "\n")
+    return res
+
+
+# per-step seconds of the scenario (PBMC 68k-like, seconds): CREST normalises lazily, so the cost sits in hvg
+CREST_STEPS = dict(read=1.0, qc_filter=0.5, normalize_log1p=LAZY_STEP_SECONDS, hvg=0.4, scale_pca=1.0, neighbors=1.0,
+                   leiden=1.0, umap=2.0, de_ttest=1.0, de_wilcoxon=2.0)
+SCANPY_STEPS = dict(read=2.0, qc_filter=1.0, normalize_log1p=0.3, hvg=0.1, scale_pca=3.0, neighbors=2.0, leiden=1.0,
+                    umap=5.0, de_ttest=2.0, de_wilcoxon=34.7)
+CREST_UNTRACKED, SCANPY_UNTRACKED = 0.2, 2.4           # untracked time differs by tool (gc, result extraction)
+CREST_STARTUP, SCANPY_STARTUP = 0.6, 4.0               # start-up and imports differ by tool
+
+
+def _scenario():
+    """crest and scanpy at 8 and 64 threads, 2 repeats; scanpy's Wilcoxon step is 5x slower at 64 threads; a scanpy
+    run that is not pinned (control); a scanpy-lean run; one real-subsample series and one synthetic series."""
+    runs = []
+    for rep in (0, 1):
+        for p in (8, 64):
+            runs.append(dict(tool="crest", threads=p, steps=CREST_STEPS, repeat=rep, untracked=CREST_UNTRACKED, startup=CREST_STARTUP))
+            sc = dict(SCANPY_STEPS, de_wilcoxon=177.3 if p == 64 else 34.7, neighbors=2.0 if p == 8 else 2.1)
+            runs.append(dict(tool="scanpy", threads=p, steps=sc, repeat=rep, untracked=SCANPY_UNTRACKED, startup=SCANPY_STARTUP,
+                             peak=4.0, baseline=0.75))
+    runs.append(dict(tool="scanpy", threads=8, steps=dict(SCANPY_STEPS, de_wilcoxon=400.0), untracked=SCANPY_UNTRACKED,
+                     startup=SCANPY_STARTUP, control="unpinned"))                       # a control that must not count
+    runs.append(dict(tool="scanpy-lean", threads=8, steps=SCANPY_STEPS, untracked=SCANPY_UNTRACKED, startup=SCANPY_STARTUP,
+                     peak=3.0, baseline=0.75))
+    for name, n, kind, parent in (("big_sub10k", 10_000, "real-subsample", "big"), ("big_sub20k", 20_000, "real-subsample", "big"),
+                                  ("big_sub40k", 40_000, "real-subsample", "big"), ("synth_10k", 10_000, "synthetic", None),
+                                  ("synth_20k", 20_000, "synthetic", None), ("synth_40k", 40_000, "synthetic", None)):
+        f = n / 10_000
+        for tool, base, un, su in (("crest", CREST_STEPS, CREST_UNTRACKED, CREST_STARTUP),
+                                   ("scanpy", SCANPY_STEPS, SCANPY_UNTRACKED, SCANPY_STARTUP)):
+            runs.append(dict(tool=tool, threads=8, dataset=name, n_cells=n, kind=kind, parent=parent, untracked=0.0, startup=0.0,
+                             steps={k: v * f for k, v in base.items()}))     # no fixed costs: time is exactly linear in cells
+    return runs
+
+
+@pytest.fixture(scope="module")
+def scenario(tmp_path_factory):
+    """The scenario written to disk, loaded, and summarised once with the command-line entry point."""
+    import summarize
+    res = tmp_path_factory.mktemp("scenario") / "res"
+    _write_results(res, _scenario(), attempts=[
+        {"tag": "crest__ds__core__t8__r0", "status": "ok", "quiet_violation": True, "median_foreign_busy_cores": 2.5,
+         "started": "2026-01-01T00:00:00"},
+        {"tag": "crest__ds__core__t8__r0", "status": "ok", "quiet_violation": False, "median_foreign_busy_cores": 0.1,
+         "started": "2026-01-01T00:05:00"}])
+    df = summarize.load_runs(res / "raw")
+    old, error = sys.argv, None
+    sys.argv = ["summarize.py", str(res)]
+    try:
+        summarize.main()
+    except BaseException as e:  # noqa: BLE001  (the tests below assert on what was written; none means they fail)
+        error = f"{type(e).__name__}: {e}"
+    finally:
+        sys.argv = old
+    report = (res / "report.md").read_text() if (res / "report.md").exists() else ""
+    return types.SimpleNamespace(res=res, df=df, report=report, tables=res / "tables", error=error)
+
+
+# --------------------------------------------------------------------------- endpoints (end-to-end, sum of steps)
+def _e2e(steps, untracked, startup):
+    return startup + sum(steps.values()) + untracked
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"endpoint")
+def test_headline_endpoint_is_the_end_to_end_time_and_the_step_sum_is_secondary(scenario, summarize):
+    import inspect
+    assert "endpoint" in inspect.signature(summarize.main_table).parameters, "main_table has no endpoint parameter"
+    sets = {t: {8, 64} for t in ("crest", "scanpy", "crest-ooc")}
+    sc8 = SCANPY_STEPS
+    e = summarize.main_table(scenario.df, 64, sets, endpoint="end_to_end").filter(pl.col("dataset") == "ds").row(0, named=True)
+    c = summarize.main_table(scenario.df, 64, sets, endpoint="core").filter(pl.col("dataset") == "ds").row(0, named=True)
+    want_e2e = _e2e(sc8, SCANPY_UNTRACKED, SCANPY_STARTUP) / _e2e(CREST_STEPS, CREST_UNTRACKED, CREST_STARTUP)
+    want_core = sum(sc8.values()) / sum(CREST_STEPS.values())
+    assert e["speedup_t8"] == pytest.approx(want_e2e, rel=RTOL) and e["endpoint"] == "end_to_end"
+    assert c["speedup_t8"] == pytest.approx(want_core, rel=RTOL) and c["endpoint"] == "core"
+    assert want_e2e != pytest.approx(want_core, rel=1e-3)             # the two endpoints really differ here
+    # the table carries both endpoints and the untracked time of each tool
+    assert e["crest_core_seconds_median"] == pytest.approx(sum(CREST_STEPS.values()), rel=RTOL)
+    assert e["scanpy_end_to_end_seconds_median"] is not None and e["scanpy_total_seconds_median"] is not None
+    assert e["scanpy_untracked_seconds_median"] == pytest.approx(SCANPY_UNTRACKED, rel=RTOL)
+    assert e["crest_untracked_seconds_median"] == pytest.approx(CREST_UNTRACKED, rel=RTOL)
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"end-to-end|endpoint")
+def test_report_names_its_endpoint_and_lists_both_endpoints_per_tool(scenario):
+    assert "end-to-end process wall time" in scenario.report, "the report does not name the primary endpoint"
+    assert "Secondary endpoint" in scenario.report
+    assert "## Core workflow" in scenario.report
+    assert (scenario.tables / "endpoints.csv").exists(), f"no endpoints.csv ({scenario.error})"
+    ep = pl.read_csv(scenario.tables / "endpoints.csv")
+    for col in ("core_seconds", "total_seconds", "end_to_end_seconds", "untracked_seconds", "import_seconds"):
+        assert col in ep.columns, f"endpoints.csv has no {col}"
+    s = ep.filter((pl.col("dataset") == "ds") & (pl.col("tool") == "scanpy") & (pl.col("threads") == 8)).row(0, named=True)
+    c = ep.filter((pl.col("dataset") == "ds") & (pl.col("tool") == "crest") & (pl.col("threads") == 8)).row(0, named=True)
+    assert s["untracked_seconds"] == pytest.approx(SCANPY_UNTRACKED, rel=RTOL) and c["untracked_seconds"] == pytest.approx(CREST_UNTRACKED, rel=RTOL)
+    assert s["end_to_end_seconds"] - s["total_seconds"] == pytest.approx(SCANPY_STARTUP, rel=RTOL)
+    assert s["total_seconds"] - s["core_seconds"] == pytest.approx(SCANPY_UNTRACKED, rel=RTOL)
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_end_to_end_time_needs_runs_that_recorded_it(summarize, tmp_path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    for tool in ("crest", "scanpy"):
+        _write_json_run(raw, tool, 8, _steps(), with_endpoints=False)
+    df = summarize.load_runs(raw)
+    _has(summarize, "ENDPOINT_COLUMNS")
+    with pytest.raises(ValueError, match="end_to_end_seconds"):
+        summarize.main_table(df, 8, endpoint="end_to_end")
+    assert summarize.main_table(df, 8, endpoint="core").height == 1          # the step sum still works
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_end_to_end_seconds_is_start_up_plus_the_timed_block():
+    protocol = _need("protocol")
+    assert protocol.end_to_end_seconds(4.0, 17.0) == 21.0
+    assert protocol.end_to_end_seconds(None, 17.0) is None and protocol.end_to_end_seconds(4.0, None) is None
+    run_one = _need("run_one")
+    got = _has(run_one, "import_tool")
+    run_one.TOOL_IMPORTS = {"scanpy": ["json", "csv"], "crest": ["json", "no_such_module_for_the_test"]}
+    out = got("scanpy", "core")
+    assert set(out["per_module"]) == {"json", "csv"} and out["errors"] == {} and out["seconds"] >= 0.0
+    out = got("crest", "core")                                    # a missing module is recorded, not fatal
+    assert "no_such_module_for_the_test" in out["errors"] and "json" in out["per_module"]
+
+
+# --------------------------------------------------------------------------- controls and quiet host in the report
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"control")
+def test_controls_never_enter_the_headline_and_are_reported_separately(scenario, summarize):
+    sets = {t: {8, 64} for t in ("crest", "scanpy", "crest-ooc")}
+    row = summarize.main_table(scenario.df, 64, sets).filter(pl.col("dataset") == "ds").row(0, named=True)
+    # the unpinned scanpy control has a 400 s Wilcoxon step: if it counted, scanpy's 8-thread time would not be 51.1 s
+    assert row["scanpy_time_t8"] == pytest.approx(sum(SCANPY_STEPS.values()), rel=RTOL)
+    assert len(summarize._core_samples(scenario.df)[("ds", "scanpy", 8)]["t"]) == 2, "a control run entered the statistics"
+    assert (scenario.tables / "controls.csv").exists(), f"no controls.csv ({scenario.error})"
+    ctl = pl.read_csv(scenario.tables / "controls.csv")
+    r = ctl.filter((pl.col("tool") == "scanpy") & (pl.col("control") == "unpinned")).row(0, named=True)
+    assert r["n_control"] == 1 and r["n_main"] == 2 and r["control_over_main"] > 1.0
+    assert "## Controls" in scenario.report
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"quiet")
+def test_report_lists_quiet_host_violations_and_their_outcome(scenario):
+    assert "## Quiet host" in scenario.report, "no quiet-host section"
+    assert (scenario.tables / "quiet_host.csv").exists(), f"no quiet_host.csv ({scenario.error})"
+    q = pl.read_csv(scenario.tables / "quiet_host.csv")
+    assert q.height == 1 and q["outcome"][0] == "re-run" and q["median_foreign_busy_cores"][0] == pytest.approx(2.5)
+
+
+# --------------------------------------------------------------------------- fused stages (lazy steps)
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_stage_table_fuses_the_lazy_normalisation_into_one_stage(scenario, summarize):
+    st = _has(summarize, "stage_table")(scenario.df)
+    fused = st.filter((pl.col("dataset") == "ds") & (pl.col("step") == "norm+hvg"))
+    assert sorted(fused["tool"].to_list()) == ["crest", "scanpy"]            # at the highest thread count of the runs
+    got = {r["tool"]: r["median_s"] for r in fused.iter_rows(named=True)}
+    assert got["crest"] == pytest.approx(CREST_STEPS["normalize_log1p"] + CREST_STEPS["hvg"], rel=RTOL)
+    assert got["scanpy"] == pytest.approx(SCANPY_STEPS["normalize_log1p"] + SCANPY_STEPS["hvg"], rel=RTOL)
+    assert "normalize_log1p" not in st["step"].to_list() and "hvg" not in st["step"].to_list()
+    steps = summarize.step_table(scenario.df)                     # the raw steps stay available
+    assert {"normalize_log1p", "hvg"} <= set(steps["step"].to_list())
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_no_stage_ratio_above_one_thousand_is_ever_formed(scenario, summarize):
+    st = _has(summarize, "stage_table")(scenario.df)
+    su = summarize.stage_speedup_table(st)
+    ratios = [r for r in su["speedup"].to_list() if r is not None]
+    assert ratios and max(ratios) < STEP_RATIO_CEILING
+    row = su.filter((pl.col("dataset") == "ds") & pl.col("stage").str.contains("normalize")).row(0, named=True)
+    assert row["speedup"] == pytest.approx((SCANPY_STEPS["normalize_log1p"] + SCANPY_STEPS["hvg"])
+                                           / (CREST_STEPS["normalize_log1p"] + CREST_STEPS["hvg"]), rel=RTOL)
+    # dividing the raw lazy step medians is what produces the 1000x ratios: the guard refuses it
+    raw_ratio = SCANPY_STEPS["normalize_log1p"] / CREST_STEPS["normalize_log1p"]
+    assert raw_ratio > STEP_RATIO_CEILING
+    assert summarize.safe_ratio(SCANPY_STEPS["normalize_log1p"], CREST_STEPS["normalize_log1p"]) is None
+    assert summarize.safe_ratio(1.0, 0.0) is None and summarize.safe_ratio(0.004, 0.003) is None
+    assert summarize.safe_ratio(12.0, 4.0) == pytest.approx(3.0)
+    assert summarize.safe_ratio(5000.0, 2.0) is None              # above the ceiling: not printed
+    assert "normalize+log1p+HVG (fused)" in scenario.report
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"lazy step")
+def test_not_faster_table_skips_the_raw_steps_whose_cost_is_deferred(summarize):
+    steps = pl.DataFrame({"dataset": ["d"] * 6, "step": ["normalize_log1p", "normalize_log1p", "hvg", "hvg", "umap", "umap"],
+                          "tool": ["crest", "scanpy"] * 3, "median_s": [0.4, 0.3, 0.5, 0.3, 1.0, 1.1]})
+    got = summarize.not_faster_table(steps)["step"].to_list()
+    assert got == ["umap"], f"lazy step compared as if it were one step: {got}"
+
+
+# --------------------------------------------------------------------------- steps slower with more threads
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_thread_regression_table_flags_only_steps_that_pass_both_thresholds(scenario, summarize):
+    reg = _has(summarize, "thread_regression_table")(scenario.df, {t: {8, 64} for t in ("crest", "scanpy")})
+    flagged = reg.filter(pl.col("flagged"))
+    assert flagged["tool"].to_list() == ["scanpy"] and flagged["step"].to_list() == ["de_wilcoxon"]
+    r = flagged.row(0, named=True)
+    assert (r["ref_threads"], r["threads"]) == (8, 64) and r["ratio"] == pytest.approx(177.3 / 34.7)
+    assert r["extra_s"] == pytest.approx(177.3 - 34.7)
+    nb = reg.filter((pl.col("tool") == "scanpy") & (pl.col("step") == "neighbors")).row(0, named=True)
+    assert nb["ratio"] == pytest.approx(2.1 / 2.0) and not nb["flagged"]      # +5% and +0.1 s: neither threshold
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"slower with more threads")
+def test_report_prints_the_steps_that_get_slower_with_more_threads(scenario):
+    head = "Steps that get slower with more threads"
+    assert head in scenario.report, "the report has no thread-regression section"
+    section = scenario.report.split(head, 1)[1].split("\n## ", 1)[0]
+    assert "de_wilcoxon" in section and "neighbors" not in section
+
+
+# --------------------------------------------------------------------------- scaling series and datasets labels
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_scaling_series_are_real_subsamples_first_and_the_synthetic_set_is_a_labelled_supplement(scenario, summarize):
+    series = _has(summarize, "scaling_series")(scenario.df)
+    assert series == {"real subsamples of big": ["big_sub10k", "big_sub20k", "big_sub40k"],
+                      "synthetic (supplement)": ["synth_10k", "synth_20k", "synth_40k"]}
+    assert (scenario.tables / "scaling.csv").exists(), f"no scaling.csv ({scenario.error})"
+    fits = pl.read_csv(scenario.tables / "scaling.csv")
+    assert set(fits["series"].to_list()) == set(series)
+    for s in series:
+        assert sorted(fits.filter(pl.col("series") == s)["tool"].to_list()) == ["crest", "scanpy"]
+    # the time of the scenario grows linearly with the cells: the fitted exponent is 1
+    assert fits["alpha"].to_list() == pytest.approx([1.0] * fits.height, abs=0.02)
+    assert "real subsamples" in scenario.report and "supplement" in scenario.report
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"series")
+def test_a_real_series_is_not_mixed_with_the_synthetic_one_in_a_fit(scenario):
+    cols = pl.read_csv(scenario.tables / "scaling.csv").columns if (scenario.tables / "scaling.csv").exists() else []
+    assert "series" in cols, "scaling.csv has no series column"
+    fits = pl.read_csv(scenario.tables / "scaling.csv")
+    assert not any("big_sub" in d and "synth_" in d for d in fits["datasets"].to_list())
+
+
+# --------------------------------------------------------------------------- memory profile
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_memory_table_compares_idiomatic_lean_and_crest_peak_memory(scenario, summarize):
+    mem = _has(summarize, "memory_table")(scenario.df)
+    got = {r["tool"]: r for r in mem.filter(pl.col("dataset") == "ds").iter_rows(named=True)}
+    assert set(got) == {"scanpy", "scanpy-lean", "crest"}
+    assert got["scanpy"]["peak_gb"] == pytest.approx(4.0) and got["scanpy-lean"]["peak_gb"] == pytest.approx(3.0)
+    assert got["scanpy-lean"]["scanpy_over_this"] == pytest.approx(4.0 / 3.0)
+    assert got["scanpy"]["peak_minus_baseline_gb"] == pytest.approx(3.25)
+
+
+def test_lean_in_place_subsetting_gives_the_same_matrix_as_view_and_copy():
+    """The memory-lean scanpy profile differs from the idiomatic one only in how the variable subset is taken."""
+    ad = pytest.importorskip("anndata")
+    sp = pytest.importorskip("scipy.sparse")
+    rng = np.random.default_rng(0)
+    X = sp.random(40, 30, density=0.3, format="csr", random_state=1, dtype=np.float32)
+    import pandas as pd
+    a = ad.AnnData(X.copy(), var=pd.DataFrame(index=[f"g{i}" for i in range(30)]))
+    a.var["highly_variable"] = rng.random(30) < 0.5
+    a.raw = a
+    ref = a[:, a.var.highly_variable].copy()
+    lean = a.copy()
+    lean._inplace_subset_var(lean.var["highly_variable"].to_numpy())
+    assert (ref.X != lean.X).nnz == 0 and list(ref.var_names) == list(lean.var_names)
+    assert lean.raw.shape == a.shape and (lean.raw.X != a.raw.X).nnz == 0       # the full-gene raw matrix is intact
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_the_lean_profile_is_a_scanpy_tool_with_the_scanpy_settings(run_all, monkeypatch):
+    protocol = _need("protocol")
+    assert protocol.base_tool("scanpy-lean") == "scanpy" and protocol.base_tool("crest-ooc") == "crest"
+    monkeypatch.setattr(os, "cpu_count", lambda: 64)
+    jobs = run_all.plan(_plan_args(tools=["scanpy", "scanpy-lean"], profile="full"))
+    lean = [j for j in jobs if j["tool"] == "scanpy-lean"]
+    assert {j["profile"] for j in lean} == {"core"} and not any(j["save"] for j in lean)   # core runs only, no outputs
+
+
+# --------------------------------------------------------------------------- completeness gate of the summary
+def _summarize_exit(summarize, res, monkeypatch, *extra):
+    monkeypatch.setattr(sys, "argv", ["summarize.py", str(res), *extra])
+    try:
+        summarize.main()
+        return 0
+    except SystemExit as e:
+        return e.code
+
+
+def _two_tool_results(tmp_path, missing_job=False):
+    res = tmp_path / "gate"
+    runs = [dict(tool="crest", threads=8, steps=CREST_STEPS), dict(tool="scanpy", threads=8, steps=SCANPY_STEPS)]
+    _write_results(res, runs, main_threads=(8,))
+    if missing_job:
+        plan = json.loads((res / "plan.json").read_text())
+        plan["runs"].append(_job(tool="crest", dataset="ds", threads=8, repeat=1))
+        (res / "plan.json").write_text(json.dumps(plan))
+    return res
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"missing required")
+def test_the_summary_fails_when_a_required_result_file_is_missing(summarize, tmp_path, monkeypatch):
+    res = _two_tool_results(tmp_path, missing_job=True)
+    code = _summarize_exit(summarize, res, monkeypatch)
+    assert code not in (0, None), "summarize accepted a results directory with missing required files"
+    assert "crest__ds__core__t8__r1.json" in (res / "missing_files.txt").read_text()
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"INCOMPLETE")
+def test_an_incomplete_draft_is_marked_and_a_complete_directory_is_not(summarize, tmp_path, monkeypatch):
+    res = _two_tool_results(tmp_path, missing_job=True)
+    assert _summarize_exit(summarize, res, monkeypatch, "--allow-incomplete") in (0, None)
+    assert "INCOMPLETE" in (res / "report.md").read_text(), "a draft made from missing files is not marked INCOMPLETE"
+    ok = _two_tool_results(tmp_path / "ok")
+    assert _summarize_exit(summarize, ok, monkeypatch) in (0, None)
+    assert "INCOMPLETE" not in (ok / "report.md").read_text() and not (ok / "missing_files.txt").exists()
+
+
+# --------------------------------------------------------------------------- one real run (crest, tiny synthetic data)
+def _tiny_dataset(path: Path, n_cells=450, n_genes=2300, seed=0):
+    ds = _need("datasets")
+    sp = pytest.importorskip("scipy.sparse")
+    rng = np.random.default_rng(seed)
+    base = rng.gamma(0.4, 1.0, n_genes)
+    mult = np.ones((3, n_genes))
+    for k in range(3):
+        mult[k, k * 200:(k + 1) * 200] = 6.0
+    labels = rng.integers(0, 3, n_cells)
+    mu = base[None, :] * mult[labels] * rng.uniform(0.6, 1.4, (n_cells, 1))
+    X = sp.csr_matrix(rng.poisson(mu).astype(np.int32))
+    X.sort_indices()
+    ds.write_10x_h5(path, X.indptr, X.indices, X.data, n_genes, [f"cell{i}-1" for i in range(n_cells)],
+                    [f"ENSG{i:05d}" for i in range(n_genes)], [f"GENE{i}" for i in range(n_genes)])
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"startup_seconds")
+def test_one_run_records_endpoints_load_pinning_and_memory_baseline(tmp_path):
+    """run_one end to end with CREST on a tiny synthetic matrix: the new fields exist and are consistent."""
+    pytest.importorskip("crest")
+    pytest.importorskip("psutil")
+    h5 = tmp_path / "tinyds.h5"
+    _tiny_dataset(h5)
+    out = tmp_path / "out"
+    env = {**os.environ, "RAYON_NUM_THREADS": "2", "OMP_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "2",
+           "CREST_BENCH_SPAWN_TIME": repr(time.time())}
+    t_spawn = time.time()
+    cmd = [sys.executable, str(REPO / "bench" / "paper" / "run_one.py"), "--tool", "crest", "--data", str(h5), "--out", str(out),
+           "--profile", "core", "--threads", "2", "--repeat", "0", "--pin"]
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=300)
+    if "PermissionError" in proc.stderr:
+        pytest.skip("psutil cannot list processes here")
+    assert proc.returncode == 0, proc.stderr[-600:]
+    rec = json.loads((out / "crest__tinyds__core__t2__r0.json").read_text())
+    assert rec["status"] == "ok", rec.get("error")
+    assert rec.get("startup_seconds", None) is not None, "startup_seconds not recorded"
+    assert rec["startup_source"] == "spawn-time" and 0.0 < rec["startup_seconds"] < time.time() - t_spawn
+    steps = sum(s["seconds"] for s in rec["steps"].values())
+    assert rec["untracked_seconds"] == pytest.approx(rec["total_seconds"] - steps, abs=1e-6)
+    assert rec["end_to_end_seconds"] == pytest.approx(rec["startup_seconds"] + rec["total_seconds"], abs=1e-6)
+    assert 0.0 < rec["import_seconds"] <= rec["startup_seconds"] and "crest" in rec["import_breakdown"]
+    assert rec["quiet"]["threshold"] == 1.0 and rec["quiet"]["n_samples"] > 0 and "violated" in rec["quiet"]
+    assert rec["sample_interval_s"] == 0.05 and rec["rss_after_imports_gb"] > 0 and rec["baseline_rss_gb"] > 0
+    assert rec["dataset_meta"]["kind"] == "real" and rec["variant"] == "default" and rec["control"] is None
+    if hasattr(os, "sched_setaffinity"):
+        assert rec["pin_cpus"] is not None and len(rec["pin_cpus"]) == 2
+    assert (out / "crest__tinyds__core__t2__r0.timeline.csv").exists()
+
+
+# --------------------------------------------------------------------------- datasets: independent conversion and verification
+def _write_mtx_dir(d: Path, dense, genes, barcodes, gz=False):
+    """A 10x MTX directory (genes x cells matrix, 1-based coordinate format): v2 layout (``genes.tsv``, two columns,
+    plain text) or, with ``gz``, the v3 layout (``features.tsv.gz``, three columns, every file gzipped)."""
+    import gzip
+    features_name = "features.tsv" if gz else "genes.tsv"
+    d.mkdir(parents=True, exist_ok=True)
+    ng, nc = dense.shape
+    coords = [(i + 1, j + 1, int(dense[i, j])) for j in range(nc) for i in range(ng) if dense[i, j]]
+    mtx = f"%%MatrixMarket matrix coordinate integer general\n{ng} {nc} {len(coords)}\n" + "".join(f"{i} {j} {v}\n" for i, j, v in coords)
+    texts = {"matrix.mtx": mtx, features_name: "".join(f"{a}\t{b}" + ("\tGene Expression" if gz else "") + "\n" for a, b in genes),
+             "barcodes.tsv": "".join(f"{b}\n" for b in barcodes)}
+    for name, text in texts.items():
+        if gz:
+            with gzip.open(d / f"{name}.gz", "wt") as f:
+                f.write(text)
+        else:
+            (d / name).write_text(text)
+
+
+GENES = [("ID1", "A"), ("ID2", "B"), ("ID3", "B"), ("ID4", "C"), ("ID5", "D"), ("ID6", "E")]   # a duplicated symbol, as in hg19
+BARCODES = [f"AAAC{i}-1" for i in range(5)]
+
+
+def _counts(seed=0):
+    return np.random.default_rng(seed).integers(0, 6, (len(GENES), len(BARCODES))) * (np.random.default_rng(seed + 1).random((len(GENES), len(BARCODES))) < 0.6)
+
+
+@pytest.fixture(scope="module")
+def datasets():
+    pytest.importorskip("h5py")
+    return _need("datasets")
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+@pytest.mark.parametrize("gz", [False, True])
+def test_independent_mtx_reader_returns_cells_by_genes_with_names_in_file_order(datasets, tmp_path, gz):
+    dense = _counts()
+    _write_mtx_dir(tmp_path / "m", dense, GENES, BARCODES, gz=gz)
+    X, bc, ids, names = _has(datasets, "read_mtx_dir_independent")(tmp_path / "m")
+    assert X.shape == (5, 6) and (X.toarray() == dense.T).all()
+    assert bc == BARCODES and ids == [g[0] for g in GENES] and names == [g[1] for g in GENES]     # duplicates kept, in order
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"depends on crest")
+def test_mtx_conversion_does_not_use_crests_reader(datasets, tmp_path, monkeypatch):
+    dense = _counts()
+    _write_mtx_dir(tmp_path / "m", dense, GENES, BARCODES)
+    monkeypatch.setitem(sys.modules, "crest", None)                        # any import of crest now fails
+    try:
+        datasets._mtx_dir_to_h5(tmp_path / "m", tmp_path / "out.h5", "hg19")
+    except ImportError as e:
+        raise AssertionError(f"MTX conversion depends on crest's reader: {e}") from None
+    X, bc, ids, names = datasets.read_h5_counts(tmp_path / "out.h5")
+    assert (X.toarray() == dense.T).all() and bc == BARCODES and names == [g[1] for g in GENES]
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_compare_counts_detects_a_changed_value_a_reordered_gene_and_a_swapped_cell(datasets):
+    sp = pytest.importorskip("scipy.sparse")
+    dense = _counts().T.astype(float)
+    ref = (sp.csr_matrix(dense), BARCODES, [g[1] for g in GENES])
+    cmp = _has(datasets, "compare_counts")
+    assert cmp(ref, ref) == []
+    changed = dense.copy()
+    changed[2, 3] += 1 if changed[2, 3] else 0
+    changed[np.nonzero(changed)[0][0], np.nonzero(changed)[1][0]] += 1
+    assert any("values differ" in m for m in cmp((sp.csr_matrix(changed), BARCODES, ref[2]), ref))
+    perm = [1, 0, 2, 3, 4, 5]                                                # two genes swapped, names kept in the old order
+    assert any("column indices differ" in m or "values differ" in m for m in cmp((sp.csr_matrix(dense[:, perm]), BARCODES, ref[2]), ref))
+    assert any("gene names differ" in m for m in cmp((ref[0], BARCODES, [g[1] for g in GENES][::-1]), ref))
+    assert any("barcodes differ" in m for m in cmp((ref[0], BARCODES[::-1], ref[2]), ref))
+    assert cmp((sp.csr_matrix(dense[:3]), BARCODES[:3], ref[2]), ref)[0].startswith("shape")
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_verification_passes_for_a_correct_conversion_and_fails_for_a_misordered_gene_axis(datasets, tmp_path):
+    dense = _counts()
+    _write_mtx_dir(tmp_path / "m", dense, GENES, BARCODES, gz=True)
+    datasets._mtx_dir_to_h5(tmp_path / "m", tmp_path / "ok.h5", "hg19")
+    checks = _has(datasets, "verify_mtx_dataset")(tmp_path / "m", tmp_path / "ok.h5")
+    assert checks and all(c["ok"] for c in checks), [c for c in checks if not c["ok"]]
+    # a reader that mis-orders the genes writes the right counts under permuted names
+    X, bc, ids, names = datasets.read_mtx_dir_independent(tmp_path / "m")
+    datasets.write_10x_h5(tmp_path / "bad.h5", X.indptr, X.indices, X.data, X.shape[1], bc, ids[::-1], names[::-1], "hg19")
+    bad = datasets.verify_mtx_dataset(tmp_path / "m", tmp_path / "bad.h5")
+    assert not all(c["ok"] for c in bad)
+    assert any("gene names differ" in c["detail"] for c in bad if not c["ok"])
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_reader_equality_checks_pass_on_a_converted_file(datasets, tmp_path):
+    _write_mtx_dir(tmp_path / "m", _counts(), GENES, BARCODES)
+    datasets._mtx_dir_to_h5(tmp_path / "m", tmp_path / "ok.h5", "hg19")
+    checks = _has(datasets, "verify_reader_equality")(tmp_path / "ok.h5")
+    assert checks and all(c["ok"] for c in checks), checks
+
+
+# --------------------------------------------------------------------------- datasets: real-subsample series
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_subsample_rows_are_seeded_sorted_and_nested(datasets):
+    rows = _has(datasets, "subset_rows")
+    a, b = rows(1000, 100, 7), rows(1000, 400, 7)
+    assert (np.diff(a) > 0).all() and len(a) == 100 and set(a) <= set(b)        # nested within one seed
+    assert (rows(1000, 100, 7) == a).all() and not (rows(1000, 100, 8) == a).all()
+    assert len(rows(50, 100, 0)) == 50                                         # never more than the parent
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_subsample_names_round_trip_and_name_a_real_dataset_kind(datasets):
+    protocol = _need("protocol")
+    assert protocol.subset_name("neurons_1m", 100_000) == "neurons_1m_sub100k"
+    assert protocol.subset_name("p", 1_000_000) == "p_sub1m" and protocol.subset_name("p", 1234) == "p_sub1234"
+    assert protocol.parse_subset_name("neurons_1m_sub100k") == ("neurons_1m", 100_000)
+    assert protocol.parse_subset_name("p_sub1m") == ("p", 1_000_000) and protocol.parse_subset_name("pbmc3k") is None
+    assert _has(datasets, "dataset_kind")("neurons_1m_sub100k") == "real-subsample"
+    assert datasets.dataset_kind("synth_100k") == "synthetic" and datasets.dataset_kind("pbmc68k") == "real"
+    assert datasets.dataset_kind("parse_pbmc_1m") == "real-subsample"
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_a_subsample_matches_its_parent_cell_for_cell_and_a_wrong_seed_does_not(datasets, tmp_path):
+    sp = pytest.importorskip("scipy.sparse")
+    rng = np.random.default_rng(0)
+    X = sp.csr_matrix(rng.poisson(0.5, (80, 25)).astype(np.int32))
+    X.sort_indices()
+    parent = tmp_path / "parent.h5"
+    datasets.write_10x_h5(parent, X.indptr, X.indices, X.data, 25, [f"c{i}" for i in range(80)],
+                          [f"id{i}" for i in range(25)], [f"g{i}" for i in range(25)])
+    out = tmp_path / "parent_sub20.h5"
+    verify = _has(datasets, "verify_subset")
+    datasets.subset_h5(parent, out, 20, seed=5)
+    meta = json.loads(out.with_suffix(".meta.json").read_text())
+    assert meta["subset_of"] == "parent" and meta["subset_seed"] == 5 and meta["kind"] == "real-subsample"
+    good = verify(parent, out, 20, 5)
+    assert all(c["ok"] for c in good), good
+    bad = verify(parent, out, 20, 6)
+    assert not all(c["ok"] for c in bad)
+    rows = datasets.subset_rows(80, 20, 5)
+    Xs, bc, _, _ = datasets.read_h5_counts(out)
+    assert (Xs.toarray() == X[rows].toarray()).all() and bc == [f"c{i}" for i in rows]
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_manifest_never_fills_in_a_licence_and_labels_the_conversion(datasets, tmp_path):
+    _write_mtx_dir(tmp_path / "src" / "pbmc3k" / "extracted" / "hg19", _counts(), GENES, BARCODES)
+    datasets._mtx_dir_to_h5(tmp_path / "src" / "pbmc3k" / "extracted" / "hg19", tmp_path / "pbmc3k.h5", "hg19")
+    m = _has(datasets, "build_manifest")(tmp_path, ["pbmc3k", "synth_25k", "parse_pbmc_1m"])
+    assert all(r["licence"] is None for r in m.values())                      # stated by the provider, not by a script
+    assert "scipy" in m["pbmc3k"]["conversion"] and len(m["pbmc3k"]["converted_sha256"]) == 64
+    assert m["synth_25k"]["kind"] == "synthetic" and "supplement" in m["synth_25k"]["conversion"]
+    assert m["parse_pbmc_1m"]["parent"] == "parse_pbmc" and m["parse_pbmc_1m"]["converted_sha256"] is None
+    assert "pbmc3k.tar.gz" in m["pbmc3k"]["source_urls"]
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"synthetic")
+def test_the_dataset_listing_labels_synthetic_sets_as_a_supplement(datasets, capsys, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["datasets.py", "--list"])
+    datasets.main()
+    out = capsys.readouterr().out
+    line = next(ln for ln in out.splitlines() if ln.startswith("synth_100k"))
+    assert "supplement" in line.lower(), f"synthetic set not labelled as a supplement: {line}"
+    assert "real" in next(ln for ln in out.splitlines() if ln.startswith("parse_pbmc_1m"))
+
+
+# --------------------------------------------------------------------------- driver script and documents
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"driver script")
+def test_driver_script_has_the_pilot_controls_verification_and_environment_records():
+    for needle in ("--thread-grid", "--pilot", "--controls", "--lean-scanpy", "--allow-incomplete", "--verify",
+                   "dataset_manifest.json", "smt_siblings", "sessionInfo", "numba_threading_layer", "--mode pilot", "--tuning"):
+        assert needle in SCRIPT, f"driver script has no {needle}"
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"not found|pilot")
+def test_driver_script_dry_run_arguments_reach_the_planner():
+    block = _shell_block(r"TOOL_ARGS=\(", r'\n\[\[ \$DRY -eq 1 \]\] && exit 0')
+    assert "--mode pilot" in block and '--tuning "$OUT/tuning.json"' in block
+    assert "--controls $CONTROLS" in block and "scanpy-lean" in block, "pilot, controls and the lean profile are wired in"
+
+
+def test_driver_syntax_still_checks():
+    assert subprocess.run(["bash", "-n", str(REPO / "scripts" / "crest_paper_bench.sh")], capture_output=True).returncode == 0
+
+
+def _doc(name):
+    return (REPO / "docs" / name).read_text(encoding="utf-8")
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"bootstrap")
+def test_docs_make_no_bootstrap_claim():
+    hits = [f"{p.name}:{i}" for p in sorted((REPO / "docs").glob("*.md")) for i, ln in enumerate(p.read_text().splitlines(), 1)
+            if "bootstrap" in ln.lower()]
+    assert not hits, f"bootstrap interval mentioned (the harness computes none): {hits}"
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"pinning|endpoint")
+def test_docs_describe_pinning_endpoints_and_tuning_as_the_harness_does():
+    t = _doc("benchmarks.md")
+    assert "every run" in t and "physical-core-first" in t, "pinning policy not described"
+    assert "for the thread scan, the process is pinned" not in t
+    assert "end-to-end process wall time" in t and "secondary endpoint" in t.lower(), "endpoints not described"
+    assert "tuning pilot" in t.lower() and "default-settings control" in t
+    assert "Quiet host" in t and "Required results" in t and "Memory." in t
+    assert "PREREGISTRATION.md" in t
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"1\.42")
+def test_docs_take_the_reference_versions_from_the_recorded_environment():
+    t = _doc("benchmarks.md")
+    bad = [ln for ln in t.splitlines() if re.search(r"DESeq2 1\.\d+", ln) and "unit-test fixtures" not in ln]
+    assert not bad, f"a DESeq2 version is hard-coded as the benchmark's: {bad}"
+    assert "R_versions" in SCRIPT and "Reference tools (R)" in SCRIPT
+
+
+# --------------------------------------------------------------------------- pre-registration template
+PREREG = REPO / "bench" / "paper" / "PREREGISTRATION.md"
+PREREG_SECTIONS = ["Code and wheel", "Environments and lockfiles", "Datasets", "Endpoints", "Thread grid", "Tuning pilot",
+                   "Repeats, interleaving, pinning", "Memory", "Statistics and headline rule", "Quiet host and re-run cap",
+                   "Failures and required files", "Duration estimate", "Modules in the same run"]
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_preregistration_template_has_every_section_and_is_marked_draft():
+    assert PREREG.exists(), "bench/paper/PREREGISTRATION.md is missing"
+    t = PREREG.read_text(encoding="utf-8")
+    heads = re.findall(r"^## \d+\. (.+)$", t, re.M)
+    for s in PREREG_SECTIONS:
+        assert any(h.startswith(s) for h in heads), f"section {s!r} is missing"
+    assert "DRAFT" in t.splitlines()[0] and "FILL:" in t and "PENDING" in t
+    assert "284" in t and "7.7 h" in t                                   # the published run the estimate starts from
+    headline = t.split("Headline rule.", 1)[1].split("\n* ", 1)[0]
+    assert "PENDING" in headline and "best-vs-best" in headline and "single-thread" in headline
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_preregistration_variants_and_defaults_match_the_code():
+    assert PREREG.exists(), "bench/paper/PREREGISTRATION.md is missing"
+    t = PREREG.read_text(encoding="utf-8")
+    protocol = _need("protocol")
+    for tool in protocol.VARIANTS:
+        for v in protocol.VARIANTS[tool]:
+            assert f"`{v}`" in t, f"variant {v} of {tool} is not described"
+    assert "1, 2, 4, 8, 16, 32, 64" in t and "5% faster" in t and "1 core or more" in t
+
+
+def test_public_text_of_the_protocol_files_names_no_internal_item():
+    files = [*(REPO / "bench" / "paper").glob("*.py"), *(REPO / "bench" / "paper").glob("*.md"), REPO / "docs" / "benchmarks.md",
+             REPO / "scripts" / "crest_paper_bench.sh", REPO / "changes" / "bench-protocol-v2.md"]
+    hits = [f"{p.name}:{i}: {ln.strip()[:80]}" for p in files if p.exists() for i, ln in enumerate(p.read_text().splitlines(), 1)
+            if FORBIDDEN_PUBLIC.search(ln)]
+    assert not hits, "\n".join(hits)
