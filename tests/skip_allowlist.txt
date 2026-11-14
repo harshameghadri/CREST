@@ -1,0 +1,10 @@
+# Tests that are allowed to be skipped in CI. One entry per line:
+#
+#     <node id or module path>  # <reason>
+#
+# CI runs pytest with --skip-allowlist=tests/skip_allowlist.txt, which fails the run when a
+# test is skipped that is not listed here. The `test` extra installs every reference package
+# (scanpy, harmonypy, leidenalg, scikit-misc, scikit-image, ...), so no test that needs one
+# of them may skip: install the package instead of listing the test.
+#
+# (no entries)
