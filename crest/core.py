@@ -39,6 +39,89 @@ RawChunk = Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[np.ndarr
 DEFAULT_CHUNK_NNZ = 1 << 24  # ~16.8M non-zeros (~200 MB of working buffers)
 
 
+# --------------------------------------------------------------------------- canonical form
+_CHECK_BLOCK = 1 << 24  # entries examined at a time when checking rows (bounded temporaries)
+
+
+def csr_rows_have_no_repeated_gene(indptr: np.ndarray, indices: np.ndarray) -> bool:
+    """True if no gene is stored twice within a row. The order of the genes in a row is free
+    (Cell Ranger files list them in descending order, other writers ascending).
+
+    Looks only at ``indices[:indptr[-1]]`` and never modifies its arguments. A row whose genes are
+    strictly increasing or strictly decreasing is accepted by one vectorised pass; only the rows
+    that are neither are sorted to look for repeats. Works in row blocks, so the temporaries stay small.
+    """
+    n = len(indptr) - 1
+    a = 0
+    while a < n:
+        b = int(np.searchsorted(indptr, indptr[a] + _CHECK_BLOCK, side="right")) - 1
+        b = min(max(b, a + 1), n)
+        lo, hi = int(indptr[a]), int(indptr[b])
+        if hi - lo > 1:
+            x = np.asarray(indices[lo:hi], dtype=np.int64)
+            rp = np.asarray(indptr[a:b + 1], dtype=np.int64) - lo
+            lens = np.diff(rp)
+            multi = lens >= 2
+            s = np.empty(len(x), np.int8)  # s[k] = sign(x[k+1] - x[k]); the last slot is padding
+            s[:-1] = np.sign(x[1:] - x[:-1])
+            s[-1] = 0
+            first, last = rp[:-1][multi], rp[1:][multi] - 1  # pair range [first, last) of each row with >= 2 entries
+            mono = np.ones(b - a, bool)
+            if len(first):
+                bounds = np.empty(2 * len(first), np.int64)
+                bounds[0::2], bounds[1::2] = first, last
+                mx = np.maximum.reduceat(s, bounds)[0::2]
+                mn = np.minimum.reduceat(s, bounds)[0::2]
+                mono[multi] = (mx == mn) & (mx != 0)
+            if not mono.all():  # mixed order: sort the keys of those rows only
+                keep = np.repeat(~mono, lens)
+                rows = np.repeat(np.arange(b - a, dtype=np.int64), lens)[keep]
+                keys = np.sort((rows << 32) | x[keep])
+                if np.any(keys[1:] == keys[:-1]):
+                    return False
+        a = b
+    return True
+
+
+def sum_duplicates_csr(indptr: np.ndarray, indices: np.ndarray, data: np.ndarray):
+    """``(indptr, indices, data)`` of the same matrix in canonical form: gene indices sorted within
+    each row and repeated (cell, gene) entries summed, as scipy does. New arrays; the arguments are
+    not modified."""
+    n = len(indptr) - 1
+    nnz = int(indptr[-1])
+    rows = np.repeat(np.arange(n, dtype=np.int64), np.diff(indptr).astype(np.int64))
+    cols = np.asarray(indices[:nnz], dtype=np.int64)
+    order = np.lexsort((cols, rows))
+    rows, cols, vals = rows[order], cols[order], np.asarray(data[:nnz], dtype=np.float64)[order]
+    if nnz:
+        first = np.flatnonzero(np.r_[True, (rows[1:] != rows[:-1]) | (cols[1:] != cols[:-1])])
+        vals, rows, cols = np.add.reduceat(vals, first), rows[first], cols[first]
+    new_ptr = np.concatenate([[0], np.cumsum(np.bincount(rows, minlength=n))]).astype(np.int64)
+    return new_ptr, cols.astype(np.uint32), vals.astype(np.float32)
+
+
+def _sum_triplet_duplicates(cells: np.ndarray, genes: np.ndarray, vals: np.ndarray):
+    """Triplets sorted by (cell, gene) with repeated pairs summed; the inputs are not modified."""
+    keys = (cells.astype(np.uint64) << np.uint64(32)) | genes.astype(np.uint64)
+    order = np.argsort(keys, kind="stable")
+    keys, vals = keys[order], vals[order].astype(np.float64)
+    first = np.flatnonzero(np.r_[True, keys[1:] != keys[:-1]]) if len(keys) else np.zeros(0, np.int64)
+    keys, vals = keys[first], (np.add.reduceat(vals, first) if len(first) else vals)
+    return (keys >> np.uint64(32)).astype(np.uint32), (keys & np.uint64(0xFFFFFFFF)).astype(np.uint32), vals.astype(np.float32)
+
+
+def _triplets_no_repeats(cells: np.ndarray, genes: np.ndarray) -> bool:
+    """True if the cell ids are non-decreasing and no (cell, gene) pair is stored twice; the order of the
+    genes within a cell is free."""
+    n = len(cells)
+    if n < 2:
+        return True
+    if np.any(cells[1:] < cells[:-1]):
+        return False
+    first = np.flatnonzero(np.r_[True, cells[1:] != cells[:-1]])
+    return csr_rows_have_no_repeated_gene(np.r_[first, n].astype(np.int64), genes)
+
+
 # --------------------------------------------------------------------------- stores
 class CSRStore:
     """Raw counts in memory as CSR (cells × genes).
@@ -47,9 +130,15 @@ class CSRStore:
     and ``data`` (counts, ``float32``); ``indptr`` is ``int64``. About 8 bytes per non-zero.
     Chunks are views of these arrays (no copy). Made by :func:`crest.read_10x_h5`,
     :func:`crest.read_h5ad` and :meth:`BioFrame.from_csr` / ``from_scipy`` / ``from_anndata``.
+
+    Each gene may appear at most once per row (in any order), otherwise ``ValueError``: a repeated
+    (cell, gene) entry would count as two non-zeros. :meth:`BioFrame.from_scipy` and the readers sum
+    such entries instead. Stored zeros are allowed
+    and are never counted as non-zeros by the statistics; :attr:`nnz` counts stored entries.
     """
 
-    def __init__(self, indptr: np.ndarray, indices: np.ndarray, data: np.ndarray, n_genes: int):
+    def __init__(self, indptr: np.ndarray, indices: np.ndarray, data: np.ndarray, n_genes: int,
+                 check_repeats: bool = True):
         self.indptr = np.asarray(indptr, dtype=np.int64)
         self.indices = np.ascontiguousarray(indices, dtype=np.uint32)
         self.data = np.ascontiguousarray(data, dtype=np.float32)
@@ -64,6 +153,9 @@ class CSRStore:
         if len(self.indices) and int(self.indices[:self.indptr[-1]].max(initial=0)) >= self.n_genes:
             raise ValueError(f"gene index {int(self.indices[:self.indptr[-1]].max())} out of range "
                              f"for n_genes={self.n_genes}")
+        if check_repeats and not csr_rows_have_no_repeated_gene(self.indptr, self.indices):
+            raise ValueError("a gene is stored twice in the same cell (repeated CSR entries would count as two "
+                             "non-zeros); use BioFrame.from_scipy, which sums repeated entries, or sum them first")
 
     @property
     def nnz(self) -> int:
@@ -88,7 +180,8 @@ class FrameStore:
     """Raw counts in memory as a Polars DataFrame of ``(cell_id, gene_id, count)`` triplets.
 
     Columns are ``uint32``, ``uint32``, ``float32`` (about 12 bytes per non-zero), sorted by
-    ``cell_id`` (sorted on construction if needed). Made by :func:`crest.read_10x_mtx`,
+    ``cell_id`` (the order of the genes within a cell is free); sorting, and summing a (cell, gene) pair that is stored more than
+    once, happen on construction when needed. Made by :func:`crest.read_10x_mtx`,
     :func:`crest.read_h5ad` for a dense ``X``, and :meth:`BioFrame.from_triplets`.
     """
 
@@ -99,9 +192,11 @@ class FrameStore:
             pl.col(gene_col).cast(pl.UInt32).alias("gene_id"),
             pl.col(value_col).cast(pl.Float32).alias("count"),
         )
-        cells = df["cell_id"].to_numpy()
-        if len(cells) > 1 and np.any(cells[1:] < cells[:-1]):
-            df = df.sort("cell_id", maintain_order=True)
+        cells, genes = df["cell_id"].to_numpy(), df["gene_id"].to_numpy()
+        if not _triplets_no_repeats(cells, genes):
+            # unsorted triplets, or a (cell, gene) pair stored more than once: sort and sum, as scipy does
+            c, g, v = _sum_triplet_duplicates(cells, genes, df["count"].to_numpy())
+            df = pl.DataFrame({"cell_id": c, "gene_id": g, "count": v})
         self.df = df.rechunk()
         self.n_cells, self.n_genes = int(n_cells), int(n_genes)
         self._cells = self.df["cell_id"].to_numpy()
@@ -162,7 +257,9 @@ class ParquetStore:
     """Raw counts on disk (out-of-core): a directory of ``part-*.parquet`` files.
 
     Each file holds ``(cell_id, gene_id, count)`` triplets for a range of whole cells (about
-    8.4 M non-zeros per file by default). Analysis steps read one file at a time, so the count
+    8.4 M non-zeros per file by default). Every part is checked when it is read: cell ids sorted, no
+    cell in two parts, ids within ``n_cells`` / ``n_genes`` (``ValueError`` otherwise, so a hand-made
+    directory cannot give silently wrong results); a repeated (cell, gene) pair is summed. Analysis steps read one file at a time, so the count
     matrix never has to fit in memory; ``BioFrame.chunk_nnz`` is ignored (one chunk = one
     file). Made by ``crest.read_10x_h5(path, backed=dir)`` or :meth:`BioFrame.write_parquet`,
     reopened with :func:`crest.read_parquet`.
@@ -181,12 +278,37 @@ class ParquetStore:
     def nnz(self) -> int:
         return int(sum(pl.scan_parquet(p).select(pl.len()).collect().item() for p in self.parts))
 
+    def _validated(self, part: Path, cells: np.ndarray, genes: np.ndarray, vals: np.ndarray, last: int):
+        """Check one part against the rules the kernels rely on and return its (cells, genes, vals),
+        with repeated (cell, gene) pairs summed. ``last`` is the last cell id of the previous part.
+        Raises ``ValueError``: a hand-made directory must hold whole cells per part, in cell order."""
+        if len(cells) == 0:
+            return cells, genes, vals
+        if np.any(cells[1:] < cells[:-1]):
+            raise ValueError(f"{part.name}: cell ids are not sorted within the part; every part must hold its cells in increasing order")
+        if int(cells[0]) <= last:
+            raise ValueError(f"{part.name}: cell {int(cells[0])} also appears in an earlier part (parts must hold whole cells "
+                             "and follow each other in cell order); a split cell would be processed as two cells")
+        if int(cells[-1]) >= self.n_cells:
+            raise ValueError(f"{part.name}: cell index {int(cells[-1])} out of range for n_cells={self.n_cells}")
+        if int(genes.max()) >= self.n_genes:
+            raise ValueError(f"{part.name}: gene index {int(genes.max())} out of range for n_genes={self.n_genes}")
+        if not _triplets_no_repeats(cells, genes):  # cheap test first; the sort only runs when a pair may repeat
+            c, g, v = _sum_triplet_duplicates(cells, genes, vals)
+            return c, g, v
+        return cells, genes, vals
+
     def chunks(self, chunk_nnz: int = DEFAULT_CHUNK_NNZ) -> Iterator[RawChunk]:
+        last = -1
         for p in self.parts:
             df = pl.read_parquet(p, columns=["cell_id", "gene_id", "count"]).rechunk()
             cols = [df[c].cast(t).to_numpy() for c, t in (("gene_id", pl.UInt32), ("count", pl.Float32), ("cell_id", pl.UInt32))]
             del df
-            yield cols[0], cols[1], cols[2], None, 0
+            genes, vals, cells = cols
+            cells, genes, vals = self._validated(p, cells, genes, vals, last)
+            if len(cells):
+                last = int(cells[-1])
+            yield genes, vals, cells, None, 0
 
 
 Store = Union[CSRStore, FrameStore, ParquetStore]
@@ -308,14 +430,23 @@ class BioFrame:
     @classmethod
     def from_csr(cls, indptr, indices, data, n_genes: int, obs=None, var=None) -> "BioFrame":
         """From CSR arrays of raw counts (cells × genes); ``obs``/``var`` are optional Polars frames.
-        Raises ``ValueError`` for a malformed ``indptr`` or a gene index ``>= n_genes``."""
-        return cls._with_store(CSRStore(indptr, indices, data, n_genes), obs, var)
+        Raises ``ValueError`` for a malformed ``indptr`` or a gene index ``>= n_genes``. A gene stored
+        twice in a row is summed, as scipy does (on a copy; the arguments are not modified); rows
+        without repeats are wrapped as they are, in any gene order."""
+        store = CSRStore(indptr, indices, data, n_genes, check_repeats=False)  # structure and ranges first
+        if not csr_rows_have_no_repeated_gene(store.indptr, store.indices):
+            store = CSRStore(*sum_duplicates_csr(store.indptr, store.indices, store.data), n_genes)
+        return cls._with_store(store, obs, var)
 
     @classmethod
     def from_scipy(cls, X, obs=None, var=None) -> "BioFrame":
-        """From a scipy.sparse matrix (cells × genes)."""
+        """From a scipy.sparse matrix (cells × genes).
+
+        Repeated (cell, gene) entries are summed, as scipy does. This is done on a copy, so the caller's
+        matrix (indices, data and ``has_sorted_indices`` flag) is never changed; a matrix without repeated
+        entries is wrapped as it is.
+        """
         X = X.tocsr()
-        X.sort_indices()
         return cls.from_csr(X.indptr, X.indices, X.data, X.shape[1], obs, var)
 
     @classmethod
@@ -511,15 +642,17 @@ class BioFrame:
 
     # ---- export
     def to_scipy(self, transform: bool = True):
-        """Materialise the current (filtered, transformed) matrix as scipy CSR."""
+        """Materialise the current (filtered, transformed) matrix as scipy CSR (stored zeros dropped)."""
         import scipy.sparse as sp
         rows, cols, vals = [], [], []
         for r, g, v in self.iter_chunks(transform):
             rows.append(r); cols.append(g); vals.append(v)
         r = np.concatenate(rows) if rows else np.zeros(0, np.uint32)
-        return sp.csr_matrix((np.concatenate(vals) if vals else np.zeros(0, np.float32),
-                              (r, np.concatenate(cols) if cols else np.zeros(0, np.uint32))),
-                             shape=self.shape)
+        M = sp.csr_matrix((np.concatenate(vals) if vals else np.zeros(0, np.float32),
+                           (r, np.concatenate(cols) if cols else np.zeros(0, np.uint32))),
+                          shape=self.shape)
+        M.eliminate_zeros()  # stored zeros are not non-zeros
+        return M
 
     def to_anndata(self, transform: bool = False):
         """Convert to AnnData (requires ``anndata``). ``X`` holds raw counts unless ``transform``.

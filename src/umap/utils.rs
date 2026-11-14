@@ -80,4 +80,41 @@ mod tests {
         let (a, b) = find_ab_params(1.0, 0.5);
         assert!((a - 0.5830).abs() < 2e-3 && (b - 1.3342).abs() < 2e-3, "{} {}", a, b);
     }
+
+    /// Largest absolute difference allowed against umap-learn's `find_ab_params` (scipy `curve_fit`).
+    const AB_GRID_TOL: f64 = 1.3e-5;
+
+    #[test]
+    fn find_ab_params_matches_umap_learn_on_a_grid() {
+        // (spread, min_dist, a, b) from `umap.umap_.find_ab_params` (umap-learn 0.5.12 and 0.6.0
+        // agree to the digits printed here), 3 spreads x 6 min_dist values.
+        let grid: [(f32, f32, f64, f64); 18] = [
+        (0.5, 0.001, 5.776298973, 0.792515306),
+        (0.5, 0.05, 5.453765169, 0.895060801),
+        (0.5, 0.1, 5.069309328, 1.003005423),
+        (0.5, 0.25, 3.706290205, 1.334167248),
+        (0.5, 0.4, 2.386754026, 1.681234620),
+        (0.5, 0.5, 1.667716869, 1.929240438),
+        (1.0, 0.001, 1.929073395, 0.791504533),
+        (1.0, 0.01, 1.895605866, 0.800637844),
+        (1.0, 0.1, 1.576943460, 0.895060878),
+        (1.0, 0.25, 1.121436343, 1.057499877),
+        (1.0, 0.5, 0.583030021, 1.334166992),
+        (1.0, 0.9, 0.164903885, 1.803038468),
+        (2.0, 0.01, 0.635344408, 0.795552890),
+        (2.0, 0.1, 0.544660541, 0.842055426),
+        (2.0, 0.5, 0.258878741, 1.057499700),
+        (2.0, 1.0, 0.091715509, 1.334166562),
+        (2.0, 1.5, 0.028874204, 1.621700558),
+        (2.0, 2.0, 0.007926773, 1.929231525),
+        ];
+        let mut worst = 0.0f64;
+        for &(spread, min_dist, a_ref, b_ref) in grid.iter() {
+            let (a, b) = find_ab_params(spread, min_dist);
+            let d = (a as f64 - a_ref).abs().max((b as f64 - b_ref).abs());
+            worst = worst.max(d);
+            assert!(d <= AB_GRID_TOL, "spread {} min_dist {}: a {} (ref {}), b {} (ref {})", spread, min_dist, a, a_ref, b, b_ref);
+        }
+        println!("max |difference| in (a, b) over the grid: {:e}", worst);
+    }
 }

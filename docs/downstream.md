@@ -32,6 +32,8 @@ A port of the harmony2 algorithm that R `harmony` ≥ 1.2 and `harmonypy` 2.x sh
 
 With several batch covariates (`key=["donor", "chemistry"]`), a cell's diversity penalties are multiplied across covariates, as in harmonypy 2.x. R `harmony` 2.0 adds them instead, so multi-covariate results follow harmonypy, not R. `tests/test_fix_harmony.py` checks two covariates against harmonypy.
 
+`sigma` (the width of the soft cluster assignment) is a positive scalar or an array with one positive value per cluster (`nclust` values), as in harmonypy 2.1.0, the release CREST is compared with. `max_iter_kmeans` defaults to 4 in both the Python function and the native binding.
+
 The two O(cells × clusters × PCs) steps run as GEMMs per batch level. Everything that works per cell runs in parallel.
 
 Harmony's k-means initialisation is random, so the comparison with harmonypy is on outcomes, over 3 seeds each. Kang 2018 (24,679 cells, 50 PCs, batch = ctrl/stim), `bench/harmony/`:
@@ -40,7 +42,7 @@ Harmony's k-means initialisation is random, so the comparison with harmonypy is 
 |---|---|---|---|---|
 | uncorrected | | 1.05 | 1.01 | 0.755 |
 | CREST | **2.1 s** | 1.81 | 1.01 | 0.820 |
-| harmonypy 2.0.2 | 7.4 s | 1.81 | 1.01 | 0.822 |
+| harmonypy 2.0.2 (measured) | 7.4 s | 1.81 | 1.01 | 0.822 |
 
 Neighbourhoods agree: a cell's 15 nearest neighbours in CREST's corrected space and in harmonypy's share 98.0% on average. That is the same as the agreement between two seeds of the same tool (CREST 98.4%, harmonypy 98.2%), so the differences are at the level of seed noise.
 
@@ -54,7 +56,7 @@ Same pipeline and defaults as `scanpy.pp.scrublet`:
 2. Doublets are simulated by summing the raw counts of random cell pairs (2× the number of cells).
 3. Profiles are normalised to 1e6 and z-scored.
 4. A 30-PC PCA is fitted on the observed cells.
-5. A kNN classifier gives Scrublet's Bayesian doublet score.
+5. A kNN classifier gives Scrublet's Bayesian doublet score. As in scanpy (1.11.5), the cell itself is the first of its `k_adj` neighbours: `k_adj - 1` other cells are searched and the cell counts with its own label (`include_self_neighbor=True`, the default). `include_self_neighbor=False` searches `k_adj` other cells, which is scanpy's `use_approx_neighbors=True` path and the convention of CREST up to 0.5 release candidates.
 6. The threshold is `skimage.filters.threshold_minimum` (ported; it matches skimage to 1e-9).
 
 CREST keeps the matrices sparse and streams them through the native PCA kernels, where scanpy densifies 3 × cells × HVGs. It also uses exact GEMM kNN search.
@@ -66,7 +68,9 @@ Validated against the demuxlet doublet calls of Kang 2018 (27,848 droplets, 3,16
 | CREST | **16.9 s** | 0.863 | 0.537 | 994 | 0.69 |
 | scanpy 1.11 | 210 s | 0.863 | 0.539 | 1,010 | 0.69 |
 
-Scores correlate with scanpy's at Spearman 0.98. Simulated doublet pairs come from a different random generator, so the scores are equivalent statistically, not bit for bit.
+These numbers were measured with `include_self_neighbor=False`. Scores correlate with scanpy's at Spearman 0.98. Simulated doublet pairs come from a different random generator, so the scores are equivalent statistically, not bit for bit.
+
+Neighbour convention, measured on PBMC 3k with 150 added doublets (four seeds, scanpy 1.11.5): with the cell itself counted as a neighbour (the default) the mean observed-cell score is 0.4% above scanpy's (per seed 3.3%, 0.1%, -1.1%, -0.7%); with `include_self_neighbor=False` it is 5.9–10.6% above. Per-cell ranks agree at Spearman 0.951–0.967 with either convention; scanpy agrees with itself across seeds at 0.958–0.962 and CREST with itself at 0.957–0.963, so the remaining difference is the random doublet simulation, not the convention.
 
 **The automatic threshold is unstable on these data, in both tools.** The median above hides it: CREST seed 1 called 3 cells. Simulated doublet scores take only ~k distinct values (k = number of neighbours), and a few of them are saturated at the maximum score. `threshold_minimum` then often splits the histogram between its main mode and that tail, so the threshold lands near 0.67 and almost nothing is called. Over 24–30 seeds per tool, the `stim` batch failed in every run of both tools (scanpy 24/24, CREST 30/30). The `ctrl` batch failed in scanpy 5/24 and CREST 11/30 (Fisher p = 0.24). CREST's `threshold_minimum` returns skimage's value on every one of these arrays. `crest.pp.scrublet` keeps scanpy's threshold but warns when a batch's threshold failed or is *degenerate* (fewer than 1% of simulated doublets score above it). It records `threshold_status` per batch, and with `batch_key` also `uns['scrublet']['thresholds']`. Inspect `doublet_scores_sim` and pass `threshold=` when you see the warning. `bench/doublets/compare_scrublet.py` reports every seed and every batch's threshold.
 
@@ -94,9 +98,9 @@ Leiden at several resolutions, and optionally several seeds, all on one neighbou
 
 ## Reference mapping (`crest.tl.ingest`)
 
-Like `scanpy.tl.ingest`:
+Like `scanpy.tl.ingest` (parity statements below refer to scanpy 1.11.5):
 
-1. Query cells are projected onto the reference PCA with the reference's genes, normalisation and scaling parameters. Missing genes count as unexpressed. Like scanpy, the query is centred on its own mean.
+1. Query cells are projected onto the reference PCA with the reference's genes, normalisation and scaling parameters. Missing genes count as unexpressed. Like scanpy 1.11.5 (up to 1.12.2), the query is centred on its own mean; scanpy 1.12.3 and later centre on the reference mean instead, which is `center="reference"`. scanpy leaves scaling to the user and projects the query as supplied, so the two projections coincide (1.5e-5 on PBMC 3k, scanpy 1.11.5) only when the query is scaled with the reference's mean and standard deviation beforehand.
 2. Each query cell gets its k nearest reference cells, using a new Rust reference → query kNN (exact GEMM, or an IVF index over the reference).
 3. Labels are transferred by majority vote, with a per-cell `<label>_confidence`.
 4. UMAP coordinates come from umap-learn's `transform` initialisation, a membership-weighted mean of the neighbours.

@@ -103,7 +103,7 @@ def _pca_obs_sim(Xo, Xs, n_comps: int):
 
 
 def _scrublet_one(bf: BioFrame, label, sim_doublet_ratio, expected_doublet_rate, stdev_doublet_rate, n_neighbors,
-                  n_prin_comps, threshold, random_state, min_counts_genes):
+                  n_prin_comps, threshold, random_state, min_counts_genes, include_self_neighbor=True):
     import scipy.sparse as sp
     from . import pp
 
@@ -141,11 +141,22 @@ def _scrublet_one(bf: BioFrame, label, sim_doublet_ratio, expected_doublet_rate,
         n_neighbors = int(round(0.5 * np.sqrt(n)))
     k_adj = int(round(n_neighbors * (1 + n_sim / float(n))))
     M = np.ascontiguousarray(np.vstack([Po, Ps]), dtype=np.float32)
+    # scanpy takes the k_adj nearest columns of a graph whose first column is the cell itself (its approximate
+    # path drops that column). With include_self_neighbor the cell is one of its own k_adj neighbours:
+    # k_adj - 1 other cells are searched and the cell counts with its own label (simulated cells are doublets).
+    k_search = k_adj - 1 if include_self_neighbor else k_adj
+    if k_search < 1:
+        raise ValueError(f"scrublet: n_neighbors={n_neighbors} leaves no neighbour to search (k_adj={k_adj}); "
+                         "increase n_neighbors or pass include_self_neighbor=False")
     # k_adj is large (~3 * 0.5 * sqrt(n)): tiled exact search is faster than
     # NN-descent refinement up to ~150k points
-    idx, _ = _native.knn_graph(M, k_adj, exact=len(M) <= 150_000, seed=random_state)
+    idx, _ = _native.knn_graph(M, k_search, exact=len(M) <= 150_000, seed=random_state)
     nd = ((idx >= n) & (idx < len(M))).sum(1).astype(np.float64)  # u32::MAX = unfilled slot, not a doublet
-    rho, r, kk = expected_doublet_rate, n_sim / float(n), float(idx.shape[1])
+    kk = float(idx.shape[1])
+    if include_self_neighbor:
+        nd[n:] += 1.0  # a simulated cell is its own doublet neighbour
+        kk += 1.0
+    rho, r = expected_doublet_rate, n_sim / float(n)
     q = (nd + 1) / (kk + 2)
     ld = q * rho / r / (1 - rho - q * (1 - rho - rho / r))
     se_q = np.sqrt(q * (1 - q) / (kk + 3))
@@ -156,7 +167,8 @@ def _scrublet_one(bf: BioFrame, label, sim_doublet_ratio, expected_doublet_rate,
     where = "" if label is None else f" in batch {label!r}"
     uns = {"doublet_scores_sim": s_sim, "doublet_parents": np.column_stack([i, j]),
            "parameters": {"expected_doublet_rate": expected_doublet_rate, "sim_doublet_ratio": sim_doublet_ratio,
-                          "n_neighbors": n_neighbors, "random_state": random_state, "n_hvg": int(hv.sum())}}
+                          "n_neighbors": n_neighbors, "random_state": random_state, "n_hvg": int(hv.sum()),
+                          "include_self_neighbor": bool(include_self_neighbor)}}
     pred = np.zeros(n, bool)
     if thr is None:
         uns["threshold_status"] = "failed"
@@ -187,7 +199,7 @@ def _scrublet_one(bf: BioFrame, label, sim_doublet_ratio, expected_doublet_rate,
 def scrublet(bf: BioFrame, batch_key: Optional[str] = None, sim_doublet_ratio: float = 2.0,
              expected_doublet_rate: float = 0.05, stdev_doublet_rate: float = 0.02,
              n_neighbors: Optional[int] = None, n_prin_comps: int = 30, threshold: Optional[float] = None,
-             random_state: int = 0) -> BioFrame:
+             random_state: int = 0, include_self_neighbor: bool = True) -> BioFrame:
     """Predict doublets from raw counts (``scanpy.pp.scrublet`` defaults).
 
     Adds obs ``doublet_score``, ``predicted_doublet`` (and ``doublet_z``) and
@@ -195,6 +207,13 @@ def scrublet(bf: BioFrame, batch_key: Optional[str] = None, sim_doublet_ratio: f
     ``uns['scrublet']['batches']`` with ``batch_key``). Cells removed by the
     internal ``min_genes=3`` filter get a null score. The recorded
     normalisation of ``bf`` is ignored: Scrublet works on raw counts.
+
+    ``include_self_neighbor`` selects the neighbour convention of the doublet score. ``True`` (the default)
+    is ``scanpy.pp.scrublet`` with ``use_approx_neighbors=None``, whose neighbour graph has the cell itself as its
+    first of ``k_adj`` neighbours: ``k_adj - 1`` other cells are searched and the cell counts with its own
+    label. ``False`` searches ``k_adj`` other cells, which is also what scanpy does with
+    ``use_approx_neighbors=True`` (it drops the self column); observed-cell scores are then higher (by 6-11%
+    on PBMC 3k with 150 added doublets, against scanpy 1.11.5). CREST 0.4.0 and the 0.5 release candidates used this convention.
 
     Threshold diagnostics (CREST additions; the threshold itself is scanpy's):
     each batch's uns records ``threshold_status``: ``"auto"``, ``"user"``,
@@ -222,7 +241,8 @@ def scrublet(bf: BioFrame, batch_key: Optional[str] = None, sim_doublet_ratio: f
     uns = {}
     for b, part in parts:
         cells, s, p, zz, u = _scrublet_one(part, b, sim_doublet_ratio, expected_doublet_rate, stdev_doublet_rate,
-                                           n_neighbors, n_prin_comps, threshold, random_state, 3)
+                                           n_neighbors, n_prin_comps, threshold, random_state, 3,
+                                           include_self_neighbor)
         rows = np.array([pos[c] for c in cells.tolist()], dtype=np.int64)
         score[rows], pred[rows], z[rows] = s, p, zz
         uns[b] = u

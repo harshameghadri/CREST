@@ -75,13 +75,13 @@ parameters:
 | `neighbors` connectivities | identical given the same kNN (within 1e-5) |
 | `leiden` | similar number of clusters; modularity typically within ~0.002 of the reference (leidenalg; see [benchmarks](https://crest-sc.readthedocs.io/en/latest/benchmarks.html)) |
 | `umap` | equal kNN preservation / silhouette (stochastic layout) |
-| `rank_genes_groups` t-test, Wilcoxon | scores within 1e-4 (1e-7 on identical input), same p-values and log fold-changes |
+| `rank_genes_groups` t-test, Wilcoxon | t-test scores within 1e-4; Wilcoxon scores within 3e-4 on PBMC 3k when scanpy normalises the counts itself (the two float32 normalisations differ by one ulp for many entries, which changes exact ties) and within 1e-6 on identical input values; p-values within 4e-4 and the same log fold-changes |
 | `score_genes` | identical, including scanpy's control-gene sampling (within 3e-7) |
 | `DESeq2` (pseudobulk) | R DESeq2 1.42: size factors, dispersions, log2FC, p-values within ~1e-9 on simulated designs; identical significant sets in 6 of 8 Kang 2018 cell types; FCGR3A+ monocytes 1468/1469, CD4 T cells 1350 of R's 1365 shared (21 discordant genes) ([docs/deseq2.md](https://github.com/harshameghadri/CREST/blob/main/docs/deseq2.md)); LRT statistics within 1e-6 |
 | `highly_variable_genes(flavor="seurat_v3")` | identical gene sets and ranks, `variances_norm` within 1e-14 (loess port matches `skmisc` to 1e-14) |
-| `harmony` | same integration quality as harmonypy 2.0 (iLISI 1.81 vs 1.81, cLISI 1.01, ARI 0.82) at 3.5× the speed; neighbourhoods as close to harmonypy's as two harmonypy seeds are to each other |
-| `scrublet` | AUROC 0.863 vs 0.863 on Kang 2018 demuxlet doublets, 49× faster |
-| `ingest` | 90.7% vs 89.8% label accuracy mapping stimulated onto control PBMCs, 17.6× faster |
+| `harmony` | same integration quality as harmonypy (iLISI 1.81 vs 1.81, cLISI 1.01, ARI 0.82; measured with harmonypy 2.0.2, the compared release is now harmonypy 2.1.0) at 3.5× the speed; neighbourhoods as close to harmonypy's as two harmonypy seeds are to each other |
+| `scrublet` | AUROC 0.863 vs 0.863 (scanpy 1.11) on Kang 2018 demuxlet doublets, 49× faster (measured with `include_self_neighbor=False`) |
+| `ingest` | 90.7% vs 89.8% label accuracy (scanpy 1.11) mapping stimulated onto control PBMCs, 17.6× faster |
 
 ## Performance
 
@@ -150,10 +150,15 @@ PDF/PNG figures and a `.tar.gz`. The pieces live in `bench/paper/`
   gives the loadings, a second pass projects cells. `sc.pp.scale(max_value)` is
   applied exactly: zero entries map to a per-gene constant, so the scaled matrix
   is a sparse matrix plus a rank-one term that centring removes.
-* **kNN.** Exact search with tiled GEMM (the FAISS "flat" trick) for small data;
-  above 20k cells an inverted-file index — cells bucketed by k-means, each bucket
-  searched against its 20 nearest buckets, like cell lists in molecular dynamics —
-  polished by NN-descent (99.7% recall on 108k PBMC cells).
+* **kNN.** Exact search with tiled GEMM (the FAISS "flat" trick) for small data: the GEMM only
+  screens candidates on mean-centred coordinates, and candidates that could enter a
+  neighbour list are compared by their exact distance, so the neighbours do not depend on
+  the offset of the embedding. Above 20k cells an inverted-file index — cells bucketed by
+  k-means, each bucket searched against its nearest buckets (about 1.5 √(number of
+  buckets), at least 20, like cell lists in molecular dynamics) — polished by NN-descent.
+  `pp.neighbors` warns when it switches to the index and records `knn_method` and `nprobe`
+  in `uns["neighbors"]["params"]`; `exact=True` forces the exact search. Recall against exact
+  search is reported with the benchmark results, which are being regenerated.
 * **UMAP.** umap-learn's objective and default parameters, with CREST's own spectral
   initialisation (restarted Lanczos to a residual tolerance, per connected component). With more than one thread (and ≥ 1,000 cells) it is optimised in
   parallel by domain decomposition: each thread owns a range of cells, writes only those, and reads the rest

@@ -98,6 +98,18 @@ suffix in the AnnData index, with a warning; the original symbols stay in `var["
 | `FrameStore` | in memory: a Polars DataFrame of `(cell_id, gene_id, count)` triplets sorted by cell, about 12 bytes per non-zero | `read_10x_mtx`, `read_h5ad` (dense `X`), `BioFrame.from_triplets` |
 | `ParquetStore` | **on disk**: a directory of `part-*.parquet` files of `(cell_id, gene_id, count)` triplets, each file holding whole cells (~8.4 M non-zeros by default), plus `obs.parquet` and `var.parquet` | `read_10x_h5(path, backed=dir)` streams the .h5 into it; `bf.write_parquet(dir)` then `crest.read_parquet(dir)` |
 
+**What the stores accept.** A (cell, gene) pair is stored at most once, and the order of the genes
+within a cell is free (Cell Ranger `.h5` files list them in descending order). Repeated entries
+would count as two non-zeros, so they are summed, as scipy does: `BioFrame.from_scipy`,
+`from_csr`, `from_triplets`, `read_h5ad` and `read_10x_h5` do it on a copy and never change the
+caller's matrix, and a hand-made Parquet directory is summed part by part. `CSRStore(...)` itself
+raises `ValueError` for a repeat. A Parquet directory must hold whole cells per part, in cell order, with
+ids inside `n_cells` / `n_genes`; every part is checked when it is read and a split cell or an
+out-of-range id raises `ValueError` (a split cell would otherwise be processed as two cells and
+give wrong PCA variances). A stored `0.0` is never counted as a non-zero: `n_genes_by_counts`,
+`n_cells_by_counts`, `n_cells_expr`, the Wilcoxon zero blocks and `to_scipy()` ignore it
+(`store.nnz` counts stored entries).
+
 All three expose the same `chunks()` iterator, so every analysis function works unchanged on
 all of them. The Parquet store is what makes CREST *out-of-core*: only one file is in memory
 at a time, so the **count matrix** never has to fit in RAM. What still grows with the number
@@ -168,8 +180,13 @@ dense PCA (principal angles 0.000°); see {doc}`memory_model`.
 
 Every stochastic step takes `random_state` (default 0). With the same seed:
 
-* the kNN graph and Leiden clusters are identical for any number of threads (checked on Kang,
-  1 vs 4 threads);
+* the kNN neighbour sets and the Leiden labels did not change with the number of threads in any
+  check we ran (Kang, 1 vs 4 threads; a 3,000-cell pipeline in the test suite at 1 and 7 threads;
+  neighbour indices were bit-identical on PBMC 10k at 1, 3 and 10 threads). This is a
+  measurement, not a guarantee: floating-point sums over cells are merged per thread, so statistics
+  such as gene sums and the PCA variance agree between thread counts only to about 1e-14 relative,
+  `X_pca` can differ in rare entries (about 3e-8), and kNN distances and connectivity weights are not
+  guaranteed to be bit-identical;
 * UMAP coordinates are identical for the same number of threads, but differ across thread
   counts, because the parallel optimisation splits the work by thread;
 * Harmony's k-means initialisation is random like harmonypy's, so compare Harmony outcomes

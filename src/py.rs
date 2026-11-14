@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 use rayon::prelude::*;
 
 use crate::kernels::{self, Cells, ChunkView, Transform};
-use crate::knn::{knn, KnnGraph, Points};
+use crate::knn::{first_non_finite_row, knn, knn_plan, KnnGraph, Points};
 use numpy::{PyReadwriteArrayDyn, PyReadonlyArrayDyn};
 
 fn not_c_contiguous(name: &str) -> PyErr {
@@ -129,11 +129,23 @@ fn knn_graph<'py>(
     if k > n - 1 {
         warn(py, &format!("knn_graph: k={} exceeds the {} other points; clamped to {}", k, n - 1, n - 1))?;
     }
+    if let Some(r) = first_non_finite_row(slice, d) {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!("data contains NaN or Inf (first bad row: {})", r)));
+    }
     let g = guarded(py, || knn(Points::new(slice, n, d), k, exact, seed))?;
     let kk = g.k;
     let idx = PyArray1::from_vec_bound(py, g.indices).reshape([n, kk])?;
     let dist = PyArray1::from_vec_bound(py, g.distances).reshape([n, kk])?;
     Ok((idx, dist))
+}
+
+/// The search `knn_graph` runs for `n` points: `(exact, nprobe, n_lists)`;
+/// `nprobe` and `n_lists` are 0 for the exact search.
+#[pyfunction]
+#[pyo3(signature = (n, exact=None))]
+fn knn_plan_info(n: usize, exact: Option<bool>) -> (bool, usize, usize) {
+    let plan = knn_plan(n, exact);
+    (plan.exact, plan.nprobe, plan.n_lists)
 }
 
 /// UMAP fuzzy simplicial set (scanpy `connectivities`) from a kNN graph whose rows
@@ -700,11 +712,19 @@ fn lowess<'py>(py: Python<'py>, x: PyReadonlyArrayDyn<'py, f64>, y: PyReadonlyAr
     Ok(PyArray1::from_vec_bound(py, guarded(py, || crate::deseq::lowess::lowess(x, y, f, iter, delta))?))
 }
 
+/// `sigma` of the Harmony binding: one value for every cluster, or one per cluster.
+#[derive(FromPyObject)]
+enum HarmonySigma {
+    Scalar(f64),
+    PerCluster(Vec<f64>),
+}
+
 /// Harmony batch integration of an (N, d) float32 embedding. `batch` is (n_cov, N)
-/// uint32 global level ids; `levels` the number of levels per covariate.
+/// uint32 global level ids; `levels` the number of levels per covariate. `sigma` is a
+/// scalar or one value per cluster.
 #[pyfunction]
-#[pyo3(signature = (z, batch, levels, n_clusters, theta, lamb=None, sigma=0.1, alpha=0.2, block_size=0.05,
-                    max_iter_harmony=10, max_iter_kmeans=20, epsilon_cluster=1e-3, epsilon_harmony=1e-2,
+#[pyo3(signature = (z, batch, levels, n_clusters, theta, lamb=None, sigma=HarmonySigma::Scalar(0.1), alpha=0.2, block_size=0.05,
+                    max_iter_harmony=10, max_iter_kmeans=4, epsilon_cluster=1e-3, epsilon_harmony=1e-2,
                     batch_prop_cutoff=1e-5, seed=0))]
 #[allow(clippy::too_many_arguments)]
 fn harmony<'py>(
@@ -715,7 +735,7 @@ fn harmony<'py>(
     n_clusters: usize,
     theta: Vec<f64>,
     lamb: Option<Vec<f64>>,
-    sigma: f64,
+    sigma: HarmonySigma,
     alpha: f64,
     block_size: f64,
     max_iter_harmony: usize,
@@ -731,6 +751,10 @@ fn harmony<'py>(
     if batch.shape()[1] != n || batch.shape()[0] != levels.len() {
         return Err(pyo3::exceptions::PyValueError::new_err("batch must have shape (len(levels), N)"));
     }
+    let sigma = match sigma {
+        HarmonySigma::Scalar(s) => vec![s; n_clusters],
+        HarmonySigma::PerCluster(v) => v,
+    };
     let p = crate::harmony::Params {
         n_clusters, sigma, theta, lambda: lamb, alpha, block_size, max_iter_harmony, max_iter_kmeans,
         epsilon_cluster, epsilon_harmony, batch_prop_cutoff, seed,
@@ -821,6 +845,12 @@ fn knn_query<'py>(
     if k > nr {
         warn(py, &format!("knn_query: k={} exceeds the {} reference points; clamped to {}", k, nr, nr))?;
     }
+    if let Some(r) = first_non_finite_row(rs, d) {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!("reference contains NaN or Inf (first bad row: {})", r)));
+    }
+    if let Some(r) = first_non_finite_row(qs, d) {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!("query contains NaN or Inf (first bad row: {})", r)));
+    }
     let g = guarded(py, || crate::knn::knn_query(Points::new(rs, nr, d), Points::new(qs, nq, d), k, exact, seed))?;
     let kk = g.k;
     Ok((PyArray1::from_vec_bound(py, g.indices).reshape([nq, kk])?, PyArray1::from_vec_bound(py, g.distances).reshape([nq, kk])?))
@@ -829,6 +859,7 @@ fn knn_query<'py>(
 #[pymodule]
 fn crest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(knn_graph, m)?)?;
+    m.add_function(wrap_pyfunction!(knn_plan_info, m)?)?;
     m.add_function(wrap_pyfunction!(connectivities, m)?)?;
     m.add_function(wrap_pyfunction!(leiden, m)?)?;
     m.add_function(wrap_pyfunction!(umap, m)?)?;
