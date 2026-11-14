@@ -51,6 +51,7 @@ exclude = [
     { path = "bench/**/*", format = "sdist" },
     { path = "scripts/**/*", format = "sdist" },
     { path = ".github/**/*", format = "sdist" },
+    { path = "changes/**/*", format = "sdist" },
 ]
 
 [tool.pytest.ini_options]
