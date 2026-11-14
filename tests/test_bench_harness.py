@@ -2005,6 +2005,31 @@ def test_windowed_readback_detects_a_changed_value_in_a_later_window_and_a_wrong
     assert cmp(X[0:3], bc[0:3], names, tmp_path / "ok.h5", rows=rows)
 
 
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_readback_ignores_the_gene_order_within_a_cell_but_not_the_counts(datasets, tmp_path):
+    """Cell Ranger writes the genes of a cell in descending order; CREST's reader returns them ascending."""
+    import scipy.sparse as sp
+    cmp, read = _has(datasets, "compare_csr_to_h5"), _has(datasets, "read_h5_counts")
+    dense = _counts()
+    X = sp.csr_matrix(dense.T)
+    X.sort_indices()
+    desc_idx, desc_dat = [], []
+    for i in range(X.shape[0]):
+        lo, hi = X.indptr[i], X.indptr[i + 1]
+        desc_idx.append(X.indices[lo:hi][::-1])
+        desc_dat.append(X.data[lo:hi][::-1])
+    datasets.write_10x_h5(tmp_path / "desc.h5", X.indptr, np.concatenate(desc_idx), np.concatenate(desc_dat), X.shape[1],
+                          BARCODES, [g[0] for g in GENES], [g[1] for g in GENES], "hg19")
+    assert (read(tmp_path / "desc.h5")[0].toarray() == dense.T).all()          # the file holds the descending order
+    names = [g[1] for g in GENES]
+    assert cmp(X, BARCODES, names, tmp_path / "desc.h5", window=TINY_WINDOW) == []
+    Y = sp.csr_matrix(X, copy=True)
+    Y.data[0] += 1
+    assert cmp(Y, BARCODES, names, tmp_path / "desc.h5", window=TINY_WINDOW)
+    checks = datasets.verify_reader_equality(tmp_path / "desc.h5")
+    assert all(c["ok"] for c in checks), checks
+
+
 @pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing|overwrote|dropped")
 def test_verification_record_keeps_the_datasets_of_earlier_runs(datasets, tmp_path, monkeypatch):
     _has(datasets, "verify_dataset")

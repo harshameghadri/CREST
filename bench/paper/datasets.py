@@ -749,10 +749,12 @@ def _scanpy_csr(adata):
 
 def compare_csr_to_h5(X, barcodes, gene_names, h5: Path, window: int = WINDOW, rows: tuple[int, int] | None = None) -> list[str]:
     """A reader's CSR matrix (cells x genes) against a Cell Ranger v3 ``.h5`` read with h5py, count for count,
-    window by window: no full-size temporary is made, so the check costs no more memory than the reader's own
-    result. The row pointers, then the column indices and the values of every non-zero, then the barcodes and gene
-    names in file order. ``rows=(first, stop)`` compares X with those cells of the file. Returns the mismatches
-    (empty list = equal)."""
+    window by window (windows of whole cells): no full-size temporary is made, so the check costs no more memory
+    than the reader's own result. The row pointers, then the column indices and the values of every non-zero, then
+    the barcodes and gene names in file order. The order of the genes within a cell is not part of the comparison
+    (Cell Ranger writes them in descending order, CREST's reader returns them ascending, scanpy's keeps the file's);
+    a window that differs in position is compared again after sorting each cell. ``rows=(first, stop)`` compares X
+    with those cells of the file. Returns the mismatches (empty list = equal)."""
     out = []
     with h5py.File(h5, "r") as f:
         m = f["matrix"]
@@ -762,15 +764,23 @@ def compare_csr_to_h5(X, barcodes, gene_names, h5: Path, window: int = WINDOW, r
             return [f"shape reader {X.shape} != file {(r1 - r0, n_genes)}"]
         ptr = m["indptr"][r0:r1 + 1].astype(np.int64)
         base = int(ptr[0])
-        if not np.array_equal(np.asarray(X.indptr, dtype=np.int64), ptr - base):
+        xptr = np.asarray(X.indptr, dtype=np.int64)
+        if not np.array_equal(xptr, ptr - base):
             return ["row pointers differ (per-cell non-zero counts)"]
-        nnz = int(X.indptr[-1])
-        for lo in range(0, nnz, window):
-            hi = min(lo + window, nnz)
-            if not np.array_equal(np.asarray(X.indices[lo:hi], dtype=np.int64), m["indices"][base + lo:base + hi].astype(np.int64)):
-                return [f"column indices differ in non-zeros {base + lo}-{base + hi}"]
-            if not np.array_equal(np.asarray(X.data[lo:hi], dtype=np.float64), m["data"][base + lo:base + hi].astype(np.float64)):
-                return [f"values differ in non-zeros {base + lo}-{base + hi}"]
+        for c0, c1 in _cell_blocks(xptr, window):
+            a, b = int(xptr[c0]), int(xptr[c1])
+            xi, xd = np.asarray(X.indices[a:b], dtype=np.int64), np.asarray(X.data[a:b], dtype=np.float64)
+            fi, fd = m["indices"][base + a:base + b].astype(np.int64), m["data"][base + a:base + b].astype(np.float64)
+            if np.array_equal(xi, fi) and np.array_equal(xd, fd):
+                continue
+            row = np.repeat(np.arange(c1 - c0, dtype=np.int64), np.diff(xptr[c0:c1 + 1])) * n_genes
+            kx, kf = row + xi, row + fi
+            ox, of = (None if np.all(kx[1:] >= kx[:-1]) else np.argsort(kx, kind="stable")), np.argsort(kf, kind="stable")
+            kx, xd = (kx, xd) if ox is None else (kx[ox], xd[ox])
+            if not np.array_equal(kx, kf[of]):
+                return [f"column indices differ in cells {r0 + c0}-{r0 + c1}"]
+            if not np.array_equal(xd, fd[of]):
+                return [f"values differ in cells {r0 + c0}-{r0 + c1}"]
         for what, x, y in (("barcodes", barcodes, _h5_str(m["barcodes"][r0:r1])),
                            ("gene names", gene_names, _h5_str(m["features"]["name"][:]))):
             x = list(map(str, x))
