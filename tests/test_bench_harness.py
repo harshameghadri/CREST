@@ -1951,17 +1951,18 @@ def test_legacy_verification_fails_for_a_changed_count_and_a_swapped_barcode(dat
     assert not all(c["ok"] for c in verify(tmp_path / "old.h5", tmp_path / "again.h5"))
 
 
-@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"verification ran|matrix")
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing|verification ran|matrix")
 def test_the_one_million_neuron_download_is_converted_to_v3_and_verifies(datasets, tmp_path, monkeypatch):
+    verify, read = _has(datasets, "verify_dataset"), _has(datasets, "read_h5_counts")
     _unsized(datasets, monkeypatch, "neurons_1m")
     src = tmp_path / "src" / "neurons_1m"
     src.mkdir(parents=True)
     _write_legacy_h5(src / "neurons_1m.h5", _counts(), GENES, BARCODES)
     out = datasets.build("neurons_1m", tmp_path)
-    res = datasets.verify_dataset("neurons_1m", tmp_path)
+    res = verify("neurons_1m", tmp_path)
     assert res["ok"], res["checks"]
     assert any("v1/v2" in c["name"] for c in res["checks"])
-    X, bc, _, _ = datasets.read_h5_counts(out)                                # a v3 file: h5py finds its 'matrix' group
+    X, bc, _, _ = read(out)                                # a v3 file: h5py finds its 'matrix' group
     assert (X.toarray() == _counts().T).all() and bc == BARCODES
 
 
@@ -1986,10 +1987,10 @@ def test_reader_checks_read_a_large_file_back_in_blocks_of_whole_cells_and_catch
 @pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
 def test_windowed_readback_detects_a_changed_value_in_a_later_window_and_a_wrong_gene_name(datasets, tmp_path):
     import scipy.sparse as sp
+    cmp, read = _has(datasets, "compare_csr_to_h5"), _has(datasets, "read_h5_counts")
     _write_mtx_dir(tmp_path / "m", _counts(), GENES, BARCODES)
     datasets._mtx_dir_to_h5(tmp_path / "m", tmp_path / "ok.h5", "hg19")
-    X, bc, ids, names = datasets.read_h5_counts(tmp_path / "ok.h5")
-    cmp = _has(datasets, "compare_csr_to_h5")
+    X, bc, ids, names = read(tmp_path / "ok.h5")
     assert X.nnz > 2 * TINY_WINDOW
     assert cmp(X, bc, names, tmp_path / "ok.h5", window=TINY_WINDOW) == []
     Y = sp.csr_matrix(X, copy=True)
@@ -2004,8 +2005,9 @@ def test_windowed_readback_detects_a_changed_value_in_a_later_window_and_a_wrong
     assert cmp(X[0:3], bc[0:3], names, tmp_path / "ok.h5", rows=rows)
 
 
-@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"overwrote|dropped")
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing|overwrote|dropped")
 def test_verification_record_keeps_the_datasets_of_earlier_runs(datasets, tmp_path, monkeypatch):
+    _has(datasets, "verify_dataset")
     for name in ("pbmc3k", "pbmc68k"):
         d = tmp_path / "src" / name / "extracted" / "hg19"
         _write_mtx_dir(d, _counts(), GENES, BARCODES)
@@ -2021,23 +2023,26 @@ def test_verification_record_keeps_the_datasets_of_earlier_runs(datasets, tmp_pa
     assert m["pbmc3k"]["verification"] is True and m["pbmc3k"]["cells"] == len(BARCODES) and m["pbmc3k"]["genes"] == len(GENES)
 
 
-@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"depends on crest")
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing|depends on crest")
 def test_h5ad_conversion_reads_raw_counts_keeps_symbols_and_does_not_use_crests_reader(datasets, tmp_path, monkeypatch):
     pytest.importorskip("anndata")
+    verify, read = _has(datasets, "verify_dataset"), _has(datasets, "read_h5_counts")
     _unsized(datasets, monkeypatch, "covid_stephenson")
     src = tmp_path / "src" / "covid_stephenson"
     src.mkdir(parents=True)
     counts = _write_cxg_h5ad(src / "covid_stephenson.h5ad")
-    monkeypatch.setitem(sys.modules, "crest", None)                            # any import of crest now fails
+    for k in [k for k in sys.modules if k == "crest" or k.startswith("crest.")]:
+        monkeypatch.setitem(sys.modules, k, None)                              # any import of crest or a submodule fails now
+    monkeypatch.setitem(sys.modules, "crest", None)
     try:
         out = datasets.build("covid_stephenson", tmp_path)
     except ImportError as e:
         raise AssertionError(f"the h5ad conversion depends on crest: {e}") from None
-    X, bc, ids, names = datasets.read_h5_counts(out)
+    X, bc, ids, names = read(out)
     assert (X.toarray() == counts).all(), "the converted matrix is not raw.X"
     assert ids == [a.replace("ID", "ENSG") for a, _ in GENES] and names == [b for _, b in GENES]
     assert bc[0] == "cell0-x" and len(bc) == counts.shape[0]
-    res = datasets.verify_dataset("covid_stephenson", tmp_path)
+    res = verify("covid_stephenson", tmp_path)
     assert res["ok"], res["checks"]
 
 
