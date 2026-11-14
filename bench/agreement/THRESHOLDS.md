@@ -197,4 +197,11 @@ measured, together with the pre-registered action.
 
 ## Deviations
 
-None at registration.
+No threshold, metric definition or action has been changed. One diagnostic was added after results were seen.
+
+* 2026-11-15, post-hoc diagnostic (no threshold). After the kang results were seen (metric 2c and the ARI of metric 1
+  failed while 2b passed, and scanpy's own kNN recall on kang was 0.94), an arm E was added: scanpy's PCA, CREST's exact kNN
+  search (`exact=True`), CREST's connectivities and Leiden with seeds 0..9, i.e. the clustering of the true kNN graph.
+  The mean ARI of E against A and against C, and the Jaccard index of each approximate kNN graph with the exact graph, are
+  reported under `diagnostics.post_hoc_exact_graph_arm` and are labelled post-hoc wherever they appear. They are run on every
+  dataset the registered metrics were run on, and do not enter any pass/fail decision.

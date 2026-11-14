@@ -346,7 +346,7 @@ def small_run(tmp_path_factory):
     mp.setattr(script, "DE_REF_SEEDS_SMALL", 1)
     mp.setattr(script, "_threads", lambda n: None)   # leave the thread variables of the test process alone
     out = d / "out"
-    for stage in ("scanpy", "crest", "compare"):
+    for stage in ("scanpy", "crest", "exact", "compare"):
         ra.main([stage, "--dataset", "tiny", "--data-dir", str(d), "--out", str(out), "--threads", "2"])
     yield n, out / "tiny"
     mp.undo()
@@ -362,6 +362,8 @@ def test_end_to_end_writes_every_registered_metric(small_run):
     assert {"5.1_crest_own_pca", "5.2_scanpy_own_pca", "5.3_crest_on_scanpy_pca", "5.4_crest_query_other_batches"} <= set(M["5_knn_recall"])
     assert "4a_own_clusters" in M["4_de"] and "4b_same_labels" in M["4_de"]
     assert res["n_cells"]["crest"] == res["n_cells"]["scanpy"] == res["n_common_cells"]
+    ex = res["diagnostics"]["post_hoc_exact_graph_arm"]
+    assert "post-hoc" in ex["note"] and 0.0 <= ex["mean_ari_E_vs_A"] <= 1.0 and ex["knn_jaccard_vs_exact_graph"]["scanpy"] > 0.99
     assert (d / "results.md").read_text().count("|") > 30
 
 

@@ -6,6 +6,7 @@ The metrics, thresholds and the action on failure of each metric are fixed in
     python bench/agreement/run_agreement.py scanpy  --dataset kang --data-dir DATA --out OUT
     python bench/agreement/run_agreement.py crest   --dataset kang --data-dir DATA --out OUT
     python bench/agreement/run_agreement.py compare --dataset kang --data-dir DATA --out OUT
+    python bench/agreement/run_agreement.py exact   --dataset kang --data-dir DATA --out OUT   # optional diagnostic
 
 ``scanpy`` and ``crest`` write the per-tool arrays of one dataset under ``OUT/<dataset>/`` (every
 sub-stage is skipped when its file exists, so an interrupted run resumes); ``compare`` reads them and
@@ -622,6 +623,50 @@ def stage_crest(a) -> None:
     _log("crest stage finished")
 
 
+# =========================================================================== stage: exact (post-hoc diagnostic)
+def stage_exact(a) -> None:
+    """Diagnostic added after the first results were seen (see Deviations in THRESHOLDS.md); no threshold.
+
+    Arm E: scanpy's PCA, CREST's *exact* kNN search (``exact=True``), CREST's connectivities and Leiden with seeds
+    ``0..N_SEEDS-1``. E is the clustering of the true 14-nearest-neighbour graph of the common PCA, against which the
+    approximate graphs of both tools (arms A and C) can be compared."""
+    from crest import crest as native
+    d = Path(a.out) / a.dataset
+    sc_ = np.load(d / "scanpy_core.npz")
+    pca = sc_["pca"]
+    f = d / "exact_arm.npz"
+    if f.exists():
+        _log("exact_arm.npz exists")
+        return
+    t0 = time.time()
+    idx, dist = native.knn_graph(np.ascontiguousarray(pca, np.float32), K, exact=True, seed=0)
+    rows, cols, w = native.connectivities(idx, dist, N_NEIGHBORS)
+    _log(f"exact kNN graph in {time.time() - t0:.0f} s")
+    E = np.stack([np.asarray(native.leiden(pca.shape[0], rows, cols, w, RESOLUTION, N_ITER, s)).astype(np.int64)
+                  for s in range(N_SEEDS)])
+    _save(f, E=E, knn_exact=idx.astype(np.int32))
+    _log("exact arm written")
+
+
+def _exact_arm_metrics(d: Path, sc_, cr) -> dict | None:
+    """Mean ARI between the exact-graph arm E and A, C (and the within-E spread), and the recall of both
+    approximate graphs against the exact graph's neighbour sets (an identical-set comparison)."""
+    f = d / "exact_arm.npz"
+    if not f.exists() or not (d / "crest_arms.npz").exists():
+        return None
+    E = np.load(f)["E"]
+    A = np.load(d / "scanpy_afull.npz")["A"]
+    C = np.load(d / "crest_arms.npz")["C"]
+    out = {"note": "post-hoc diagnostic, no threshold (see Deviations in THRESHOLDS.md)",
+           "mean_ari_E_vs_A": float(pair_aris(E, A).mean()), "mean_ari_E_vs_C": float(pair_aris(E, C).mean()),
+           "mean_ari_A_vs_C": float(pair_aris(A, C).mean()), "within_E": float(pair_aris(E).mean()),
+           "within_A": float(pair_aris(A).mean()), "within_C": float(pair_aris(C).mean())}
+    ke = np.load(f)["knn_exact"]
+    out["knn_jaccard_vs_exact_graph"] = {"scanpy": jaccard_neighbor_rows(ke, sc_["knn0"]),
+                                         "crest_on_scanpy_pca": jaccard_neighbor_rows(ke, cr["knn0_on_scanpy_pca"])}
+    return out
+
+
 # =========================================================================== stage: compare
 def _obs_lookup(obs, column: str, barcodes) -> np.ndarray:
     """Values of an observation-table column for ``barcodes`` (object array; None where the barcode is absent or the value
@@ -745,6 +790,9 @@ def stage_compare(a) -> None:
     # ---- metric 6: UMAP
     M["6_umap"] = _umap_metrics(d, cr, sc_, ia, isc, Ac[0])
     # ---- diagnostics without thresholds
+    ex = _exact_arm_metrics(d, sc_, cr)
+    if ex is not None:
+        res["diagnostics"]["post_hoc_exact_graph_arm"] = ex
     res["diagnostics"]["hvg_jaccard"] = float(len(set(cr["hvg"]) & set(sc_["hvg"])) / len(set(cr["hvg"]) | set(sc_["hvg"])))
     Pa, Pb = cr["pca"][ia].astype(np.float64), sc_["pca"][isc].astype(np.float64)
     Qa, _ = np.linalg.qr(Pa - Pa.mean(0))
@@ -883,7 +931,7 @@ def _write(d: Path, res: dict) -> None:
 # =========================================================================== command line
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("stage", choices=["scanpy", "crest", "compare"])
+    ap.add_argument("stage", choices=["scanpy", "crest", "compare", "exact"])
     ap.add_argument("--dataset", required=True)
     ap.add_argument("--data-dir", required=True)
     ap.add_argument("--out", required=True)
@@ -893,7 +941,7 @@ def main(argv=None) -> None:
     a = ap.parse_args(argv)
     _threads(a.threads)
     warnings.filterwarnings("ignore")
-    {"scanpy": stage_scanpy, "crest": stage_crest, "compare": stage_compare}[a.stage](a)
+    {"scanpy": stage_scanpy, "crest": stage_crest, "compare": stage_compare, "exact": stage_exact}[a.stage](a)
 
 
 if __name__ == "__main__":
