@@ -1,6 +1,6 @@
 """Pseudobulk differential expression with DESeq2, implemented in Rust.
 
-``DESeq2`` reproduces R's ``DESeq()`` + ``results()`` (DESeq2 1.42): median-of-
+``DESeq2`` reproduces R's ``DESeq()`` + ``results()`` (reference: R 4.5.2, DESeq2 1.50.2): median-of-
 ratios size factors, Cox-Reid gene-wise dispersions, parametric trend, MAP
 shrinkage, NB-GLM Wald tests, Cook's distance filtering / outlier replacement and
 independent filtering. The per-gene work runs in parallel in native code.
@@ -13,8 +13,10 @@ Differences from R are documented in ``docs/deseq2.md``: when the parametric
 trend fails DESeq2 substitutes a local regression, here the mean is used, which
 can change the results noticeably (reported in ``messages`` and as
 ``fit["fit_substituted"]``); rows IRLS cannot fit are refined by Newton's method
-rather than L-BFGS-B; for designs with <= 3 residual degrees of freedom the prior
-variance uses exact integration instead of R's 10⁴-draw simulation.
+rather than L-BFGS-B. Under ``test="LRT"`` the Cook's distances use the full-model
+means, as DESeq2 >= 1.50 (1.42 differs). For designs with <= 3 residual degrees of freedom the
+prior variance uses R's own simulated reference distribution (tabulated from ``set.seed(2)``),
+so it equals R's value, which is one draw of a Monte-Carlo estimate (``docs/deseq2.md``).
 """
 
 from __future__ import annotations
@@ -284,7 +286,7 @@ class DESeq2:
         ``sizeFactors(dds)`` in R).
     sf_type : str
         ``"ratio"`` (median of ratios, the DESeq2 default) or ``"poscounts"``
-        (for data where every gene has a zero).
+        (for data where every gene has a zero). R's ``"iterate"`` is not available.
     fit_type : str
         Dispersion trend: ``"parametric"`` (default) or ``"mean"``. When the parametric
         fit does not converge R substitutes a local regression; here the mean trend is
@@ -292,7 +294,8 @@ class DESeq2:
         the results will differ from R (``quiet=True`` suppresses the warning, not the flag).
     min_replicates_for_replace : float
         Replace Cook's outliers in sample groups with at least this many
-        samples (default 7, as DESeq2's ``minReplicatesForReplace``).
+        samples (default 7, as DESeq2's ``minReplicatesForReplace``). At least 3, as in R;
+        ``float("inf")`` switches replacement off.
     min_mu : float
         Lower bound on the fitted means in the GLM fit (default 0.5, as
         DESeq2's ``minmu``).

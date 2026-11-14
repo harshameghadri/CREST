@@ -43,7 +43,63 @@ MAXCOOKS_LRT_RTOL = 1e-9        # LRT Cook's distances against R 1.50.2
 CUTOFF_RTOL = 1e-12             # Cook's cut-off qf(0.99, p, m - p) against R (the reference carries 15 digits)
 TREND_FALLBACK_INDEPENDENT_RTOL = 1e-6   # quantities that do not depend on the dispersion trend, when R falls back to a local fit
 CONTRAST_ZERO_MASK_RTOL = 1e-9  # rows whose c1 / c2 counts were all replaced, tuple and numeric contrast
-PIN_RTOL = {}                   # filled below: per-fixture, per-column tolerances
+PIN_RTOL = {   # 10 x the larger of the arm64 and x86-64 measurements, rounded up to one digit
+    "prior_2v2_sd10": {
+        "size_factors": 1e-12, "baseMean": 1e-12, "dispGeneEst": 2e-10, "dispFit": 1e-12,
+        "dispMAP": 1e-12, "dispersion": 1e-12, "log2FoldChange": 8e-12, "lfcSE": 1e-12,
+        "stat": 8e-12, "pvalue": 2e-09, "padj": 9e-10, "maxCooks": 1e-12,
+    },
+    "prior_2v2_sd15": {
+        "size_factors": 1e-12, "baseMean": 1e-12, "dispGeneEst": 3e-11, "dispFit": 1e-12,
+        "dispMAP": 7e-06, "dispersion": 7e-06, "log2FoldChange": 0.0004, "lfcSE": 4e-06,
+        "stat": 0.0004, "pvalue": 0.002, "padj": 0.002, "maxCooks": 1e-12,
+    },
+    "prior_2v3": {
+        "size_factors": 1e-12, "baseMean": 1e-12, "dispGeneEst": 4e-10, "dispFit": 1e-12,
+        "dispMAP": 4e-12, "dispersion": 4e-12, "log2FoldChange": 6e-11, "lfcSE": 2e-12,
+        "stat": 6e-11, "pvalue": 2e-09, "padj": 9e-10, "maxCooks": 6e-12,
+    },
+    "prior_3v2": {
+        "size_factors": 1e-12, "baseMean": 1e-12, "dispGeneEst": 2e-11, "dispFit": 1e-12,
+        "dispMAP": 9e-07, "dispersion": 9e-07, "log2FoldChange": 8e-09, "lfcSE": 5e-07,
+        "stat": 5e-07, "pvalue": 3e-07, "padj": 9e-10, "maxCooks": 2e-09,
+    },
+    "refit_outliers": {
+        "size_factors": 1e-12, "baseMean": 1e-12, "dispGeneEst": 3e-06, "dispFit": 2e-09,
+        "dispMAP": 3e-06, "dispersion": 3e-06, "log2FoldChange": 6e-09, "lfcSE": 5e-07,
+        "stat": 5e-07, "pvalue": 4e-07, "padj": 2e-08, "maxCooks": 1e-12,
+    },
+    "very_large_counts": {
+        "size_factors": 1e-12, "baseMean": 1e-12, "dispGeneEst": 0.07, "dispFit": 0.0002,
+        "dispMAP": 0.005, "dispersion": 0.005, "log2FoldChange": 2e-06, "lfcSE": 0.003,
+        "stat": 0.003, "pvalue": 0.03, "padj": 0.04, "maxCooks": 2e-06,
+    },
+    "filtering_cooks": {
+        "size_factors": 1e-12, "baseMean": 1e-12, "dispGeneEst": 8e-12, "dispFit": 1e-12,
+        "dispMAP": 2e-12, "dispersion": 2e-12, "log2FoldChange": 0.0003, "lfcSE": 3e-05,
+        "stat": 0.0003, "pvalue": 2e-09, "padj": 9e-10, "maxCooks": 1e-12,
+    },
+    "poscounts": {
+        "size_factors": 1e-12, "baseMean": 1e-12, "dispGeneEst": 3e-11, "dispFit": 1e-12,
+        "dispMAP": 1e-12, "dispersion": 1e-12, "log2FoldChange": 1e-11, "lfcSE": 1e-12,
+        "stat": 1e-11, "pvalue": 2e-09, "padj": 9e-10, "maxCooks": 1e-12,
+    },
+    "covariate": {
+        "size_factors": 1e-12, "baseMean": 1e-12, "dispGeneEst": 4e-11, "dispFit": 1e-12,
+        "dispMAP": 4e-12, "dispersion": 4e-12, "log2FoldChange": 4e-11, "lfcSE": 2e-12,
+        "stat": 4e-11, "pvalue": 2e-09, "padj": 2e-09, "maxCooks": 1e-12,
+    },
+    "lrt_cooks": {
+        "size_factors": 1e-12, "baseMean": 1e-12, "dispGeneEst": 3e-11, "dispFit": 1e-12,
+        "dispMAP": 4e-12, "dispersion": 4e-12, "log2FoldChange": 7e-11, "lfcSE": 2e-12,
+        "stat": 2e-09, "pvalue": 2e-10, "padj": 2e-10, "maxCooks": 1e-12,
+    },
+    "contrast_zero_mask": {
+        "size_factors": 1e-12, "baseMean": 1e-12, "dispGeneEst": 3e-11, "dispFit": 1e-12,
+        "dispMAP": 4e-12, "dispersion": 4e-12, "log2FoldChange": 2e-11, "lfcSE": 2e-12,
+        "stat": 2e-11, "pvalue": 2e-09, "padj": 9e-10, "maxCooks": 1e-12,
+    },
+}
 
 PRIOR_DESIGNS = ["prior_2v2_sd10", "prior_2v2_sd15", "prior_2v3", "prior_3v2"]
 COLUMNS = ["size_factors", "baseMean", "dispGeneEst", "dispFit", "dispMAP", "dispersion", "log2FoldChange", "lfcSE",
@@ -162,12 +218,12 @@ def test_prior_variance_band_records_its_source():
 
 # ===================================================================================== whole-table pins
 PIN_FIXTURES = [
-    pytest.param("prior_2v2_sd10", marks=pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="dispMAP")),
-    pytest.param("prior_2v2_sd15", marks=pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="dispMAP")),
-    pytest.param("prior_2v3", marks=pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="dispMAP")),
-    pytest.param("prior_3v2", marks=pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="dispMAP")),
-    pytest.param("refit_outliers", marks=pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="dispersion")),
-    pytest.param("very_large_counts", marks=pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="fitType")),
+    pytest.param("prior_2v2_sd10", marks=pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="prior_2v2_sd10: dispMAP")),
+    pytest.param("prior_2v2_sd15", marks=pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="prior_2v2_sd15: dispMAP")),
+    pytest.param("prior_2v3", marks=pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="prior_2v3: dispMAP")),
+    pytest.param("prior_3v2", marks=pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="prior_3v2: dispMAP")),
+    pytest.param("refit_outliers", marks=pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="refit_outliers: dispMAP")),
+    pytest.param("very_large_counts", marks=pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="very_large_counts: fitType")),
     "filtering_cooks",
     "poscounts",
     "covariate",

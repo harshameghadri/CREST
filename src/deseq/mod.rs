@@ -1,7 +1,7 @@
 //! DESeq2 (Love, Huber & Anders 2014, *Genome Biology* 15:550) in Rust, for
 //! pseudobulk and bulk count matrices.
 //!
-//! This follows DESeq2 1.42's `DESeq()` + `results()` step by step (the R and
+//! This follows DESeq2's `DESeq()` + `results()` (reference version 1.50.2) step by step (the R and
 //! C++ sources were used as the reference), so results agree with R:
 //!
 //! 1. size factors: median-of-ratios (`type = "ratio"` or `"poscounts"`);

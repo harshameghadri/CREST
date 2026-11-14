@@ -1,8 +1,10 @@
 # Pseudobulk DESeq2 in CREST
 
-`crest.tl.DESeq2` is a Rust port of Bioconductor **DESeq2 1.42** (`DESeq()` +
+`crest.tl.DESeq2` is a Rust port of Bioconductor **DESeq2** (`DESeq()` +
 `results()`, with the Wald test or the likelihood-ratio test), written against the R and
-C++ sources, not re-derived from the paper. Use it for pseudobulk DE on single-cell data
+C++ sources, not re-derived from the paper. The reference version is **R 4.5.2 with
+DESeq2 1.50.2**: new R fixtures are generated with it and record `packageVersion` in their
+`.json` file. Fixtures made earlier with DESeq2 1.42 are kept; see *Reference version* below. Use it for pseudobulk DE on single-cell data
 (and for bulk RNA-seq).
 
 ```python
@@ -54,7 +56,7 @@ that `results()` computed. Two terms that produce the same coefficient name rais
 | `estimateDispersionsMAP` (+ `dispOutlier`) | same |
 | `nbinomWaldTest` (IRLS with ridge 1e-6, `betaConv`, Wald p-values) | same (refit of non-converged rows: see below) |
 | `nbinomLRT` (`DESeq2(test="LRT", reduced="~ ...")`: deviance of the full vs the reduced design, χ² p-values) | same (LRT statistics within 1e-6 of R) |
-| Cook's distances, `maxCooks`, `refitWithoutOutliers` (≥ 7 replicates) | same |
+| Cook's distances, `maxCooks`, `refitWithoutOutliers` (≥ 7 replicates) | same; under the LRT the distances use the full-model means, as DESeq2 ≥ 1.50 does |
 | `results()`: coefficient / `c(factor, a, b)` / numeric contrasts, `contrastAllZero`, Cook's cutoff incl. the 2-group heuristic, independent filtering (lowess port of R's `clowess`), BH | same |
 
 Not implemented: `lfcShrink` (apeglm/ashr/normal), `betaPrior=TRUE`,
@@ -77,8 +79,16 @@ inputs to R and CREST. Results are in `bench/deseq2/results/`.
   traces to a few genes at the dispersion floor (*Known differences* 1).
   For comparison, pydeseq2's number of calls differs from R's by 3–25% per cell
   type (e.g. 1630 vs 1365 in CD4 T cells).
-* `tests/test_crest.py` checks against stored R 1.42 output (`tests/data/`), so CI
-  guards R-parity without needing R.
+* `tests/test_crest.py` and `tests/test_deseq2_r_parity.py` check against stored R output
+  (`tests/data/`), so CI guards R-parity without needing R. The R-parity file pins eleven
+  count tables made with R 1.50.2 (scripts `make_pin_inputs.py` and `make_pin_fixtures.R`
+  next to them): heterogeneous dispersions with 2 and 3 residual degrees of freedom, outlier
+  replacement and refit, counts up to 10⁸, independent filtering together with Cook's
+  p-value filtering, `poscounts` size factors, a numeric covariate with all-zero contrast
+  rows, an LRT with Cook's distances at the cut-off, and a contrast over replaced counts.
+  Each tolerance is ten times the larger of the deviations measured on Linux x86-64 and macOS
+  arm64; what is excluded from a comparison (gene-wise dispersions on the flat part of the
+  likelihood, Cook's distances above the cut-off) is stated in the test module.
 
 ## Speed
 
@@ -108,12 +118,21 @@ R ran single-threaded (`DESeq()` without BiocParallel) and pydeseq2 on all cores
 2. **Rows IRLS does not converge on.** R refits them with L-BFGS-B (`optim`),
    CREST with Newton's method on the same concave penalised likelihood and the
    same bounds. The optimum is the same, but R's optimizer tolerance leaves
-   differences of ~1e-4 in log2 fold change for these rows.
-3. **Prior variance with ≤ 3 residual degrees of freedom** (e.g. 2 vs 2). R
-   estimates it by simulating 10⁴ draws with `set.seed(2)`, then smooths with
-   `loess`. CREST integrates the same reference distribution exactly, which is
-   deterministic but differs from R's Monte-Carlo value by a few percent. With
-   3+ residual df the closed form is used and the results agree exactly.
+   differences of about 1e-4 in log2 fold change for most of these rows, and larger ones for
+   sparse genes (up to about 1 log2 unit in the Kang comparison).
+3. **Prior variance with ≤ 3 residual degrees of freedom** (e.g. 2 vs 2). R estimates it by
+   simulating 10⁴ draws after `set.seed(2)` for each of 200 candidate variances, comparing
+   the histogram of the draws with the observed residuals (KL divergence) and smoothing
+   with `loess(span = 0.2)`. The draws do not depend on the data, so CREST uses the same
+   draws, tabulated once from R (`src/deseq/data/`), with the same pseudo-count, the same
+   histogram bins and an interpolating `loess` as R's; on the test designs it returns R's
+   value (to 1e-9). R's value is itself one draw of a Monte-Carlo estimate: repeating R's
+   computation over seeds 1 to 50 on the 1,000-gene test tables gives
+   2v2 (sd 1.0): 0.25 to 0.36 (mean 0.29); 2v2 (sd 1.5): 1.01 to 1.21 (mean 1.08); 2v3: 0.61 to 0.66 (mean 0.63); 3v2: 0.73 to 0.74 (mean 0.73).
+   With 4 or more residual degrees of freedom the closed form is used and the results agree.
+   Before this was done CREST integrated the reference distribution exactly, which moved
+   the estimate outside R's seed range for two of the four designs (0.41 against 0.27 at
+   2 vs 2, 0.67 against 0.73 at 3 vs 2).
 4. **Parametric trend failure.** R substitutes a local regression (`locfit`).
    CREST uses the mean dispersion, which is not equivalent: on small or low-count
    inputs the dispersion trend, the prior variance and the significant genes can
@@ -124,3 +143,35 @@ R ran single-threaded (`DESeq()` without BiocParallel) and pydeseq2 on all cores
    numerical reasons only (for example at counts in the hundreds of millions) is no
    longer a cause: the normal equations of the trend fit are equilibrated before the
    pivot test.
+5. **Cook's cut-off and missing values.** `qf(0.99, p, m - p)` is evaluated to double precision,
+   as R does. A p-value or adjusted p-value that is missing is `null` in the table; the reason
+   (no counts, Cook's outlier, removed by independent filtering) is in
+   `DESeq2.last_results_info["na"]`, a dict of boolean masks over genes.
+6. **Checks R makes and variants it has.** `min_replicates_for_replace < 3` raises, as R's
+   `replaceOutliers` stops (`float("inf")` switches replacement off). R's `sfType = "iterate"`
+   is not available (`"ratio"` and `"poscounts"` are). When every gene-wise dispersion is at the
+   floor R's `estimateDispersionsFit` stops; CREST continues with the mean trend and sets the
+   dispersions to 10 times the floor (the first pass only; genes refitted after outlier
+   replacement always get their MAP dispersion). `obs` must be a polars `DataFrame`
+   (`pl.from_pandas` converts a pandas table). The all-zero test of numeric and tuple contrasts
+   uses the original counts, as R's `contrastAllZeroNumeric` / `contrastAllZeroCharacter` do,
+   also for genes whose outliers were replaced.
+
+## Reference version
+
+New fixtures and the numbers in this page refer to R 4.5.2 / DESeq2 1.50.2. The older
+fixtures (`deseq2_{two_vs_two,three_level_batch,outlier_replacement}_*`, the LRT outputs from
+`make_lrt_fixtures.R`) were made with DESeq2 1.42 and stay in the tests. Known differences
+between the two R versions, so that they are not mistaken for CREST differences:
+
+* Under `test="LRT"`, DESeq2 1.42.1 does not store the full model's fitted means before it
+  computes Cook's distances, 1.50.2 does; CREST follows 1.50.2. On a 3-level design with
+  4 + 4 + 4 samples the earlier comparison found `maxCooks` differing by up to 0.21 in
+  absolute terms between the two R versions and by about 3e-14 between CREST and 1.50.2
+  (carried over from that comparison; 1.42 is not installed where the fixtures are made).
+  The 1.50.2 fixture `lrt_cooks` has four genes within 5 % of the cut-off, on either side,
+  and CREST agrees with R there to 1e-9.
+* The two 1.42 LRT fixtures have no group with three replicates, so R reports `maxCooks` as
+  `NA` for them in both versions. Re-running `make_lrt_fixtures.R` with 1.50.2 reproduces
+  the stored statistics, p-values and adjusted p-values to 2.2e-11 relative, log2 fold
+  changes to 4.3e-13 and dispersions to 9.7e-14.
