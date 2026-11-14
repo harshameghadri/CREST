@@ -83,12 +83,17 @@ def ingest(query: BioFrame, ref: BioFrame, obs: Union[str, Sequence[str], None] 
     Adds ``query.obsm['X_pca']`` (reference PC space), ``query.obsm['X_umap']``
     (if the reference has one) and, per transferred column, ``obs[col]`` plus
     ``obs[col + '_confidence']`` (fraction of neighbours voting for the label).
-    ``n_neighbors`` defaults to the reference's ``pp.neighbors`` setting;
+    ``n_neighbors`` and the number of PCs searched default to the reference's ``pp.neighbors``
+    settings, which a cell filter of the reference keeps (``uns["neighbors_params"]``); without
+    them, ``n_neighbors`` must be given (``ValueError`` otherwise) and all PCs are used.
     ``center`` see :func:`project_pca` (default as scanpy).
     """
     Xq = project_pca(query, ref, center)
-    params = ref.uns.get("neighbors", {}).get("params", {})
-    k = int(n_neighbors or params.get("n_neighbors", 15))
+    params = ref.uns.get("neighbors", {}).get("params") or ref.uns.get("neighbors_params", {}).get("params") or {}
+    if n_neighbors is None and "n_neighbors" not in params:
+        raise ValueError("the reference has no neighbour settings (crest.pp.neighbors has not been run on it); "
+                         "run it, or pass n_neighbors (all principal components are then used)")
+    k = int(n_neighbors or params["n_neighbors"])
     n_pcs = params.get("n_pcs")
     Xr = ref.obsm["X_pca"] if n_pcs is None else ref.obsm["X_pca"][:, :n_pcs]
     Xq_n = Xq if n_pcs is None else Xq[:, :n_pcs]

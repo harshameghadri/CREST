@@ -336,7 +336,7 @@ def test_pseudobulk_sums_and_de(tmp_path):
     import scipy.sparse as sp
     obs = pl.DataFrame({"donor": (sample // 2).astype(str), "condition": cond, "ctype": ctype})
     bf = crest.BioFrame.from_scipy(sp.csr_matrix(X.astype(np.float32)), obs=obs)
-    crest.pp.normalize_total(bf)  # recorded transforms must not affect pseudobulk sums
+    crest.pp.normalize_total(bf, 1e4)  # recorded transforms must not affect pseudobulk sums
     crest.pp.log1p(bf)
     pb = crest.tl.pseudobulk(bf, ["donor", "condition"], groupby="ctype", min_cells=1)
     for row, (d, c, t) in enumerate(pb.obs.select("donor", "condition", "ctype").iter_rows()):
@@ -419,7 +419,7 @@ def _pipeline(n=3000, g=600, seed=5):
     crest.pp.normalize_total(bf, 1e4)
     crest.pp.log1p(bf)
     crest.pp.highly_variable_genes(bf, n_top_genes=300)
-    crest.pp.scale(bf)
+    crest.pp.scale(bf, max_value=10)
     crest.tl.pca(bf, n_comps=20)
     return bf, lab
 

@@ -45,7 +45,7 @@ def _two_covariate_data(n=4000):
     crest.pp.normalize_total(bf, 1e4)
     crest.pp.log1p(bf)
     crest.pp.highly_variable_genes(bf, n_top_genes=300)
-    crest.pp.scale(bf)
+    crest.pp.scale(bf, max_value=10)
     crest.tl.pca(bf, n_comps=20)
     rng = np.random.default_rng(0)
     a = rng.integers(0, 3, n)  # e.g. donor

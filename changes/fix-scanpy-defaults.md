@@ -1,0 +1,4 @@
+- `pp.normalize_total(bf)` and `pp.scale(bf)` now use scanpy's defaults: the median of the per-cell totals as `target_sum` and no clipping (`max_value=None`). Pass `target_sum=1e4` and `max_value=10` for the previous values. `tl.pca(scale=True)` without `pp.scale` no longer clips either.
+- `pp.filter_cells` / `pp.filter_genes` warn when `min_counts` / `max_counts` run on the raw counts after a recorded transform, and take `transformed=True` to use the current values as scanpy does.
+- `tl.ingest` keeps the reference's `n_neighbors` / `n_pcs` after a cell filter and raises when the reference has no neighbour settings and none are given.
+- Smaller scanpy alignments, all documented: a second `pp.log1p` and `tl.pca` with too many components warn, `pct_counts_mt` is `NaN` for a cell without counts.

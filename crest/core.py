@@ -403,7 +403,11 @@ class BioFrame:
             if "ingest" in uns:
                 uns["ingest"] = {**uns["ingest"], "indices": uns["ingest"]["indices"][obs_mask],
                                  "distances": uns["ingest"]["distances"][obs_mask]}
-            uns.pop("neighbors", None)
+            # The graph is over the old cells, but its settings are still what ingest needs to search
+            # a filtered reference with the same number of neighbours and PCs.
+            nb_params = uns.pop("neighbors", {}).get("params")
+            if nb_params is not None:
+                uns["neighbors_params"] = {"params": dict(nb_params)}
         return BioFrame(self.store, obs, var, obsm, varm, uns, list(self.ops), self.chunk_nnz, self.cell_totals)
 
     def filter_cells(self, condition: Union[pl.Expr, np.ndarray]) -> "BioFrame":

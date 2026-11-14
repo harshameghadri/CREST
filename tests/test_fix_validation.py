@@ -90,7 +90,7 @@ def graph_bf():
     crest.pp.normalize_total(bf, 1e4)
     crest.pp.log1p(bf)
     crest.pp.highly_variable_genes(bf, n_top_genes=200)
-    crest.pp.scale(bf)
+    crest.pp.scale(bf, max_value=10)
     crest.tl.pca(bf, n_comps=15)
     crest.pp.neighbors(bf)
     return bf

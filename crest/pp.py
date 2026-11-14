@@ -7,6 +7,7 @@ count matrix is never copied, normalised in place or densified.
 
 from __future__ import annotations
 
+import warnings
 from typing import Optional, Sequence
 
 import numpy as np
@@ -22,9 +23,17 @@ __all__ = [
 
 
 # --------------------------------------------------------------------------- QC
-def calculate_qc_metrics(bf: BioFrame, mito_prefix: Optional[str] = "MT-", inplace: bool = True) -> Optional[tuple]:
+def calculate_qc_metrics(bf: BioFrame, mito_prefix: Optional[str] = "MT-", inplace: bool = True,
+                         transform: bool = False) -> Optional[tuple]:
     """Per-cell ``total_counts``, ``n_genes_by_counts``, ``pct_counts_mt`` and per-gene
-    ``n_cells_by_counts``, ``total_counts`` (on raw counts of kept cells/genes)."""
+    ``n_cells_by_counts``, ``total_counts`` (of the kept cells/genes).
+
+    The sums are taken over the **raw counts** by default, whatever ``normalize_total`` / ``log1p``
+    have been recorded; with ``transform=True`` they are taken over the current (normalised,
+    log-transformed) values, as ``sc.pp.calculate_qc_metrics`` does with the current ``X``.
+    ``n_genes_by_counts`` and ``n_cells_by_counts`` count non-zeros and do not depend on it.
+    ``pct_counts_mt`` is ``NaN`` for a cell whose total is 0 (as in scanpy).
+    """
     names = bf.var_names
     flag = np.array([bool(mito_prefix) and n.upper().startswith(mito_prefix.upper()) for n in names], dtype=bool)
     ct = np.zeros(bf.n_obs, np.float64)
@@ -32,9 +41,9 @@ def calculate_qc_metrics(bf: BioFrame, mito_prefix: Optional[str] = "MT-", inpla
     cf = np.zeros(bf.n_obs, np.float64)
     gn = np.zeros(bf.n_vars, np.uint32)
     gt = np.zeros(bf.n_vars, np.float64)
-    for ctx in bf.iter_ctx(transform=False):
+    for ctx in bf.iter_ctx(transform=transform):
         _native.qc(*ctx, flag, ct, cn, cf, gn, gt)
-    pct = np.divide(cf, ct, out=np.zeros_like(ct), where=ct > 0) * 100.0
+    pct = np.divide(cf, ct, out=np.full_like(ct, np.nan), where=ct > 0) * 100.0
     obs_cols = [pl.Series("n_genes_by_counts", cn.astype(np.int64)), pl.Series("total_counts", ct),
                 pl.Series("pct_counts_mt", pct)]
     var_cols = [pl.Series("n_cells_by_counts", gn.astype(np.int64)), pl.Series("total_counts", gt)]
@@ -45,11 +54,30 @@ def calculate_qc_metrics(bf: BioFrame, mito_prefix: Optional[str] = "MT-", inpla
     return None
 
 
+def _warn_count_filter_on_raw(bf: BioFrame, what: str, args: str) -> None:
+    """``UserWarning`` when a count threshold is evaluated on raw counts although transforms are recorded."""
+    if bf.ops:
+        recorded = ", ".join(o[0] for o in bf.ops)
+        warnings.warn(f"{what}: {args} is evaluated on the raw counts, but this BioFrame has recorded "
+                      f"transforms ({recorded}). scanpy evaluates it on the current values of X; pass "
+                      "transformed=True for that, or filter before normalising.", UserWarning, stacklevel=3)
+
+
 def filter_cells(bf: BioFrame, min_genes: Optional[int] = None, min_counts: Optional[float] = None,
                  max_genes: Optional[int] = None, max_counts: Optional[float] = None,
-                 max_pct_mt: Optional[float] = None) -> BioFrame:
-    """Return a BioFrame keeping cells within the given thresholds (like ``sc.pp.filter_cells``)."""
-    obs, _ = calculate_qc_metrics(bf, inplace=False)
+                 max_pct_mt: Optional[float] = None, transformed: bool = False) -> BioFrame:
+    """Return a BioFrame keeping cells within the given thresholds (like ``sc.pp.filter_cells``).
+
+    ``min_counts``, ``max_counts`` and ``max_pct_mt`` are evaluated on the **raw counts** by default.
+    scanpy evaluates them on whatever ``X`` holds at that moment, so after ``normalize_total`` or
+    ``log1p`` the two disagree; CREST then emits a ``UserWarning`` instead of changing the result
+    silently. ``transformed=True`` evaluates them on the current (recorded-transform) values, as
+    scanpy does. ``min_genes`` / ``max_genes`` count non-zeros and are the same either way.
+    A cell with total 0 has ``pct_counts_mt`` NaN and is removed when ``max_pct_mt`` is given.
+    """
+    if not transformed and (min_counts is not None or max_counts is not None or max_pct_mt is not None):
+        _warn_count_filter_on_raw(bf, "filter_cells", "min_counts / max_counts / max_pct_mt")
+    obs, _ = calculate_qc_metrics(bf, inplace=False, transform=transformed)
     keep = np.ones(bf.n_obs, bool)
     ng, tc, mt = obs["n_genes_by_counts"].to_numpy(), obs["total_counts"].to_numpy(), obs["pct_counts_mt"].to_numpy()
     if min_genes is not None:
@@ -66,9 +94,19 @@ def filter_cells(bf: BioFrame, min_genes: Optional[int] = None, min_counts: Opti
 
 
 def filter_genes(bf: BioFrame, min_cells: Optional[int] = None, min_counts: Optional[float] = None,
-                 max_cells: Optional[int] = None, max_counts: Optional[float] = None) -> BioFrame:
-    """Return a BioFrame keeping genes within the given thresholds (counted over kept cells)."""
-    _, var = calculate_qc_metrics(bf, inplace=False)
+                 max_cells: Optional[int] = None, max_counts: Optional[float] = None,
+                 transformed: bool = False) -> BioFrame:
+    """Return a BioFrame keeping genes within the given thresholds (counted over kept cells).
+
+    ``min_counts`` and ``max_counts`` are sums over the **raw counts** by default. scanpy sums
+    whatever ``X`` holds at that moment, so after ``normalize_total`` or ``log1p`` the two
+    disagree; CREST then emits a ``UserWarning`` instead of changing the result silently.
+    ``transformed=True`` sums the current (recorded-transform) values, as scanpy does.
+    ``min_cells`` / ``max_cells`` count non-zeros and are the same either way.
+    """
+    if not transformed and (min_counts is not None or max_counts is not None):
+        _warn_count_filter_on_raw(bf, "filter_genes", "min_counts / max_counts")
+    _, var = calculate_qc_metrics(bf, inplace=False, transform=transformed)
     keep = np.ones(bf.n_vars, bool)
     nc, tc = var["n_cells_by_counts"].to_numpy(), var["total_counts"].to_numpy()
     if min_cells is not None:
@@ -83,8 +121,14 @@ def filter_genes(bf: BioFrame, min_cells: Optional[int] = None, min_counts: Opti
 
 
 # --------------------------------------------------------------------------- transforms
-def normalize_total(bf: BioFrame, target_sum: float = 1e4) -> BioFrame:
-    """Scale each cell to ``target_sum`` total counts (applied lazily).
+def normalize_total(bf: BioFrame, target_sum: Optional[float] = None) -> BioFrame:
+    """Scale each cell to ``target_sum`` total counts (applied lazily), as ``sc.pp.normalize_total``.
+
+    ``target_sum=None`` (the default, as in scanpy) uses the median of the per-cell totals of
+    the cells kept now that have a total above 0, over the genes kept now; the number is resolved
+    here and recorded, so a later cell filter does not change it. Pass ``target_sum=1e4`` for the
+    value most pipelines use. Not implemented: ``exclude_highly_expressed``, ``max_fraction``,
+    ``layer``.
 
     As in scanpy, each cell is divided by its total over the genes kept *now*. Those
     totals are computed here, in one streamed pass over the raw counts, and stored in
@@ -92,9 +136,9 @@ def normalize_total(bf: BioFrame, target_sum: float = 1e4) -> BioFrame:
     ``highly_variable_genes(subset=True)``, dropping MT- genes) keep the values they
     had and are not renormalised over the remaining genes. Calling ``normalize_total``
     again recomputes the totals over the genes kept at that point, also as in scanpy.
-    The recorded op is ``("normalize_total", target_sum, <totals fingerprint>)``.
+    The recorded op is ``("normalize_total", <resolved target_sum>, <totals fingerprint>)``.
     """
-    if target_sum is None or target_sum <= 0:
+    if target_sum is not None and not target_sum > 0:
         raise ValueError("target_sum must be positive")
     if any(op[0] == "log1p" for op in bf.ops):
         raise ValueError("normalize_total must come before log1p")
@@ -102,9 +146,16 @@ def normalize_total(bf: BioFrame, target_sum: float = 1e4) -> BioFrame:
     kept = totals[bf.obs["cell_id"].to_numpy().astype(np.int64)]
     if not (np.isfinite(kept).all() and (kept >= 0).all()):  # checked once here, not per chunk
         raise ValueError("per-cell totals must be finite and >= 0 (negative or non-finite counts?)")
-    # A data-dependent target (e.g. the median total) must be resolved here, from these
-    # totals at call time, and recorded as a number: a later cell filter would change it.
-    target = float(target_sum)
+    # A data-dependent target (the median total) is resolved here, from these totals at call
+    # time, and recorded as a number: a later cell filter would change it.
+    if target_sum is None:
+        positive = kept[kept > 0]
+        if positive.size == 0:
+            raise ValueError("every cell has a total of 0, so the median total (target_sum=None) is undefined; "
+                             "pass target_sum explicitly")
+        target = float(np.median(positive))
+    else:
+        target = float(target_sum)
     bf.cell_totals = totals
     bf.ops = [op for op in bf.ops if op[0] != "normalize_total"] + [
         ("normalize_total", target, totals_fingerprint(totals))]
@@ -112,14 +163,25 @@ def normalize_total(bf: BioFrame, target_sum: float = 1e4) -> BioFrame:
 
 
 def log1p(bf: BioFrame) -> BioFrame:
-    """Natural log(1 + x) (applied lazily)."""
-    if not any(op[0] == "log1p" for op in bf.ops):
+    """Natural log(1 + x) (applied lazily).
+
+    Differs from ``sc.pp.log1p``, which transforms ``X`` again on every call: one transform is
+    recorded, so a second call changes nothing and emits a ``UserWarning``. ``normalize_total`` after
+    ``log1p`` raises ``ValueError`` (scanpy allows it). ``base``, ``layer`` and ``chunk_size`` are not implemented.
+    """
+    if any(op[0] == "log1p" for op in bf.ops):
+        warnings.warn("log1p was already applied to this BioFrame; the second call is ignored "
+                      "(sc.pp.log1p would transform the values again)", UserWarning, stacklevel=2)
+    else:
         bf.ops.append(("log1p",))
     return bf
 
 
-def scale(bf: BioFrame, max_value: Optional[float] = 10.0) -> BioFrame:
-    """Zero-centre and unit-variance scale with clipping at ±``max_value`` (as ``sc.pp.scale``).
+def scale(bf: BioFrame, max_value: Optional[float] = None) -> BioFrame:
+    """Zero-centre and unit-variance scale, clipping at ±``max_value`` (as ``sc.pp.scale``).
+
+    ``max_value=None`` (the default, as in scanpy) does not clip; pass ``max_value=10`` for the
+    value most pipelines use. Not implemented: ``zero_center=False``, ``layer``, ``mask_obs``.
 
     Recorded for :func:`crest.tl.pca`, which applies it exactly without densifying
     the matrix. Other steps (DE, scores) keep using the log-normalised values,
@@ -239,7 +301,9 @@ def highly_variable_genes(bf: BioFrame, n_top_genes: Optional[int] = None, flavo
     ``flavor="seurat"`` (expects log-normalised data), ``"cell_ranger"``, and
     ``"seurat_v3"`` / ``"seurat_v3_paper"`` (variance-stabilising transform on raw
     counts with a loess mean-variance trend; ``n_top_genes`` required,
-    ``batch_key`` optional; the recorded normalisation is ignored).
+    ``batch_key`` optional; the recorded normalisation is ignored). ``batch_key`` is supported for
+    the ``seurat_v3`` flavours only; with ``"seurat"`` or ``"cell_ranger"`` it raises
+    ``NotImplementedError`` (scanpy computes the dispersions per batch).
 
     Adds var columns ``means``, ``dispersions``, ``dispersions_norm``,
     ``highly_variable`` (``seurat_v3``: ``means``, ``variances``,
@@ -343,6 +407,7 @@ def neighbors(bf: BioFrame, n_neighbors: int = 15, n_pcs: Optional[int] = None, 
     X = np.ascontiguousarray(X, dtype=np.float32)
     idx, dist = _native.knn_graph(X, n_neighbors - 1, exact=exact, seed=random_state)
     rows, cols, w = _native.connectivities(idx, dist, n_neighbors)
+    bf.uns.pop("neighbors_params", None)  # the settings kept by a cell filter are superseded
     bf.uns["neighbors"] = {
         "params": {"n_neighbors": n_neighbors, "n_pcs": n_pcs, "use_rep": use_rep, "method": "umap"},
         "indices": idx, "distances": dist, "rows": rows, "cols": cols, "weights": w,

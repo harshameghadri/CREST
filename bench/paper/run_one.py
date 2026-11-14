@@ -54,10 +54,9 @@ from datasets import REGISTRY  # noqa: E402
 RESOLUTIONS = [0.2, 0.5, 1.0, 1.5, 2.0]
 
 # --------------------------------------------------------------------------- shared parameters
-# Passed identically to BOTH tools. They are kept at the values of the published runs for
-# now. A separate PR switches CREST's defaults to scanpy's (normalize_total target_sum=None,
-# i.e. the median library size, and scale max_value=None); when it lands, set both to None
-# here (CREST currently raises on target_sum=None, so they cannot be switched before that).
+# Passed identically to BOTH tools, and explicitly: both tools default to the median library
+# size (target_sum=None) and no clipping (max_value=None), but the published runs used 1e4 and 10,
+# so these values stay as they are and the timings are unaffected.
 NORMALIZE_TARGET_SUM = 1e4
 SCALE_MAX_VALUE = 10
 N_HVG = 2000
