@@ -355,6 +355,30 @@ def _de_tables_crest(table, genes: np.ndarray):
     return np.array(groups, dtype=str), S, L, P
 
 
+from contextlib import contextmanager
+
+
+@contextmanager
+def _pca_in_place(enabled: bool = True):
+    """Make scanpy's PCA centre the scaled matrix in place (scikit-learn's ``copy=False``) instead of on a copy.
+    The scaled matrix is not used after the PCA, and the result is the same floating-point numbers; it only saves
+    one dense copy (16 GB for 1,000,000 cells x 2,000 genes in float64)."""
+    import sklearn.decomposition as dec
+    original = dec.PCA
+
+    class _InPlacePCA(original):
+        def fit_transform(self, X, y=None):
+            self.copy = False
+            return super().fit_transform(X, y)
+
+    if enabled:
+        dec.PCA = _InPlacePCA
+    try:
+        yield
+    finally:
+        dec.PCA = original
+
+
 # =========================================================================== stage: scanpy
 def stage_scanpy(a) -> None:
     import anndata as ad
@@ -385,7 +409,8 @@ def stage_scanpy(a) -> None:
     genes = np.asarray(adata.var_names, dtype=str)
     adata = adata[:, adata.var.highly_variable].copy()
     sc.pp.scale(adata, max_value=run_one.SCALE_MAX_VALUE)
-    sc.tl.pca(adata, n_comps=run_one.N_PCS, svd_solver="arpack")
+    with _pca_in_place(a.pca_in_place):
+        sc.tl.pca(adata, n_comps=run_one.N_PCS, svd_solver="arpack")
     pca = np.asarray(adata.obsm["X_pca"], np.float32)
     barcodes = np.asarray(adata.obs_names, dtype=str)
     n = len(barcodes)
@@ -478,7 +503,8 @@ def stage_scanpy(a) -> None:
         _save(f, groups=groups, scores=S, lfc=L, padj=P, labels=np.asarray(lab))
         _log(f"scanpy Wilcoxon on the partition of seed {s}")
     json.dump({"tool": "scanpy", "dataset": a.dataset, "n_cells": n, "n_genes": len(genes), "versions": _versions(),
-               "threads": a.threads, "n_mod_seeds": nmod, "mode": a.mode}, open(d / "scanpy_meta.json", "w"), indent=1)
+               "threads": a.threads, "n_mod_seeds": nmod, "mode": a.mode, "pca_in_place": bool(a.pca_in_place)},
+              open(d / "scanpy_meta.json", "w"), indent=1)
     _log("scanpy stage finished")
 
 
@@ -562,6 +588,15 @@ def stage_crest(a) -> None:
             _log("seed-0 graph clustering and modularity done")
         _save(core, **out)
         _log("crest_core.npz written")
+    if have_scanpy and "knn0_on_scanpy_pca" not in np.load(core, allow_pickle=False).files:
+        # the core was written before the scanpy stage had run: add arm C's seed-0 graph now
+        saved = dict(np.load(core, allow_pickle=False))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            idx, *_ = _crest_graph_from_embedding(np.load(d / "scanpy_core.npz")["pca"], 0)
+        saved["knn0_on_scanpy_pca"] = idx.astype(np.int32)
+        _save(core, **saved)
+        _log("crest_core.npz: added the seed-0 graph on scanpy's PCA")
     if knn_only:
         _log("mode knn: crest stage finished")
         return
@@ -937,6 +972,8 @@ def main(argv=None) -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--threads", type=int, default=24)
     ap.add_argument("--mode", choices=["full", "knn"], default="full")
+    ap.add_argument("--pca-in-place", action="store_true",
+                    help="scanpy stage: centre the scaled matrix in place in the PCA (same numbers, one dense copy less)")
     ap.add_argument("--ooc", action="store_true", help="CREST reads the matrix out of core (datasets that do not fit in memory)")
     a = ap.parse_args(argv)
     _threads(a.threads)

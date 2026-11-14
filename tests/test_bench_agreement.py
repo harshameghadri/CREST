@@ -352,6 +352,23 @@ def small_run(tmp_path_factory):
     mp.undo()
 
 
+def test_in_place_pca_gives_the_same_numbers_as_scanpy_default():
+    sc = pytest.importorskip("scanpy")
+    import anndata as ad
+    import sklearn.decomposition as dec
+    rng = np.random.default_rng(7)
+    X = rng.gamma(2.0, 1.0, size=(400, 60)).astype(np.float32)
+    runs = []
+    for in_place in (False, True):
+        a = ad.AnnData(X.copy())
+        sc.pp.scale(a, max_value=10)
+        with ra._pca_in_place(in_place):
+            sc.tl.pca(a, n_comps=10, svd_solver="arpack")
+        runs.append(np.asarray(a.obsm["X_pca"]))
+    assert np.array_equal(runs[0], runs[1])
+    assert dec.PCA.__name__ == "PCA"     # the patch is undone
+
+
 def test_end_to_end_writes_every_registered_metric(small_run):
     n, d = small_run
     res = json.loads((d / "results.json").read_text())
@@ -386,3 +403,20 @@ def test_end_to_end_stages_resume_without_recomputing(small_run):
     ra.main(["crest", "--dataset", "tiny", "--data-dir", str(out.parent), "--out", str(out), "--threads", "2"])
     after = {f.name: f.stat().st_mtime_ns for f in d.glob("*.np*")}
     assert before == after
+
+
+def test_crest_stage_run_before_the_scanpy_stage_is_completed_by_a_second_run(tmp_path, monkeypatch):
+    pytest.importorskip("scanpy")
+    pytest.importorskip("leidenalg")
+    pytest.importorskip("crest")
+    import run_agreement as script
+    monkeypatch.setattr(script, "_threads", lambda n: None)
+    _write_small_dataset(tmp_path)
+    out = tmp_path / "out"
+    common = ["--dataset", "tiny", "--data-dir", str(tmp_path), "--out", str(out), "--threads", "2", "--mode", "knn"]
+    script.main(["crest", *common])
+    assert "knn0_on_scanpy_pca" not in np.load(out / "tiny" / "crest_core.npz").files
+    script.main(["scanpy", *common])
+    script.main(["crest", *common])
+    z = np.load(out / "tiny" / "crest_core.npz")
+    assert z["knn0_on_scanpy_pca"].shape == z["knn0"].shape

@@ -205,3 +205,8 @@ No threshold, metric definition or action has been changed. One diagnostic was a
   The mean ARI of E against A and against C, and the Jaccard index of each approximate kNN graph with the exact graph, are
   reported under `diagnostics.post_hoc_exact_graph_arm` and are labelled post-hoc wherever they appear. They are run on every
   dataset the registered metrics were run on, and do not enter any pass/fail decision.
+* 2026-11-15, memory measure (no change to any value). scanpy's workflow on parse_pbmc_1m (1,000,000 cells x 2,000 genes) was
+  killed by the 40 GB memory limit of the run: the scaled matrix is a dense float64 array of 16 GB and scikit-learn's PCA
+  copies it before centering. For datasets of this size the scanpy stage runs with `--pca-in-place`, which centres the scaled
+  matrix in place (scikit-learn's `copy=False`). The result is the same floating-point numbers (the matrix is not used after
+  the PCA; a test compares both paths bit for bit on a small matrix), and the setting is recorded in `scanpy_meta.json`.
