@@ -1,0 +1,2 @@
+- `group_gene_sums` / `group_gene_totals` (used by pseudobulk aggregation, `rank_genes_groups` statistics and seurat_v3 HVG) copy the group ids before validating and using them and re-check every output index in the kernel, so a second thread rewriting the id array during a call can no longer cause an out-of-bounds write; an invalid id raises `ValueError`.
+- Explicit zeros stored in a sparse matrix are no longer counted as non-zeros in the per-gene non-zero count (`n_cells_expr`) and the per-group non-zero counts.

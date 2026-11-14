@@ -448,7 +448,9 @@ chunk_fn! {
                             sumsq: PyReadwriteArrayDyn<'py, f64>, nnz: PyReadwriteArrayDyn<'py, f64>,
                             clip: Option<Arr<'py, f64>>) -> PyResult<()> {
         let (mut sum, mut sumsq, mut nnz) = (sum, sumsq, nnz);
-        let gr = sl(&group_of_row, "group_of_row")?;
+        // The ids are copied under the GIL and the copy is validated and used: the caller's
+        // array can be rewritten by another Python thread once the GIL is released.
+        let gr: Vec<u32> = sl(&group_of_row, "group_of_row")?.to_vec();
         let shape = sum.shape().to_vec();
         if shape.len() != 2 || shape[1] != nv || sumsq.shape() != shape.as_slice() || nnz.shape() != shape.as_slice() || gr.len() < nr {
             return Err(pyo3::exceptions::PyValueError::new_err("sum, sumsq, nnz must be (n_groups, n_vars); group_of_row (n_rows,)"));
@@ -467,7 +469,7 @@ chunk_fn! {
             None => None,
         };
         let (s, q, z) = (sl_mut(&mut sum, "sum")?, sl_mut(&mut sumsq, "sumsq")?, sl_mut(&mut nnz, "nnz")?);
-        guarded(py, || kernels::group_gene_sums(v, gr, nv, s, Some(q), Some(z), c))?;
+        guarded(py, || kernels::group_gene_sums(v, &gr, nv, s, Some(q), Some(z), c))?.map_err(pyo3::exceptions::PyValueError::new_err)?;
         Ok(())
     }
 }
@@ -476,7 +478,7 @@ chunk_fn! {
     /// Accumulate per (group, var) sums only, (n_groups, n_vars) — pseudobulk aggregation.
     fn group_gene_totals<'py>(py, v, nr, nv, group_of_row: Arr<'py, u32>, sum: PyReadwriteArrayDyn<'py, f64>) -> PyResult<()> {
         let mut sum = sum;
-        let gr = sl(&group_of_row, "group_of_row")?;
+        let gr: Vec<u32> = sl(&group_of_row, "group_of_row")?.to_vec(); // owned copy, see group_gene_sums
         let shape = sum.shape().to_vec();
         if shape.len() != 2 || shape[1] != nv || gr.len() < nr {
             return Err(pyo3::exceptions::PyValueError::new_err("sum must be (n_groups, n_vars); group_of_row (n_rows,)"));
@@ -485,7 +487,7 @@ chunk_fn! {
             return Err(pyo3::exceptions::PyValueError::new_err("group id out of range"));
         }
         let s = sl_mut(&mut sum, "sum")?;
-        guarded(py, || kernels::group_gene_sums(v, gr, nv, s, None, None, None))?;
+        guarded(py, || kernels::group_gene_sums(v, &gr, nv, s, None, None, None))?.map_err(pyo3::exceptions::PyValueError::new_err)?;
         Ok(())
     }
 }
