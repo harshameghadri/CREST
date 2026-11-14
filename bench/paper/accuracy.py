@@ -55,6 +55,30 @@ def _align(a: dict, b: dict):
     return np.array([ia[x] for x in common]), np.array([ib[x] for x in common])
 
 
+def scanpy_knn_indices(distances, n_neighbors: int) -> np.ndarray:
+    """scanpy's kNN graph as (n, n_neighbors - 1) neighbour indices, self excluded, nearest first.
+
+    ``distances`` is ``adata.obsp['distances']``. Depending on the neighbour search scanpy
+    returns either ``n_neighbors - 1`` entries per row (the cell itself is dropped) or
+    ``n_neighbors`` entries including the cell itself as an explicit zero distance (for example
+    the approximate search used for roughly 4,000 cells and more). Entries equal to the row's own
+    index are removed, the rest are sorted by distance and the nearest ``n_neighbors - 1`` are kept,
+    so CREST (``n_neighbors - 1`` neighbours, no self) and scanpy have the same width and
+    neither contains the cell itself. Rows with fewer neighbours are padded with -1."""
+    D = distances.tocsr()
+    n, k = D.shape[0], int(n_neighbors) - 1
+    rows = np.repeat(np.arange(n), np.diff(D.indptr))
+    keep = D.indices != rows
+    rows, cols, dist = rows[keep], D.indices[keep], D.data[keep]
+    order = np.lexsort((cols, dist, rows))  # by row, then distance, then index (deterministic ties)
+    rows, cols = rows[order], cols[order]
+    rank = np.arange(len(rows)) - np.searchsorted(rows, np.arange(n))[rows]
+    out = np.full((n, k), -1, np.int32)
+    sel = rank < k
+    out[rows[sel], rank[sel]] = cols[sel]
+    return out
+
+
 def _knn(X, k=15):
     import crest
     idx, _ = crest.crest.knn_graph(np.ascontiguousarray(X, np.float32), k, exact=None, seed=0)
@@ -90,12 +114,20 @@ def _jaccard_common(A, B):
     return float(np.mean(out)) if out else float("nan")
 
 
-def knn_recall(X, knn, n_query=RECALL_QUERIES, seed=0) -> dict:
+def knn_recall(X, knn, n_query=RECALL_QUERIES, seed=0, k_expected=None) -> dict:
     """Recall@k of a kNN graph (n, k) against exact brute-force neighbours (self excluded)
     for up to ``n_query`` random query cells against all cells, in float64 (distance blocks
-    of at most ~50M entries, i.e. ~0.4 GB, at any n)."""
+    of at most ~50M entries, i.e. ~0.4 GB, at any n).
+
+    Raises ``ValueError`` if a row lists its own index (the cell is not its own neighbour,
+    and counting it would cap the recall below 1) or if ``k_expected`` is given and differs
+    from the width of ``knn``."""
     X = np.asarray(X, np.float64)
     n, k = knn.shape
+    if k_expected is not None and k != k_expected:
+        raise ValueError(f"kNN graph has {k} neighbours per cell, expected {k_expected}")
+    if (knn == np.arange(n)[:, None]).any():
+        raise ValueError("kNN graph lists a cell as its own neighbour (self must be excluded)")
     chunk = int(max(16, min(512, 50_000_000 // max(n, 1))))
     rng = np.random.default_rng(seed)
     q = np.sort(rng.choice(n, min(n_query, n), replace=False))
@@ -148,8 +180,9 @@ def compare(crest_npz: Path, scanpy_npz: Path) -> dict:
     if "knn_indices" in a and "knn_indices" in b:
         m["knn_graph_jaccard"] = _jaccard_common(*_remap_pair(a["knn_indices"], b["knn_indices"], ia, ib))
         m["knn_graph_k"] = int(a["knn_indices"].shape[1])
-        rc = knn_recall(a["pca"], a["knn_indices"])
-        rs = knn_recall(b["pca"], b["knn_indices"])
+        k_graph = a["knn_indices"].shape[1]
+        rc = knn_recall(a["pca"], a["knn_indices"], k_expected=k_graph)
+        rs = knn_recall(b["pca"], b["knn_indices"], k_expected=k_graph)
         m["knn_recall_crest"], m["knn_recall_scanpy"] = rc["recall"], rs["recall"]
         m["knn_recall_n_query"] = rc["n_query"]
     Pa, Pb = a["pca"][ia].astype(np.float64), b["pca"][ib].astype(np.float64)

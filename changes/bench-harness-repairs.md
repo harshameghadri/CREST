@@ -1,0 +1,3 @@
+- The benchmark harness now has unit tests (`tests/test_bench_harness.py`) for its statistics, headline selection, memory baseline, thread-scan defaults and accuracy metrics; they run without benchmark data.
+- Benchmark: scanpy's kNN graph is read as `n_neighbors - 1` neighbours without the cell itself, so `knn_recall_scanpy` and `knn_graph_jaccard` no longer count the cell as a neighbour (recall was capped at 15/16 for roughly 4,000 cells and more).
+- Benchmark: the thread-matched DESeq2 comparison keeps R's results and timings at every thread count, reports R's stderr and carries on when one count fails, scans 1, 2, 4, ..., 64 workers, and records the R, DESeq2 and BiocParallel versions; `crest_paper_bench.sh` ends with a non-zero exit status if any module failed.
