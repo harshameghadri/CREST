@@ -28,7 +28,7 @@ pub mod lowess;
 
 use linalg::{xb, xtwx, xtwz, Lu, ScaledLu};
 use rayon::prelude::*;
-use statrs::distribution::{ChiSquared, ContinuousCDF, FisherSnedecor};
+use statrs::distribution::{ChiSquared, Continuous, ContinuousCDF, FisherSnedecor};
 use statrs::function::gamma::{digamma, ln_gamma};
 
 const LN2: f64 = std::f64::consts::LN_2;
@@ -742,6 +742,31 @@ fn parametric_fit(means: &[f64], disps: &[f64]) -> Option<[f64; 2]> {
     }
 }
 
+/// Quantile of the F distribution to full double precision. `statrs` stops its bisection at a
+/// relative width of about 1e-6, which moves Cook's cut-off `qf(0.99, p, m - p)` away from R's
+/// value in the sixth digit; a few Newton steps on the (accurate) cdf remove that.
+pub(crate) fn f_quantile(d1: f64, d2: f64, q: f64) -> f64 {
+    let f = match FisherSnedecor::new(d1, d2) {
+        Ok(f) => f,
+        Err(_) => return f64::NAN,
+    };
+    let mut x = f.inverse_cdf(q);
+    for _ in 0..50 {
+        let d = f.pdf(x);
+        if !(d > 0.0) || !d.is_finite() {
+            break;
+        }
+        let nx = x - (f.cdf(x) - q) / d;
+        let nx = if nx > 0.0 { nx } else { 0.5 * x };
+        let done = (nx - x).abs() <= 1e-15 * x.abs();
+        x = nx;
+        if done {
+            break;
+        }
+    }
+    x
+}
+
 /// One-predictor `loess(y ~ x, span, degree = 2)` as R computes it (netlib `dloess`
 /// defaults: `surface = "interpolate"`, tricube weights, `family = "gaussian"`):
 /// a 1-d k-d tree splits the sorted `x` until a cell holds at most
@@ -1236,7 +1261,7 @@ pub fn deseq(counts: &[f64], g: usize, d: &Design, sf: Option<Vec<f64>>, poscoun
     // outlier replacement and refit (DESeq2 refitWithoutOutliers)
     let replaceable = d.n_or_more(pa.min_replicates_for_replace);
     if replaceable.iter().any(|&b| b) && m > p {
-        let cutoff = FisherSnedecor::new(p as f64, (m - p) as f64).unwrap().inverse_cdf(0.99);
+        let cutoff = f_quantile(p as f64, (m - p) as f64, 0.99);
         let mut new_counts = counts.to_vec();
         let mut nrefit = 0usize;
         for &i in &nz {
@@ -1423,5 +1448,14 @@ mod tests {
         }
         let pv = prior_var_small_df(&resid, df as f64);
         assert!((pv - x).abs() < 0.1, "{pv}");
+    }
+
+    #[test]
+    fn f_quantile_matches_r_qf() {
+        // qf(0.99, p, m - p) as R prints it (15 digits)
+        for (d1, d2, want) in [(3.0, 9.0, 6.99191722223346), (2.0, 4.0, 18.0), (5.0, 4.0, 15.5218575444252)] {
+            let got = f_quantile(d1, d2, 0.99);
+            assert!((got / want - 1.0).abs() < 1e-12, "{d1} {d2}: {got} vs {want}");
+        }
     }
 }

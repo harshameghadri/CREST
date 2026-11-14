@@ -1,12 +1,13 @@
 # Reference output for the DESeq2 fixtures in this directory (R DESeq2 DESeq() + results()).
 # Run from the repository root:  Rscript tests/data/make_pin_fixtures.R [name ...]
 # Reads deseq2_<name>_input.csv and deseq2_<name>_meta.json (written by make_pin_inputs.py), writes
-# deseq2_<name>_R.csv (plus deseq2_<name>_R_<coef>.csv for each entry of meta$extra_names) and adds the
+# deseq2_<name>_R.csv (plus deseq2_<name>_R_<coef>.csv for each entry of meta$extra_names and deseq2_<name>_R_numeric.csv
+# for meta$numeric_contrast) and adds the
 # R-side quantities and the package versions to the meta json.
 suppressMessages({library(DESeq2); library(jsonlite)})
 d <- Sys.getenv("CREST_FIXTURE_DIR", "tests/data")
 all_names <- c("prior_2v2_sd10", "prior_2v2_sd15", "prior_2v3", "prior_3v2", "refit_outliers", "very_large_counts",
-               "filtering_cooks", "trend_fallback", "poscounts", "covariate", "lrt_cooks")
+               "filtering_cooks", "trend_fallback", "poscounts", "covariate", "lrt_cooks", "contrast_zero_mask")
 args <- commandArgs(trailingOnly = TRUE)
 names_to_run <- if (length(args)) args else all_names
 
@@ -44,6 +45,10 @@ for (name in names_to_run) {
   write_res(res, dds, file.path(d, paste0("deseq2_", name, "_R.csv")))
   for (cn in meta$extra_names) {
     write_res(results(dds, name = cn), dds, file.path(d, paste0("deseq2_", name, "_R_", cn, ".csv")))
+  }
+  if (!is.null(meta$numeric_contrast)) {
+    write_res(results(dds, contrast = as.numeric(meta$numeric_contrast)), dds,
+              file.path(d, paste0("deseq2_", name, "_R_numeric.csv")))
   }
   dfun <- dispersionFunction(dds)
   m <- ncol(dds); p <- ncol(model.matrix(design(dds), colData(dds)))

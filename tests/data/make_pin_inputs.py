@@ -120,6 +120,15 @@ def main():
     write("lrt_cooks", cts, {"condition": cond.tolist()}, "~ condition", ["condition", "c2", "c0"],
           test="LRT", reduced="~ 1")
 
+    # three groups of eight: gene 0 is non-zero in two samples of c0 (3 counts) and in one sample of c1 (100 counts);
+    # the c1 count is a Cook's outlier and is replaced by zero before the refit, so c1 and c2 have no counts left
+    cts, cond = simulate(300, (8, 8, 8), 91, mean_log2=(5, 1.5), disp=lambda mu: 1 / mu + 0.1, de_frac=0.1)
+    cts[0] = 0
+    cts[0, [0, 1]] = 3
+    cts[0, 8] = 100
+    write("contrast_zero_mask", cts, {"condition": cond.tolist()}, "~ condition", ["condition", "c1", "c2"],
+          numeric_contrast=[0, 1, -1])
+
 
 if __name__ == "__main__":
     main()

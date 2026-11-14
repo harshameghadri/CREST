@@ -586,8 +586,7 @@ fn deseq2_fit<'py>(
         out.set_item("betaConvReduced", b(bc))?;
     }
     let cutoff = if m > p {
-        use statrs::distribution::{ContinuousCDF, FisherSnedecor};
-        FisherSnedecor::new(p as f64, (m - p) as f64).map(|f| f.inverse_cdf(0.99)).unwrap_or(f64::NAN)
+        crate::deseq::f_quantile(p as f64, (m - p) as f64, 0.99)
     } else {
         f64::NAN
     };
