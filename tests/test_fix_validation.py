@@ -64,8 +64,8 @@ def test_out_of_range_cell_ids_raise_in_kernels():
     # triplet form: cell 25 >= len(cell_map) == 20
     genes, vals = np.array([0, 1, 2], np.uint32), np.ones(3, np.float32)
     with pytest.raises(ValueError, match="cell index out of range"):
-        _native.materialize(genes, vals, cmap, gmap, 0.0, False, np.array([0, 3, 25], np.uint32), None, 0)
-    rows, _, _ = _native.materialize(genes, vals, cmap, gmap, 0.0, False, np.array([0, 3, 19], np.uint32), None, 0)
+        _native.materialize(genes, vals, cmap, gmap, 0.0, False, None, np.array([0, 3, 25], np.uint32), None, 0)
+    rows, _, _ = _native.materialize(genes, vals, cmap, gmap, 0.0, False, None, np.array([0, 3, 19], np.uint32), None, 0)
     assert len(rows) == 3
 
 
