@@ -14,7 +14,7 @@ from . import crest as _native
 from .pp import gene_stats, _mean_var
 from .deseq2 import DESeq2, Pseudobulk, deseq2, pseudobulk, pseudobulk_de  # noqa: F401
 from .harmony import harmony  # noqa: F401
-from .ingest import ingest  # noqa: F401
+from .ingest import _unique_positions, ingest  # noqa: F401
 
 __all__ = ["pca", "leiden", "umap", "rank_genes_groups", "score_genes",
            "pseudobulk", "pseudobulk_de", "deseq2", "DESeq2", "Pseudobulk", "harmony",
@@ -92,7 +92,9 @@ def pca(bf: BioFrame, n_comps: int = 50, use_highly_variable: Optional[bool] = N
     bf.uns["pca"] = {"variance": variance, "variance_ratio": variance / total,
                      "params": {"scale": bool(scale), "max_value": max_value, "use_highly_variable": bool(use_highly_variable)},
                      # what crest.tl.ingest needs to project new cells onto these PCs
-                     "projection": {"genes": [g for g, m in zip(bf.var_names, mask) if m], "loadings": loadings,
+                     "projection": {"genes": [g for g, m in zip(bf.var_names, mask) if m],
+                                    "gene_ids": None if bf.gene_ids is None else [g for g, m in zip(bf.gene_ids, mask) if m],
+                                    "loadings": loadings,
                                     "mean": mean, "std": std, "shift": shift, "ops": list(bf.ops)}}
     return bf
 
@@ -351,10 +353,36 @@ def rank_genes_groups(bf: BioFrame, groupby: str, method: str = "t-test", groups
 def score_genes(bf: BioFrame, gene_list: Sequence[str], ctrl_size: int = 50, n_bins: int = 25,
                 random_state: int = 0, score_name: str = "score", ctrl_as_ref: bool = True) -> BioFrame:
     """Gene-set score (mean of set − mean of expression-matched control genes),
-    reproducing ``sc.tl.score_genes`` including its control-gene sampling."""
+    reproducing ``sc.tl.score_genes`` including its control-gene sampling.
+
+    Genes in ``gene_list`` are looked up by name (``bf.var_names``) and, if ``var`` has a ``gene_ids``
+    column, also by gene id. Names that are not in ``var`` are skipped. A name that matches
+    several genes of ``var`` (Cell Ranger feature tables repeat some symbols) raises ``ValueError``
+    naming it: pass the gene's id instead, or filter the duplicates out first. (scanpy refuses every
+    AnnData with non-unique ``var_names``; CREST refuses only a repeated name in ``gene_list``.)
+    """
     names = bf.var_names
-    pos = {n: i for i, n in enumerate(names)}
-    glist = [g for g in dict.fromkeys(gene_list) if g in pos]
+    name_pos: dict = {}
+    for i, g in enumerate(names):
+        name_pos.setdefault(g, []).append(i)
+    ids = bf.gene_ids
+    id_pos = {} if ids is None else _unique_positions(ids)
+    pos, glist, ambiguous = {}, [], []
+    for g in dict.fromkeys(gene_list):
+        where = name_pos.get(g, [])
+        if len(where) == 1:
+            pos[g] = where[0]
+        elif g in id_pos:
+            pos[g] = id_pos[g]
+        elif len(where) > 1:
+            ambiguous.append(g)
+            continue
+        else:
+            continue
+        glist.append(g)
+    if ambiguous:
+        raise ValueError(f"score_genes: {len(ambiguous)} names in gene_list match more than one gene in var: "
+                         f"{ambiguous[:10]}; give the gene ids instead, or remove the duplicates first")
     if not glist:
         raise ValueError("no genes of gene_list are in var")
     n = bf.n_obs

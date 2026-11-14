@@ -12,7 +12,7 @@ from typing import Optional, Sequence
 import numpy as np
 import polars as pl
 
-from .core import BioFrame, totals_fingerprint
+from .core import BioFrame, _warn_if_not_counts, totals_fingerprint
 from . import crest as _native
 
 __all__ = [
@@ -174,6 +174,7 @@ def _hvg_seurat_v3(bf: BioFrame, n_top_genes: int, batch_key: Optional[str], spa
     """``sc.pp.highly_variable_genes(flavor="seurat_v3")`` on raw counts, two streamed passes."""
     from ._loess import loess_fit
 
+    _warn_if_not_counts(bf.store, "highly_variable_genes(flavor='seurat_v3')", stacklevel=5)
     V = bf.n_vars
     if batch_key is None:
         grp = np.zeros(bf.n_obs, np.uint32)

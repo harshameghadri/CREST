@@ -38,6 +38,12 @@ bf = crest.pp.filter_cells(bf, min_genes=200, max_pct_mt=20)
 bf = crest.pp.filter_genes(bf, min_cells=3)
 ```
 
+The readers expect **raw integer UMI counts**, the input CREST is validated on. A `UserWarning`
+is raised when the matrix holds negative values or non-integers (for example a log-normalised
+`.h5ad`), because normalisation, `seurat_v3` and DESeq2 would then be applied to the wrong
+quantity. Counts are stored as `float32`, so integers above 2**24 are not exact. A legacy (v2)
+10x file with several genomes needs `genome=`: `crest.read_10x_h5(path, genome="mm10")`.
+
 Unlike scanpy, the filters **return** a new `BioFrame`, so assign the result. The new object
 shares the count matrix with the old one (it is not copied); only the tables of kept cells
 and genes are new.
@@ -170,6 +176,9 @@ import crest
 adata = sc.read_loom("sample.loom")       # or sc.read_visium(...), ad.read_zarr(...), ...
 bf = crest.BioFrame.from_anndata(adata)   # carries over every obs/var column, and obsm
 ```
+
+`read_h5ad` keeps anndata's nullable integer, boolean and string columns (missing values
+become nulls) and warns about any column in an encoding it cannot read.
 
 This loads the whole matrix into memory first (unlike `read_10x_h5(..., backed=...)`), so for
 files too large for that, convert to `.h5ad` and use `crest.read_h5ad` instead.
