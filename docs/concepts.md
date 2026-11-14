@@ -41,8 +41,8 @@ fields:
 | field | type | contents |
 |---|---|---|
 | `store` | `CSRStore` / `FrameStore` / `ParquetStore` | the raw counts (never modified) |
-| `obs` | `polars.DataFrame` | one row per **kept** cell; `cell_id` = row in the store |
-| `var` | `polars.DataFrame` | one row per **kept** gene; `gene_id` = column in the store |
+| `obs` | `polars.DataFrame` | one row per **kept** cell; `cell_id` = row in the store (assigned by the constructors; an input column of that name is kept as `cell_id_orig`) |
+| `var` | `polars.DataFrame` | one row per **kept** gene; `gene_id` = column in the store (an input column of that name is kept as `gene_id_orig`) |
 | `obsm` | `dict[str, ndarray]` | per-cell embeddings: `X_pca`, `X_umap`, `X_pca_harmony` |
 | `varm` | `dict[str, ndarray]` | per-gene matrices: `PCs` |
 | `uns` | `dict` | everything else: parameters, the kNN graph, DE tables |
