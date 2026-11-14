@@ -14,9 +14,9 @@ metadata:
 | you call | what CREST stores |
 |---|---|
 | `pp.filter_cells`, `pp.filter_genes`, `bf.filter_cells(expr)` | which cells / genes are kept (`obs["cell_id"]`, `var["gene_id"]` point into the raw store) |
-| `pp.normalize_total(bf, 1e4)` | `("normalize_total", 1e4, <totals fingerprint>)` appended to `bf.ops`; each cell's total over the kept genes (one pass) in `bf.cell_totals`, so later filters do not renormalise (as in scanpy) |
+| `pp.normalize_total(bf, 1e4)` (`target_sum=None`: the median total) | `("normalize_total", 1e4, <totals fingerprint>)` appended to `bf.ops`; each cell's total over the kept genes (one pass) in `bf.cell_totals`, so later filters do not renormalise (as in scanpy) |
 | `pp.log1p(bf)` | `("log1p",)` appended to `bf.ops` |
-| `pp.scale(bf, max_value=10)` | `bf.uns["scale"] = {"max_value": 10}` |
+| `pp.scale(bf, max_value=10)` (`max_value=None`: no clipping) | `bf.uns["scale"] = {"max_value": 10}` |
 
 Every computing step (QC, HVG, PCA, DE, scores, pseudobulk) then streams the raw counts **one
 chunk at a time** into a Rust kernel. The kernel applies the filters and transforms to each
@@ -124,14 +124,14 @@ cells, barely slower on small data (where out-of-core also saves nothing).
 | `tl.score_genes` | obs `<score_name>` |
 | `tl.harmony` | `obsm["X_pca_harmony"]`, `uns["harmony"]` |
 | `pp.scrublet` | obs `doublet_score`, `predicted_doublet`, `doublet_z`; `uns["scrublet"]` |
-| `tl.ingest` (on the query) | `obsm["X_pca"]`, `obsm["X_umap"]`, obs `<label>` + `<label>_confidence`; `uns["ingest"]` (neighbours used) |
+| `tl.ingest` (on the query) | `obsm["X_pca"]`, `obsm["X_umap"]`, obs `<label>` + `<label>_confidence`; `uns["ingest"]` (neighbours used). Reads `n_neighbors` / `n_pcs` from the reference's `uns["neighbors"]["params"]`, or from `uns["neighbors_params"]`, which a cell filter leaves behind when it drops the graph |
 | `tl.pseudobulk_de` | returns a Polars table; `uns["pseudobulk_de"]` |
 
 ## Which values each step uses
 
 | step | uses |
 |---|---|
-| QC, filters, `seurat_v3` HVG, Scrublet, pseudobulk / DESeq2 | **raw counts** (the recorded transforms are ignored) |
+| QC, filters, `seurat_v3` HVG, Scrublet, pseudobulk / DESeq2 | **raw counts** (the recorded transforms are ignored; the count thresholds of `filter_cells` / `filter_genes` and `calculate_qc_metrics` take `transformed=True` to use the current values as scanpy does) |
 | `seurat` / `cell_ranger` HVG, DE, `score_genes` | **log-normalised** values (what `adata.raw` holds in scanpy) |
 | PCA | log-normalised, then **scaled and clipped** if `pp.scale` was called |
 | neighbors, Leiden, UMAP, Harmony, ingest | the embedding in `obsm` (`X_pca` by default) |

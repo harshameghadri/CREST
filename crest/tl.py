@@ -48,7 +48,10 @@ def pca(bf: BioFrame, n_comps: int = 50, use_highly_variable: Optional[bool] = N
     symmetric eigendecomposition gives the loadings, and a second pass projects
     the cells. With scaling (``crest.pp.scale`` or ``scale=True``) the result
     equals ``sc.pp.scale(max_value) + sc.tl.pca`` on the dense matrix, but the
-    dense matrix is never formed. Memory: one chunk + a genes² matrix.
+    dense matrix is never formed; ``scale=True`` without ``crest.pp.scale`` does not clip
+    (``max_value=None``, as ``sc.pp.scale``). Memory: one chunk + a genes² matrix.
+    If ``n_comps`` is at least the number of genes (or cells), ``min(n_comps, genes, cells - 1)``
+    components are returned with a ``UserWarning`` (scanpy raises an error).
 
     Adds ``obsm['X_pca']``, ``varm['PCs']``, ``uns['pca']`` (variance, variance_ratio).
     """
@@ -63,7 +66,7 @@ def pca(bf: BioFrame, n_comps: int = 50, use_highly_variable: Optional[bool] = N
     if scale is None:
         scale = "scale" in bf.uns
     if max_value is None:
-        max_value = bf.uns.get("scale", {}).get("max_value", 10.0) if scale else 0.0
+        max_value = bf.uns.get("scale", {}).get("max_value", 0.0) if scale else 0.0
     gmap = np.full(bf.n_vars, -1, np.int32)
     gmap[mask] = np.arange(d, dtype=np.int32)
     mean = std = None
@@ -76,6 +79,9 @@ def pca(bf: BioFrame, n_comps: int = 50, use_highly_variable: Optional[bool] = N
     for ctx in bf.iter_ctx():
         _native.gram_accumulate(*ctx, gmap, gram, colsum, scale, mean, std, float(max_value or 0.0))
     k = min(n_comps, d, n - 1)
+    if k < n_comps:
+        warnings.warn(f"n_comps={n_comps} exceeds the {d} genes / {n} cells available; returning {k} components "
+                      "(sc.tl.pca raises an error here)", UserWarning, stacklevel=2)
     variance, loadings, total = _native.pca_from_gram(gram, colsum, n, k)
     del gram
 

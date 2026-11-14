@@ -197,12 +197,28 @@ files too large for that, convert to `.h5ad` and use `crest.read_h5ad` instead.
 
 ## Defaults that differ from scanpy
 
-These defaults differ from scanpy's (checked against the signatures in scanpy 1.11.5). Each
-is also noted in the function's docstring. Pass the scanpy value explicitly if you want
-scanpy's behaviour.
+`normalize_total` and `scale` follow scanpy: `normalize_total(bf)` scales every cell to the
+median of the per-cell totals (`target_sum=None`) and `scale(bf)` does not clip
+(`max_value=None`). Earlier versions defaulted to `target_sum=1e4` and `max_value=10`; the
+examples here pass those two values explicitly, as most published pipelines do. The remaining
+differences (checked against the signatures in scanpy 1.11.5) are also noted in each function's
+docstring. Pass the scanpy value explicitly if you want scanpy's behaviour.
 
 | function | CREST default | scanpy 1.11 default | note |
 |---|---|---|---|
 | `tl.rank_genes_groups` | `n_genes=100` | `n_genes=None` (all genes) | `n_genes=None` returns all genes in CREST too |
 | `tl.leiden` | `n_iterations=2` | `n_iterations=-1` (until no improvement), `flavor="leidenalg"` | CREST has one implementation and no `flavor`. scanpy 1.11 warns that its future default is `flavor="igraph", n_iterations=2`, which is also what the benchmarks compare against |
 | `pp.regress_out` | not implemented | available | use `sc.pp.regress_out` on `bf.to_anndata()` if you need it |
+
+## Behaviour that differs from scanpy
+
+| | CREST | scanpy |
+|---|---|---|
+| `pp.filter_cells` / `pp.filter_genes` with `min_counts`, `max_counts` (and `max_pct_mt`) after `normalize_total` or `log1p` | evaluated on the **raw counts**, with a `UserWarning`; `transformed=True` evaluates the current values | evaluated on the current `X` |
+| `pp.log1p` called twice | one transform is recorded; the second call warns and changes nothing | transforms again |
+| `pp.normalize_total` after `pp.log1p` | `ValueError` | allowed |
+| `pp.highly_variable_genes(batch_key=...)` | only for `flavor="seurat_v3"` / `"seurat_v3_paper"`; `NotImplementedError` for `"seurat"` and `"cell_ranger"` | all flavours |
+| `tl.pca(n_comps=...)` with `n_comps` at least the number of genes or cells | returns the available components and warns | raises an error |
+| `pct_counts_mt` of a cell with total 0 | `NaN`, so `filter_cells(max_pct_mt=...)` removes it | `NaN` |
+| `ingest` on a reference whose cells were filtered | keeps the reference's `n_neighbors` and `n_pcs`; `ValueError` if the reference never had neighbours and `n_neighbors` is not given | needs `pp.neighbors` on the reference |
+| arguments not implemented | `normalize_total`: `exclude_highly_expressed`, `max_fraction`, `layer`; `scale`: `zero_center`, `layer`, `mask_obs`; `log1p`: `base`, `layer` | available |

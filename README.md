@@ -188,8 +188,9 @@ from_anndata`, `write_parquet` / `read_parquet`, `to_anndata`, `to_scipy`.
 * `ingest` places query cells in the reference UMAP by umap-learn's transform
   initialisation (no further optimisation).
 * UMAP layouts are deterministic for a fixed thread count, not across thread counts.
-* No `regress_out`. A few defaults differ from scanpy's (`rank_genes_groups` `n_genes=100`,
-  `leiden` `n_iterations=2`); see the [quickstart](https://crest-sc.readthedocs.io/en/latest/quickstart.html#defaults-that-differ-from-scanpy).
+* No `regress_out`. `normalize_total` and `scale` use scanpy's defaults (the median total and no
+  clipping; the examples above pass `target_sum=1e4` and `max_value=10` explicitly). A few other defaults differ
+  from scanpy's (`rank_genes_groups` `n_genes=100`, `leiden` `n_iterations=2`); see the [quickstart](https://crest-sc.readthedocs.io/en/latest/quickstart.html#defaults-that-differ-from-scanpy).
 
 ## Why "Chunked"?
 
