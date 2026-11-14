@@ -1,0 +1,3 @@
+- The native bindings now raise `ValueError` for Fortran-ordered (non C-contiguous) arrays instead of reading them in memory order; this covers kNN, connectivities, Harmony, DESeq2 and the chunk kernels' matrices and output buffers.
+- Leiden and UMAP reject NaN, infinite and negative edge weights and (UMAP) `min_dist > spread`; Leiden warns when the largest edge weight is below 1e-6, where its absolute tolerances break down.
+- `knn_graph` / `knn_query` reject `k=0` and warn when `k` is clamped to the number of points; `t_pvalues` is accurate for extreme degrees of freedom; the Wilcoxon rank-sum binding raises when a gene has more entries than cells; panics inside the native bindings surface as `RuntimeError` instead of `PanicException`.

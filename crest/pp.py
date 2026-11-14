@@ -333,7 +333,8 @@ def neighbors(bf: BioFrame, n_neighbors: int = 15, n_pcs: Optional[int] = None, 
     """kNN graph + UMAP fuzzy connectivities (``sc.pp.neighbors`` with method="umap").
 
     ``n_neighbors`` counts the cell itself, as in scanpy. ``exact=None`` uses exact
-    search up to 20k cells and the IVF + NN-descent index above.
+    search up to 20k cells and the IVF + NN-descent index above. ``n_neighbors`` must be at
+    least 2; a value above the number of cells is clamped, with a ``RuntimeWarning``.
     """
     if use_rep not in bf.obsm:
         raise KeyError(f"{use_rep!r} not in obsm; run crest.tl.pca first")

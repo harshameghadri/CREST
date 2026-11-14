@@ -114,6 +114,12 @@ def leiden(bf: BioFrame, resolution: float = 1.0, n_iterations: int = 2, random_
     ``flavor="igraph", n_iterations=2``. CREST has one implementation (Traag et
     al. 2019) and no ``flavor`` argument.
 
+    Edge weights must be finite and non-negative (``ValueError`` otherwise). Leiden's move
+    tolerances are absolute, so the graph should be on the scale of the ``crest.pp.neighbors``
+    connectivities (weights up to about 1): a ``RuntimeWarning`` is emitted when the largest
+    weight is below 1e-6, and the partition collapses to singletons near 1e-12. Rescale such
+    weights, e.g. by dividing them by their maximum.
+
     ``n_iterations`` is the number of Leiden iterations, as in scanpy; iterating
     stops early once the partition no longer changes, and a negative value
     (scanpy's ``-1``) iterates until that happens (capped at 10,000 iterations,
@@ -201,7 +207,9 @@ def umap(bf: BioFrame, min_dist: float = 0.5, spread: float = 1.0, n_components:
     """UMAP embedding of the neighbour graph (scanpy defaults: min_dist=0.5).
 
     umap-learn's objective and default parameters, with CREST's own iterative
-    spectral initialisation. With more than one thread (and at least 1,000
+    spectral initialisation. ``min_dist`` must not exceed ``spread`` (umap-learn's rule;
+    ``scanpy.tl.umap`` accepts it) and the graph weights must be finite and non-negative.
+    With more than one thread (and at least 1,000
     cells) the SGD runs in parallel with a different schedule than on one
     thread, so layouts are deterministic for a fixed thread count but differ
     between thread counts.

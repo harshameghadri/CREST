@@ -138,3 +138,11 @@ All of these are also available as `crest.tl.<name>`.
 argument tuples yielded by {meth}`BioFrame.iter_ctx <crest.BioFrame.iter_ctx>` plus
 preallocated NumPy output arrays. Use the Python API above. The native functions are listed
 in {doc}`development` for contributors.
+
+The bindings validate what they are given and raise `ValueError` (never a silent wrong
+result) for arrays that are not C-contiguous (including Fortran-ordered matrices), for
+indices out of range, for NaN, infinite or negative edge weights, for `k < 1`, and for
+more Wilcoxon entries than cells. `knn_graph` / `knn_query` warn when `k` exceeds the
+number of available points and clamp it. Leiden warns when the largest edge weight is below
+1e-6: its tolerances are absolute, and the partition collapses to singletons near 1e-12.
+A panic inside a kernel is reported as `RuntimeError`.

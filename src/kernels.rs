@@ -477,6 +477,31 @@ pub fn collect_gene_block(v: ChunkView, group_of_row: &[u32], lo: u32, hi: u32) 
     (a, b, c)
 }
 
+/// Checks the input of `wilcoxon_rank_sums`: ids in range, and no more non-zero
+/// entries of a gene in a group than the group has cells (a repeated (cell, gene)
+/// pair would otherwise make the unsigned zero counts wrap around).
+pub fn check_rank_sum_counts(genes: &[u32], values: &[f32], groups: &[u32], n_genes: usize, group_sizes: &[u64]) -> Result<(), String> {
+    let n_groups = group_sizes.len();
+    let mut nnz = vec![0u64; n_groups * n_genes];
+    for ((&g, &v), &grp) in genes.iter().zip(values).zip(groups) {
+        if g as usize >= n_genes || grp as usize >= n_groups {
+            return Err("gene or group index out of range".into());
+        }
+        if v != 0.0 {
+            nnz[grp as usize * n_genes + g as usize] += 1;
+        }
+    }
+    for (i, &c) in nnz.iter().enumerate() {
+        if c > group_sizes[i / n_genes.max(1)] {
+            return Err(format!(
+                "gene {} has {} non-zero entries in group {}, which has {} cells: more entries than cells (is a (cell, gene) pair repeated?)",
+                i % n_genes.max(1), c, i / n_genes.max(1), group_sizes[i / n_genes.max(1)]
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Wilcoxon rank sums of every group vs the rest, per gene, exploiting sparsity:
 /// all implicit zeros form one tie block, so only non-zero values are sorted.
 ///
@@ -687,3 +712,24 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod rank_sum_count_tests {
+    use super::*;
+
+    #[test]
+    fn test_more_entries_than_cells_is_an_error_not_a_wrap() {
+        // three non-zero entries of one gene in a group of two cells
+        let r = check_rank_sum_counts(&[0, 0, 0], &[1.0, 2.0, 3.0], &[0, 0, 0], 1, &[2]);
+        assert!(r.unwrap_err().contains("more entries than cells"));
+        // per group: group 1 has one cell but two entries
+        let r = check_rank_sum_counts(&[0; 4], &[1.0, 2.0, 3.0, 4.0], &[0, 0, 1, 1], 1, &[3, 1]);
+        assert!(r.is_err());
+        // explicit zeros are not entries; counts equal to the group size are fine
+        assert!(check_rank_sum_counts(&[0, 0, 0], &[1.0, 0.0, 3.0], &[0, 0, 0], 1, &[2]).is_ok());
+        assert!(check_rank_sum_counts(&[0, 0], &[1.0, 3.0], &[0, 0], 1, &[2]).is_ok());
+        // ids out of range
+        assert!(check_rank_sum_counts(&[1], &[1.0], &[0], 1, &[2]).is_err());
+        assert!(check_rank_sum_counts(&[0], &[1.0], &[1], 1, &[2]).is_err());
+    }
+}
