@@ -197,17 +197,34 @@ def leiden_sweep(bf: BioFrame, resolutions: Sequence[float] = (0.1, 0.2, 0.4, 0.
 
 
 def umap(bf: BioFrame, min_dist: float = 0.5, spread: float = 1.0, n_components: int = 2,
-         n_epochs: Optional[int] = None, random_state: int = 0) -> BioFrame:
+         n_epochs: Optional[int] = None, random_state: int = 0,
+         spectral_max_matvec: Optional[int] = None) -> BioFrame:
     """UMAP embedding of the neighbour graph (scanpy defaults: min_dist=0.5).
 
-    umap-learn's objective and default parameters, with CREST's own iterative
-    spectral initialisation. With more than one thread (and at least 1,000
-    cells) the SGD runs in parallel with a different schedule than on one
-    thread, so layouts are deterministic for a fixed thread count but differ
-    between thread counts.
+    umap-learn's objective and default parameters, with CREST's own spectral
+    initialisation. The initial layout is the set of smallest non-trivial
+    eigenvectors of the normalised graph Laplacian, as in umap-learn, computed by a
+    restarted Lanczos iteration that runs until the eigenvector residuals are below
+    1e-7 (it is deterministic given ``random_state`` and independent of the number
+    of threads). A graph with several connected components is laid out component by
+    component, as umap-learn does: for up to ``2 * n_components`` components the
+    anchors are the points ``+-e_i``, for more components they sit on a regular grid
+    (umap-learn places them from the data centroids, which are not available from a
+    graph), and each component is scaled into a box around its anchor.
+
+    ``spectral_max_matvec`` caps the matrix-vector products spent per component
+    (default: five per cell, between 1,000 and 50,000). When the cap is reached
+    before the tolerance is met a ``RuntimeWarning`` is issued and the layout starts
+    from the approximate eigenvectors.
+
+    With more than one thread (and at least 1,000 cells) the SGD runs in parallel
+    with a different schedule than on one thread, so layouts are deterministic for
+    a fixed thread count but differ between thread counts. Layouts differ from
+    those of earlier releases, whose initial layout was not converged.
     """
     rows, cols, w = _graph(bf)
-    bf.obsm["X_umap"] = _native.umap(bf.n_obs, rows, cols, w, n_components, min_dist, spread, n_epochs, 100, random_state)
+    bf.obsm["X_umap"] = _native.umap(bf.n_obs, rows, cols, w, n_components, min_dist, spread, n_epochs,
+                                      spectral_max_matvec, random_state)
     return bf
 
 
