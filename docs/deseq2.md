@@ -25,6 +25,24 @@ ds.dispersions()                                     # dispGeneEst, dispFit, dis
 Parquet). It ignores any recorded `normalize_total`/`log1p`, so it always sums
 raw integer counts.
 
+`pseudobulk_de` tests every group in turn. A group that cannot support the model
+(a factor with a single level, a rank-deficient design, no replicates, no usable
+counts, a contrast level that is absent from it) is skipped; the skipped groups and the
+reason for each are named in one warning and stored in
+`bf.uns["pseudobulk_de"]["skipped"]`, next to the contrast label each tested group used
+(`["contrast"]`). A mistake in the call is raised instead of skipped: negative or
+fractional counts, a malformed formula, a design variable that is not a column of `obs`,
+a contrast with an unknown level or coefficient. If no group can be tested,
+`crest.deseq2.NotEstimableError` (a `ValueError`) is raised.
+
+Factor levels are sorted by code point (upper case before lower case) and the first is
+the reference, so `["ctrl", "Stim"]` gives the reference `Stim` and the default contrast
+`condition_ctrl_vs_Stim`. R in an en_US locale sorts case-insensitively and would pick
+`ctrl`; when the two orders differ and no `ref_levels` is given, a
+`crest.deseq2.LevelOrderWarning` names both. `DESeq2.last_contrast` records the contrast
+that `results()` computed. Two terms that produce the same coefficient name raise a
+`ValueError`, since a contrast could not tell them apart.
+
 ## What is implemented (and matches R)
 
 | DESeq2 step | CREST |
@@ -97,4 +115,12 @@ R ran single-threaded (`DESeq()` without BiocParallel) and pydeseq2 on all cores
    deterministic but differs from R's Monte-Carlo value by a few percent. With
    3+ residual df the closed form is used and the results agree exactly.
 4. **Parametric trend failure.** R substitutes a local regression (`locfit`).
-   CREST uses the mean dispersion and reports it in `DESeq2.fit["messages"]`.
+   CREST uses the mean dispersion, which is not equivalent: on small or low-count
+   inputs the dispersion trend, the prior variance and the significant genes can
+   differ markedly from R's. When it happens `DESeq2.fit["fit_substituted"]` is `True`,
+   `fit["fitType"]` is `"mean"`, `fit["messages"]` says so, and a `UserWarning` states
+   that the results will differ from R (`quiet=True` silences the warning, not the
+   flag). Check the flag before comparing with R. A parametric fit that fails for
+   numerical reasons only (for example at counts in the hundreds of millions) is no
+   longer a cause: the normal equations of the trend fit are equilibrated before the
+   pivot test.

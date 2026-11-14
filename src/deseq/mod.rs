@@ -26,7 +26,7 @@
 pub(crate) mod linalg;
 pub mod lowess;
 
-use linalg::{xb, xtwx, xtwz, Lu};
+use linalg::{xb, xtwx, xtwz, Lu, ScaledLu};
 use rayon::prelude::*;
 use statrs::distribution::{ChiSquared, ContinuousCDF, FisherSnedecor, Normal};
 use statrs::function::gamma::{digamma, ln_gamma};
@@ -269,6 +269,9 @@ pub struct Fit {
     pub lrt_stat: Option<Vec<f64>>,
     pub lrt_pvalue: Option<Vec<f64>>,
     pub fit_type: FitType,
+    /// The parametric trend was requested but did not fit, and the mean trend was used instead
+    /// (DESeq2 would use a local regression, so results differ from R's).
+    pub fit_substituted: bool,
     pub trend: Vec<f64>,
     pub disp_prior_var: f64,
     pub var_log_disp_ests: f64,
@@ -682,7 +685,7 @@ fn gamma_identity_glm(means: &[f64], disps: &[f64], start: [f64; 2]) -> Option<(
         }).collect();
         let a = xtwx(&x, n, 2, &w);
         let b = xtwz(&x, n, 2, &w, disps);
-        let sol = Lu::new(a, 2)?.solve(&b);
+        let sol = ScaledLu::new(&a, 2)?.solve(&b);
         let mut cand = [sol[0], sol[1]];
         let mut dev = dev_of(&cand);
         let mut ii = 0;
@@ -932,7 +935,7 @@ struct Stage {
 #[allow(clippy::too_many_arguments)]
 fn fit_genes(
     counts: &[f64], genes: &[usize], sf: &[f64], d: &Design, pa: &Params, xim: f64,
-    trend: &dyn Fn(&[f64], &[f64]) -> (Vec<f64>, f64, f64), base_mean: &[f64],
+    trend: &dyn Fn(&[f64], &[f64]) -> (Vec<f64>, f64, f64), base_mean: &[f64], first_pass: bool,
 ) -> (Stage, f64, f64) {
     let m = d.m;
     let ys: Vec<&[f64]> = genes.iter().map(|&i| &counts[i * m..(i + 1) * m]).collect();
@@ -941,7 +944,9 @@ fn fit_genes(
     let bm: Vec<f64> = genes.iter().map(|&i| base_mean[i]).collect();
     let (disp_fit, prior_var, var_log) = trend(&bm, &gest);
     let mus: Vec<Vec<f64>> = ge.iter().map(|g| g.mu.clone()).collect();
-    let all_small = gest.iter().all(|&g| g < pa.min_disp * 100.0);
+    // DESeq2 takes this shortcut only when it estimates the trend (first pass); the refit
+    // after outlier replacement reuses the frozen trend and prior and always runs the MAP step.
+    let all_small = first_pass && gest.iter().all(|&g| g < pa.min_disp * 100.0);
     let disp = if all_small {
         let n = genes.len();
         DispResult { disp_fit, disp_map: vec![pa.min_disp * 10.0; n], dispersion: vec![pa.min_disp * 10.0; n], outlier: vec![false; n] }
@@ -1002,6 +1007,7 @@ pub fn deseq(counts: &[f64], g: usize, d: &Design, sf: Option<Vec<f64>>, poscoun
     let fitted: std::sync::Mutex<Option<(FitType, Vec<f64>, f64, f64)>> = std::sync::Mutex::new(None);
     let fit_type_req = pa.fit_type;
     let msgs = std::sync::Mutex::new(Vec::<String>::new());
+    let substituted = std::sync::atomic::AtomicBool::new(false);
     let trend = |bm: &[f64], gest: &[f64]| -> (Vec<f64>, f64, f64) {
         let mut guard = fitted.lock().unwrap();
         let (ft, coefs, prior_var, var_log) = match guard.as_ref() {
@@ -1019,7 +1025,8 @@ pub fn deseq(counts: &[f64], g: usize, d: &Design, sf: Option<Vec<f64>>, poscoun
                     match parametric_fit(&mb, &dg) {
                         Some(c) => coefs = c.to_vec(),
                         None => {
-                            msgs.lock().unwrap().push("the parametric dispersion trend (a + b/mean) did not fit; using fit_type=\"mean\" (DESeq2 would substitute a local regression)".into());
+                            msgs.lock().unwrap().push("the parametric dispersion trend (a + b/mean) did not fit; using fit_type=\"mean\" instead of the local regression DESeq2 substitutes, so dispersions, the prior variance, p-values and the number of significant genes can differ from R's (markedly so on small or low-count data)".into());
+                            substituted.store(true, std::sync::atomic::Ordering::Relaxed);
                             ft = FitType::Mean;
                         }
                     }
@@ -1048,7 +1055,7 @@ pub fn deseq(counts: &[f64], g: usize, d: &Design, sf: Option<Vec<f64>>, poscoun
         (fv, prior_var, var_log)
     };
 
-    let (stage, prior_var, var_log) = fit_genes(counts, &nz, &sf, d, pa, xim, &trend, &base_mean);
+    let (stage, prior_var, var_log) = fit_genes(counts, &nz, &sf, d, pa, xim, &trend, &base_mean, true);
     messages.extend(msgs.lock().unwrap().drain(..));
     let (fit_type, trend_coefs) = {
         let t = fitted.lock().unwrap();
@@ -1066,7 +1073,7 @@ pub fn deseq(counts: &[f64], g: usize, d: &Design, sf: Option<Vec<f64>>, poscoun
         max_cooks: nan_g(), replace: vec![false; g], replace_counts: None,
         deviance_reduced: reduced.map(|_| nan_g()), beta_conv_reduced: reduced.map(|_| vec![false; g]),
         lrt_stat: None, lrt_pvalue: None,
-        fit_type, trend: trend_coefs, disp_prior_var: prior_var, var_log_disp_ests: var_log, messages,
+        fit_type, fit_substituted: substituted.load(std::sync::atomic::Ordering::Relaxed), trend: trend_coefs, disp_prior_var: prior_var, var_log_disp_ests: var_log, messages,
     };
     let write_stage = |out: &mut Fit, genes: &[usize], st: &Stage| {
         for (k, &i) in genes.iter().enumerate() {
@@ -1182,7 +1189,7 @@ pub fn deseq(counts: &[f64], g: usize, d: &Design, sf: Option<Vec<f64>>, poscoun
             out.base_var = base_var.clone();
             if !refit.is_empty() {
                 out.messages.push(format!("replacing outliers and refitting for {} genes (min_replicates_for_replace = {})", nrefit, pa.min_replicates_for_replace));
-                let (st, _, _) = fit_genes(&new_counts, &refit, &sf, d, pa, xim, &trend, &base_mean);
+                let (st, _, _) = fit_genes(&new_counts, &refit, &sf, d, pa, xim, &trend, &base_mean, false);
                 write_stage(&mut out, &refit, &st);
                 fit_reduced(&mut out, &new_counts, &refit);
                 for &i in &new_zero {
@@ -1263,5 +1270,36 @@ mod tests {
         let c = vec![10.0, 20.0, 5.0, 4.0, 8.0, 3.0, 100.0, 200.0, 40.0, 0.0, 1.0, 2.0];
         let sf = size_factors(&c, 4, 3, false).unwrap();
         assert!((sf[1] / sf[0] - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn gamma_glm_is_invariant_to_rescaling_the_means() {
+        // dispersions on an a + b / mean trend with deterministic multiplicative scatter
+        let n = 400;
+        let means: Vec<f64> = (0..n).map(|i| 10f64.powf(2.0 + 3.0 * i as f64 / n as f64)).collect();
+        let disps: Vec<f64> = means.iter().enumerate().map(|(i, &m)| (0.05 + 40.0 / m) * (1.0 + 0.3 * ((i * 7) as f64).sin())).collect();
+        let (c1, ok1) = gamma_identity_glm(&means, &disps, [0.1, 1.0]).expect("moderate means");
+        assert!(ok1);
+        // the same data with every mean 1e6 times larger: b scales by 1e6, a is unchanged
+        let big: Vec<f64> = means.iter().map(|m| m * 1e6).collect();
+        let (c2, ok2) = gamma_identity_glm(&big, &disps, [0.1, 1.0e6]).expect("large means");
+        assert!(ok2);
+        assert!((c2[0] / c1[0] - 1.0).abs() < 1e-6, "{:?} {:?}", c1, c2);
+        assert!((c2[1] / (c1[1] * 1e6) - 1.0).abs() < 1e-6, "{:?} {:?}", c1, c2);
+    }
+
+    #[test]
+    fn scaled_lu_matches_lu_and_survives_badly_scaled_columns() {
+        let a = vec![4.0, 1.0, 1.0, 3.0];
+        let (x1, x2) = (Lu::new(a.clone(), 2).unwrap().solve(&[1.0, 2.0]), ScaledLu::new(&a, 2).unwrap().solve(&[1.0, 2.0]));
+        assert!((x1[0] - x2[0]).abs() < 1e-14 && (x1[1] - x2[1]).abs() < 1e-14);
+        // columns of very different magnitude: the plain pivot test rejects it, the scaled one does not
+        let b = vec![1.0e6, 1.0e-2, 1.0e-2, 1.0e-9];
+        assert!(Lu::new(b.clone(), 2).is_none());
+        let x = ScaledLu::new(&b, 2).unwrap().solve(&[1.0e6 + 1.0e-2, 1.0e-2 + 1.0e-9]);
+        assert!((x[0] - 1.0).abs() < 1e-8 && (x[1] - 1.0).abs() < 1e-8, "{:?}", x);
+        // genuinely singular stays singular
+        assert!(ScaledLu::new(&[1.0, 2.0, 2.0, 4.0], 2).is_none());
+        assert!(ScaledLu::new(&[0.0, 0.0, 0.0, 1.0], 2).is_none());
     }
 }

@@ -128,6 +128,8 @@ Writing: {meth}`BioFrame.write_parquet <crest.BioFrame.write_parquet>`,
 .. autoclass:: crest.deseq2.Pseudobulk
    :members: subset, to_anndata
 .. autofunction:: crest.deseq2.model_matrix
+.. autoclass:: crest.deseq2.NotEstimableError
+.. autoclass:: crest.deseq2.LevelOrderWarning
 ```
 
 All of these are also available as `crest.tl.<name>`.

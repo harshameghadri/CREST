@@ -84,6 +84,42 @@ impl Lu {
     }
 }
 
+/// LU factorisation of a symmetric positive-definite normal-equation matrix after
+/// Jacobi (diagonal) equilibration, so that the singularity test is made on the
+/// correlation-like matrix rather than on raw entries whose magnitudes differ by
+/// many orders (e.g. columns `[1, 1/mean]` at high counts). `Lu::new` is unchanged.
+pub struct ScaledLu {
+    lu: Lu,
+    s: Vec<f64>,
+}
+
+impl ScaledLu {
+    /// `None` if a diagonal entry is not positive and finite, or the scaled matrix is singular.
+    pub fn new(a: &[f64], p: usize) -> Option<ScaledLu> {
+        let mut s = Vec::with_capacity(p);
+        for i in 0..p {
+            let d = a[i * p + i];
+            if !(d > 0.0) || !d.is_finite() {
+                return None;
+            }
+            s.push(1.0 / d.sqrt());
+        }
+        let mut b = vec![0.0; p * p];
+        for i in 0..p {
+            for j in 0..p {
+                b[i * p + j] = a[i * p + j] * s[i] * s[j];
+            }
+        }
+        Some(ScaledLu { lu: Lu::new(b, p)?, s })
+    }
+
+    /// Solve `A x = b`.
+    pub fn solve(&self, b: &[f64]) -> Vec<f64> {
+        let sb: Vec<f64> = b.iter().zip(&self.s).map(|(v, s)| v * s).collect();
+        self.lu.solve(&sb).iter().zip(&self.s).map(|(v, s)| v * s).collect()
+    }
+}
+
 /// Xᵀ diag(w) X for row-major X (m × p).
 pub fn xtwx(x: &[f64], m: usize, p: usize, w: &[f64]) -> Vec<f64> {
     let mut out = vec![0.0; p * p];
