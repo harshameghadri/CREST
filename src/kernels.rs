@@ -151,11 +151,15 @@ pub fn materialize(v: ChunkView) -> (Vec<u32>, Vec<u32>, Vec<f32>) {
 
 /// Per-gene sums on two scales: the values as given (log domain) and expm1
 /// (normalised-count domain, used by seurat HVG). `out` is n_genes × 5:
-/// [Σx, Σx², Σexpm1(x), Σexpm1(x)², nnz].
+/// [Σx, Σx², Σexpm1(x), Σexpm1(x)², nnz]. Stored zeros are skipped (they are not
+/// non-zeros, as in `qc`).
 pub fn gene_stats(v: ChunkView, out: &mut [f64]) {
     let n = out.len();
     let parts = v.fold_cells(|| vec![0.0f64; n], |acc, _row, e| {
         for &(g, x) in e {
+            if x == 0.0 {
+                continue;
+            }
             let (x, ex) = (x as f64, (x as f64).exp_m1());
             let o = &mut acc[g as usize * 5..g as usize * 5 + 5];
             o[0] += x;
@@ -381,11 +385,36 @@ pub fn project(view: ChunkView, sub_map: &[i32], t: Transform, v: &[f64], k: usi
     }
 }
 
-/// Raw pointer that may be shared across threads when writes are disjoint.
+/// Raw pointer with the length of the buffer it points into, shared across threads
+/// that write disjoint elements. Every write goes through `add`, which checks the index.
 #[derive(Clone, Copy)]
-struct SyncPtr(*mut f64);
+struct SyncPtr(*mut f64, usize);
 unsafe impl Send for SyncPtr {}
 unsafe impl Sync for SyncPtr {}
+
+impl SyncPtr {
+    fn null() -> Self {
+        SyncPtr(std::ptr::null_mut(), 0)
+    }
+    fn of(buf: &mut [f64]) -> Self {
+        SyncPtr(buf.as_mut_ptr(), buf.len())
+    }
+    fn is_null(&self) -> bool {
+        self.0.is_null()
+    }
+    /// `*self[i] += x`; false (and no write) when `i` is out of bounds.
+    ///
+    /// # Safety
+    /// No other thread may access element `i` concurrently.
+    #[inline]
+    unsafe fn add(&self, i: usize, x: f64) -> bool {
+        if i >= self.1 {
+            return false;
+        }
+        *self.0.add(i) += x;
+        true
+    }
+}
 
 /// Per (group, gene) Σx, Σx², nnz for one chunk; `group_of_row[row]` < n_groups
 /// or u32::MAX to ignore the cell. Buffers are n_groups × n_genes.
@@ -394,10 +423,20 @@ unsafe impl Sync for SyncPtr {}
 /// genes and accumulates directly into the shared outputs (disjoint columns),
 /// so memory does not grow with the number of groups × threads.
 /// With `clip` ((n_groups, n_genes)), each value is first capped at its group's
-/// gene limit (seurat_v3 HVG).
+/// gene limit (seurat_v3 HVG). Stored zeros are not counted in `nnz`.
+///
+/// A group id `>= n_groups` (with `n_groups = sum.len() / n_genes`) is reported as an
+/// error, never written: the kernel checks every output index before writing, so a
+/// caller whose `group_of_row` changes during the call cannot cause an out-of-bounds write.
 #[allow(clippy::too_many_arguments)]
 pub fn group_gene_sums(v: ChunkView, group_of_row: &[u32], n_genes: usize, sum: &mut [f64], sumsq: Option<&mut [f64]>,
-                       nnz: Option<&mut [f64]>, clip: Option<&[f64]>) {
+                       nnz: Option<&mut [f64]>, clip: Option<&[f64]>) -> Result<(), String> {
+    if sumsq.as_ref().map_or(false, |q| q.len() != sum.len()) || nnz.as_ref().map_or(false, |z| z.len() != sum.len()) {
+        return Err("sum, sumsq and nnz must have the same length".into());
+    }
+    if clip.map_or(false, |c| c.len() != sum.len()) {
+        return Err("clip must have the same length as sum".into());
+    }
     let (rows, genes, vals) = materialize(v);
     // entries per gene -> balanced gene blocks
     let mut per_gene = vec![0usize; n_genes];
@@ -416,12 +455,12 @@ pub fn group_gene_sums(v: ChunkView, group_of_row: &[u32], n_genes: usize, sum: 
     }
     bounds.push(n_genes as u32);
     bounds.dedup();
-    let null = std::ptr::null_mut::<f64>();
     let (ps, pq, pz) = (
-        SyncPtr(sum.as_mut_ptr()),
-        SyncPtr(sumsq.map_or(null, |q| q.as_mut_ptr())),
-        SyncPtr(nnz.map_or(null, |z| z.as_mut_ptr())),
+        SyncPtr::of(sum),
+        sumsq.map_or_else(SyncPtr::null, SyncPtr::of),
+        nnz.map_or_else(SyncPtr::null, SyncPtr::of),
     );
+    let out_of_range = std::sync::atomic::AtomicBool::new(false);
     bounds.par_windows(2).for_each(|w| {
         let (lo, hi) = (w[0], w[1]);
         let (ps, pq, pz) = (ps, pq, pz);
@@ -433,23 +472,34 @@ pub fn group_gene_sums(v: ChunkView, group_of_row: &[u32], n_genes: usize, sum: 
             if grp == u32::MAX {
                 continue;
             }
-            let i = grp as usize * n_genes + g as usize;
+            // checked: an id that is not a valid group index lands at or beyond `ps.1`
+            let i = match (grp as usize).checked_mul(n_genes).and_then(|b| b.checked_add(g as usize)) {
+                Some(i) if i < ps.1 => i,
+                _ => {
+                    out_of_range.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return;
+                }
+            };
+            if x == 0.0 {
+                continue; // a stored zero adds nothing and is not a non-zero
+            }
             let x = match clip {
                 Some(c) => (x as f64).min(c[i]),
                 None => x as f64,
             };
-            // SAFETY: gene blocks are disjoint, so index i is written by one thread only.
-            unsafe {
-                *ps.0.add(i) += x;
-                if !pq.0.is_null() {
-                    *pq.0.add(i) += x * x;
-                }
-                if !pz.0.is_null() {
-                    *pz.0.add(i) += 1.0;
-                }
+            // SAFETY: gene blocks are disjoint, so index i is written by one thread only;
+            // `add` re-checks the bound of each buffer before writing.
+            let ok = unsafe { ps.add(i, x) && (pq.is_null() || pq.add(i, x * x)) && (pz.is_null() || pz.add(i, 1.0)) };
+            if !ok {
+                out_of_range.store(true, std::sync::atomic::Ordering::Relaxed);
+                return;
             }
         }
     });
+    if out_of_range.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err("group id out of range".into());
+    }
+    Ok(())
 }
 
 /// Entries of genes in [lo, hi) as (gene - lo, value, group) for cells with a group.
@@ -731,5 +781,63 @@ mod rank_sum_count_tests {
         // ids out of range
         assert!(check_rank_sum_counts(&[1], &[1.0], &[0], 1, &[2]).is_err());
         assert!(check_rank_sum_counts(&[0], &[1.0], &[1], 1, &[2]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod group_sums_tests {
+    use super::*;
+
+    fn view<'a>(genes: &'a [u32], vals: &'a [f32], indptr: &'a [i64], cm: &'a [i64], gm: &'a [i32]) -> ChunkView<'a> {
+        ChunkView { cells: Cells::Ptr { indptr, first: 0 }, genes, values: vals, cell_map: cm, gene_map: gm, target_sum: 0.0, log1p: false, cell_totals: None }
+    }
+
+    #[test]
+    fn test_group_id_beyond_n_groups_is_an_error_and_writes_nothing() {
+        // 3 cells, 2 genes; group ids 0, 1 and 7 with only 2 groups
+        let (genes, vals, indptr) = ([0u32, 1, 0, 1, 0], [1.0f32, 2.0, 3.0, 4.0, 5.0], [0i64, 2, 4, 5]);
+        let (cm, gm) = ([0i64, 1, 2], [0i32, 1]);
+        for bad in [2u32, 7, u32::MAX - 1] {
+            let grp = [0u32, 1, bad];
+            let (mut s, mut q, mut z) = (vec![0.0; 4], vec![0.0; 4], vec![0.0; 4]);
+            let r = group_gene_sums(view(&genes, &vals, &indptr, &cm, &gm), &grp, 2, &mut s, Some(&mut q), Some(&mut z), None);
+            assert_eq!(r, Err("group id out of range".to_string()));
+            // the valid cells may or may not have been added before the error, nothing outside the buffers was touched
+            assert_eq!(s.len(), 4);
+        }
+    }
+
+    #[test]
+    fn test_valid_group_ids_and_ignored_cells() {
+        let (genes, vals, indptr) = ([0u32, 1, 0, 1, 0], [1.0f32, 2.0, 3.0, 4.0, 5.0], [0i64, 2, 4, 5]);
+        let (cm, gm) = ([0i64, 1, 2], [0i32, 1]);
+        let grp = [0u32, 1, u32::MAX];
+        let (mut s, mut q, mut z) = (vec![0.0; 4], vec![0.0; 4], vec![0.0; 4]);
+        group_gene_sums(view(&genes, &vals, &indptr, &cm, &gm), &grp, 2, &mut s, Some(&mut q), Some(&mut z), None).unwrap();
+        assert_eq!(s, vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(q, vec![1.0, 4.0, 9.0, 16.0]);
+        assert_eq!(z, vec![1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_stored_zeros_are_not_counted_as_non_zeros() {
+        // cell 0 stores gene 1 as an explicit zero
+        let (genes, vals, indptr) = ([0u32, 1, 0, 1], [2.0f32, 0.0, 3.0, 4.0], [0i64, 2, 4]);
+        let (cm, gm) = ([0i64, 1], [0i32, 1]);
+        let grp = [0u32, 0];
+        let (mut s, mut q, mut z) = (vec![0.0; 2], vec![0.0; 2], vec![0.0; 2]);
+        group_gene_sums(view(&genes, &vals, &indptr, &cm, &gm), &grp, 2, &mut s, Some(&mut q), Some(&mut z), None).unwrap();
+        assert_eq!((s, q, z), (vec![5.0, 4.0], vec![13.0, 16.0], vec![2.0, 1.0]));
+        let mut out = vec![0.0; 10];
+        gene_stats(view(&genes, &vals, &indptr, &cm, &gm), &mut out);
+        assert_eq!((out[4], out[9]), (2.0, 1.0));
+    }
+
+    #[test]
+    fn test_mismatched_output_lengths_are_an_error() {
+        let (genes, vals, indptr) = ([0u32], [1.0f32], [0i64, 1]);
+        let (cm, gm) = ([0i64], [0i32]);
+        let (mut s, mut q) = (vec![0.0; 2], vec![0.0; 1]);
+        assert!(group_gene_sums(view(&genes, &vals, &indptr, &cm, &gm), &[0], 1, &mut s, Some(&mut q), None, None).is_err());
     }
 }
