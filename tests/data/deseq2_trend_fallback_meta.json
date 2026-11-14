@@ -1,0 +1,18 @@
+{
+  "design": "~ condition",
+  "contrast": ["condition", "c1", "c0"],
+  "levels": {
+    "condition": ["c0", "c1"]
+  },
+  "R": {
+    "deseq2_version": "1.50.2",
+    "r_version": "R version 4.5.2 (2025-10-31)",
+    "generated_by": "tests/data/make_pin_fixtures.R",
+    "fitType": "local",
+    "trend": null,
+    "priorVar": 0.25,
+    "sf": [1.10669597717753, 1.1216571384097, 1.47630124391305, 1.26421438921549, 1.22765416654499, 1.23109956261407],
+    "cooksCutoff": 18,
+    "messages": "-- note: fitType='parametric', but the dispersion trend was not well captured by the\n   function: y = a/x + b, and a local regression fit was automatically substituted.\n   specify fitType='local' or 'mean' to avoid this message next time."
+  }
+}

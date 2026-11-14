@@ -1,0 +1,19 @@
+{
+  "design": "~ condition",
+  "contrast": ["condition", "c1", "c0"],
+  "levels": {
+    "condition": ["c0", "c1"]
+  },
+  "sf_type": "poscounts",
+  "R": {
+    "deseq2_version": "1.50.2",
+    "r_version": "R version 4.5.2 (2025-10-31)",
+    "generated_by": "tests/data/make_pin_fixtures.R",
+    "fitType": "parametric",
+    "trend": [0.604019769463529, 1.33487588209554],
+    "priorVar": 0.25,
+    "sf": [0.898680994062366, 0.918120751820155, 0.885059417060063, 1.10721271026341, 0.851628115016597, 1.00382863161708, 1.03279135215165, 1.0369761283947, 1.14789940595455, 1.17678303127616],
+    "cooksCutoff": 8.64911064067351,
+    "messages": []
+  }
+}

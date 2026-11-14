@@ -28,7 +28,7 @@ pub mod lowess;
 
 use linalg::{xb, xtwx, xtwz, Lu, ScaledLu};
 use rayon::prelude::*;
-use statrs::distribution::{ChiSquared, ContinuousCDF, FisherSnedecor, Normal};
+use statrs::distribution::{ChiSquared, ContinuousCDF, FisherSnedecor};
 use statrs::function::gamma::{digamma, ln_gamma};
 
 const LN2: f64 = std::f64::consts::LN_2;
@@ -742,107 +742,183 @@ fn parametric_fit(means: &[f64], disps: &[f64]) -> Option<[f64; 2]> {
     }
 }
 
-/// Local quadratic regression with tricube weights (R `loess(span, degree = 2)`,
-/// evaluated directly rather than through loess's interpolation surface).
-fn loess_predict(x: &[f64], y: &[f64], span: f64, at: &[f64]) -> Vec<f64> {
+/// One-predictor `loess(y ~ x, span, degree = 2)` as R computes it (netlib `dloess`
+/// defaults: `surface = "interpolate"`, tricube weights, `family = "gaussian"`):
+/// a 1-d k-d tree splits the sorted `x` until a cell holds at most
+/// `floor(n * span * 0.2)` points, the local quadratic fit and its slope are
+/// evaluated at the cell boundaries, and values in between are cubic Hermite
+/// interpolates. `at` must lie within the range of `x` (plus the 0.5 % margin of the tree).
+fn loess_interp(x: &[f64], y: &[f64], span: f64, at: &[f64]) -> Vec<f64> {
     let n = x.len();
-    let q = ((span * n as f64).floor() as usize).clamp(3, n);
-    at.iter()
-        .map(|&x0| {
-            let mut dist: Vec<f64> = x.iter().map(|&xi| (xi - x0).abs()).collect();
-            let mut sorted = dist.clone();
-            sorted.sort_by(|a, b| a.total_cmp(b));
-            let h = sorted[q - 1].max(1e-12);
-            let mut s = [0.0f64; 9]; // Σw, Σw t, Σw t², Σw t³, Σw t⁴, Σw y, Σw t y, Σw t² y
-            for i in 0..n {
-                let u = dist[i] / h;
-                if u >= 1.0 {
+    let nf = n.min((n as f64 * span + 1e-5).floor() as usize).max(3);
+    let fc = (n as f64 * span * 0.2).floor() as usize;
+    let (lo, hi) = (x.iter().copied().fold(f64::INFINITY, f64::min), x.iter().copied().fold(f64::NEG_INFINITY, f64::max));
+    let mu = 0.005 * (hi - lo).max(1e-10 * lo.abs().max(hi.abs()) + 1e-30);
+    let (lo, hi) = (lo - mu, hi + mu);
+    let mut xs = x.to_vec();
+    xs.sort_by(|a, b| a.total_cmp(b));
+    let mut verts = vec![lo, hi];
+    let mut stack: Vec<(i64, i64, f64, f64)> = vec![(0, n as i64 - 1, lo, hi)];
+    while let Some((l, u, vlo, vhi)) = stack.pop() {
+        if (u - l + 1) as usize <= fc {
+            continue;
+        }
+        let mut m = (l + u + 2) / 2 - 1;
+        let mut off = 0i64;
+        while l <= m + off && m + off < u {
+            if xs[(m + off) as usize] == xs[(m + off + 1) as usize] {
+                off = -off;
+                if off >= 0 {
+                    off += 1;
+                }
+            } else {
+                m += off;
+                break;
+            }
+        }
+        let xi = xs[m as usize];
+        if xi == vlo || xi == vhi {
+            continue;
+        }
+        verts.push(xi);
+        stack.push((l, m, vlo, xi));
+        stack.push((m + 1, u, xi, vhi));
+    }
+    verts.sort_by(|a, b| a.total_cmp(b));
+    verts.dedup();
+    // local quadratic value and slope at each vertex
+    let fits: Vec<(f64, f64)> = verts
+        .iter()
+        .map(|&q| {
+            let d2: Vec<f64> = x.iter().map(|&xi| (xi - q) * (xi - q)).collect();
+            let mut order: Vec<usize> = (0..n).collect();
+            order.sort_by(|&i, &j| d2[i].total_cmp(&d2[j]));
+            let near = &order[..nf.min(n)];
+            let rho = d2[near[near.len() - 1]] * span.max(1.0);
+            if rho <= 0.0 {
+                let m = near.iter().map(|&i| y[i]).sum::<f64>() / near.len() as f64;
+                return (m, 0.0);
+            }
+            let h = rho.sqrt();
+            // weighted least squares on t = (x - q) / h: sums of w t^k and w t^k y
+            let mut s = [0.0f64; 5];
+            let mut r = [0.0f64; 3];
+            for &i in near {
+                if d2[i] >= rho {
                     continue;
                 }
-                let wv = (1.0 - u * u * u).powi(3);
-                let t = x[i] - x0;
-                s[0] += wv;
-                s[1] += wv * t;
-                s[2] += wv * t * t;
-                s[3] += wv * t * t * t;
-                s[4] += wv * t * t * t * t;
-                s[5] += wv * y[i];
-                s[6] += wv * t * y[i];
-                s[7] += wv * t * t * y[i];
+                let u = (d2[i] / rho).sqrt();
+                let w = (1.0 - u * u * u).powi(3);
+                let t = (x[i] - q) / h;
+                let mut tk = 1.0;
+                for k in 0..5 {
+                    s[k] += w * tk;
+                    if k < 3 {
+                        r[k] += w * tk * y[i];
+                    }
+                    tk *= t;
+                }
             }
-            dist.clear();
-            let a = vec![s[0], s[1], s[2], s[1], s[2], s[3], s[2], s[3], s[4]];
-            match Lu::new(a, 3) {
-                Some(lu) => lu.solve(&[s[5], s[6], s[7]])[0],
-                None => s[5] / s[0],
+            let mut a = [[s[0], s[1], s[2], r[0]], [s[1], s[2], s[3], r[1]], [s[2], s[3], s[4], r[2]]];
+            for c in 0..3 {
+                let piv = (c..3).max_by(|&i, &j| a[i][c].abs().total_cmp(&a[j][c].abs())).unwrap();
+                a.swap(c, piv);
+                if a[c][c] == 0.0 {
+                    return (r[0] / s[0], 0.0);
+                }
+                for rw in c + 1..3 {
+                    let f = a[rw][c] / a[c][c];
+                    for k in c..4 {
+                        a[rw][k] -= f * a[c][k];
+                    }
+                }
             }
+            let c2 = a[2][3] / a[2][2];
+            let c1 = (a[1][3] - a[1][2] * c2) / a[1][1];
+            let c0 = (a[0][3] - a[0][1] * c1 - a[0][2] * c2) / a[0][0];
+            (c0, c1 / h)
+        })
+        .collect();
+    at.iter()
+        .map(|&a| {
+            let j = verts.partition_point(|&v| v < a).saturating_sub(1).min(verts.len() - 2);
+            let (x0, x1) = (verts[j], verts[j + 1]);
+            let h = x1 - x0;
+            let u = (a - x0) / h;
+            let phi0 = (1.0 - u) * (1.0 - u) * (1.0 + 2.0 * u);
+            let phi1 = u * u * (3.0 - 2.0 * u);
+            let psi0 = u * (1.0 - u) * (1.0 - u);
+            let psi1 = -(u * u) * (1.0 - u);
+            phi0 * fits[j].0 + phi1 * fits[j + 1].0 + (psi0 * fits[j].1 + psi1 * fits[j + 1].1) * h
         })
         .collect()
 }
 
-/// DESeq2 `estimateDispersionsPriorVar` for (m - p) <= 3: the prior variance
-/// whose implied residual distribution best matches the observed residuals
-/// (KL divergence over a histogram). DESeq2 simulates the reference
-/// distribution with 10⁴ draws; here the histogram of
-/// log(χ²_k / k) + N(0, v) is integrated numerically, so it is deterministic.
-fn prior_var_small_df(resid: &[f64], df: f64) -> f64 {
-    let brks: Vec<f64> = (-20..=20).map(|v| v as f64 / 2.0).collect();
-    let nb = brks.len() - 1;
-    let hist = |vals: &mut dyn Iterator<Item = f64>| -> Vec<f64> {
-        let mut h = vec![0.0; nb];
-        let mut n = 0.0;
-        for v in vals {
-            if v > -10.0 && v < 10.0 {
-                let k = (((v + 10.0) / 0.5).ceil() as usize).clamp(1, nb) - 1; // (a, b]
-                h[k] += 1.0;
-                n += 1.0;
+/// Histogram counts, per bin of width 0.5 on (-10, 10), of the 10^4 simulated residuals
+/// `log(chi^2_df) + N(0, x) - log(df)` that R's `estimateDispersionsPriorVar` draws after
+/// `set.seed(2)` for each of the 200 values x of `seq(0, 8, length = 200)`; df = 1, 2, 3.
+/// The draws do not depend on the data, so the table (made by `data/make_prior_var_stream.R`)
+/// reproduces R's reference distribution exactly.
+const PRIOR_VAR_STREAM: &str = include_str!("data/prior_var_stream_counts.txt");
+const PV_BINS: usize = 40;
+const PV_GRID: usize = 200;
+
+fn prior_var_stream(df: usize) -> &'static [[u32; PV_BINS]] {
+    static TABLE: std::sync::OnceLock<Vec<Vec<[u32; PV_BINS]>>> = std::sync::OnceLock::new();
+    let t = TABLE.get_or_init(|| {
+        let mut out: Vec<Vec<[u32; PV_BINS]>> = Vec::new();
+        for line in PRIOR_VAR_STREAM.lines() {
+            if line.starts_with('#') || line.trim().is_empty() {
+                continue;
             }
+            if line.starts_with("df ") {
+                out.push(Vec::with_capacity(PV_GRID));
+                continue;
+            }
+            let mut row = [0u32; PV_BINS];
+            for (k, tok) in line.split_whitespace().enumerate() {
+                row[k] = tok.parse().expect("prior variance table: integer count");
+            }
+            out.last_mut().expect("prior variance table: df header").push(row);
         }
-        h.iter().map(|c| c / (n * 0.5)).collect()
-    };
-    let obs = hist(&mut resid.iter().copied());
-    // quadrature for L = log(X/k), X ~ χ²_k
-    let chi = ChiSquared::new(df).unwrap();
-    let nq = 4000;
-    let (llo, lhi) = (-40.0f64, 4.0f64);
-    let mut lq = Vec::with_capacity(nq);
-    let mut wq = Vec::with_capacity(nq);
-    for i in 0..nq {
-        let a = llo + (lhi - llo) * i as f64 / nq as f64;
-        let b = llo + (lhi - llo) * (i + 1) as f64 / nq as f64;
-        let pm = chi.cdf(df * b.exp()) - chi.cdf(df * a.exp());
-        lq.push(0.5 * (a + b));
-        wq.push(pm);
+        out
+    });
+    &t[df - 1]
+}
+
+/// DESeq2 `estimateDispersionsPriorVar` for (m - p) <= 3: the prior variance whose implied
+/// residual distribution best matches the observed residuals (KL divergence over a histogram
+/// with bins of width 0.5). R simulates the reference histogram from 10^4 draws seeded by
+/// `set.seed(2)`; the same draws are tabulated in `PRIOR_VAR_STREAM`, so the KL curve, the
+/// pseudo-count `small` (smallest positive density, which depends on the Monte-Carlo
+/// resolution), the span-0.2 loess smoothing and the grid search all follow R.
+fn prior_var_small_df(resid: &[f64], df: f64) -> f64 {
+    let nb = PV_BINS;
+    let mut obs = vec![0.0f64; nb];
+    let mut n = 0.0;
+    for &v in resid {
+        if v > -10.0 && v < 10.0 {
+            let k = (((v + 10.0) / 0.5).ceil() as usize).clamp(1, nb) - 1; // (a, b]
+            obs[k] += 1.0;
+            n += 1.0;
+        }
     }
-    let nd = Normal::new(0.0, 1.0).unwrap();
-    let grid: Vec<f64> = (0..200).map(|i| 8.0 * i as f64 / 199.0).collect();
-    let kl: Vec<f64> = grid
-        .par_iter()
-        .map(|&v| {
-            let sd = v.sqrt();
-            let mut ph = vec![0.0; nb];
-            for (l, w) in lq.iter().zip(&wq) {
-                if *w == 0.0 {
-                    continue;
-                }
-                for k in 0..nb {
-                    let (a, b) = (brks[k], brks[k + 1]);
-                    let pk = if sd == 0.0 {
-                        if *l > a && *l <= b { 1.0 } else { 0.0 }
-                    } else {
-                        nd.cdf((b - l) / sd) - nd.cdf((a - l) / sd)
-                    };
-                    ph[k] += w * pk;
-                }
-            }
-            let tot: f64 = ph.iter().sum();
-            let rd: Vec<f64> = ph.iter().map(|p| p / (tot * 0.5)).collect();
+    for o in obs.iter_mut() {
+        *o /= n * 0.5;
+    }
+    let table = prior_var_stream((df.round() as usize).clamp(1, 3));
+    let grid: Vec<f64> = (0..PV_GRID).map(|i| 8.0 * i as f64 / (PV_GRID - 1) as f64).collect();
+    let kl: Vec<f64> = table
+        .iter()
+        .map(|counts| {
+            let tot: f64 = counts.iter().map(|&c| c as f64).sum();
+            let rd: Vec<f64> = counts.iter().map(|&c| c as f64 / (tot * 0.5)).collect();
             let small = obs.iter().chain(&rd).copied().filter(|&z| z > 0.0).fold(f64::INFINITY, f64::min);
             obs.iter().zip(&rd).map(|(&o, &r)| o * ((o + small).ln() - (r + small).ln())).sum()
         })
         .collect();
     let fine: Vec<f64> = (0..1000).map(|i| 8.0 * i as f64 / 999.0).collect();
-    let fitted = loess_predict(&grid, &kl, 0.2, &fine);
+    let fitted = loess_interp(&grid, &kl, 0.2, &fine);
     let mut best = (0usize, f64::INFINITY);
     for (i, &v) in fitted.iter().enumerate() {
         if v < best.1 {
@@ -1301,5 +1377,51 @@ mod tests {
         // genuinely singular stays singular
         assert!(ScaledLu::new(&[1.0, 2.0, 2.0, 4.0], 2).is_none());
         assert!(ScaledLu::new(&[0.0, 0.0, 0.0, 1.0], 2).is_none());
+    }
+
+    #[test]
+    fn interpolating_loess_reproduces_a_quadratic_and_smooths_noise() {
+        // a local quadratic fit is exact for quadratic data, so are the Hermite interpolates
+        let x: Vec<f64> = (0..200).map(|i| 8.0 * i as f64 / 199.0).collect();
+        let y: Vec<f64> = x.iter().map(|v| 1.0 - 0.5 * v + 0.25 * v * v).collect();
+        let at: Vec<f64> = (0..1000).map(|i| 8.0 * i as f64 / 999.0).collect();
+        for (a, f) in at.iter().zip(loess_interp(&x, &y, 0.2, &at)) {
+            assert!((f - (1.0 - 0.5 * a + 0.25 * a * a)).abs() < 1e-9, "{a}: {f}");
+        }
+        // the fit at the data points is a smoother of noisy data, with less spread than the data
+        let noisy: Vec<f64> = x.iter().enumerate().map(|(i, v)| v * v + ((i * 37 % 11) as f64 - 5.0)).collect();
+        let fit = loess_interp(&x, &noisy, 0.2, &x);
+        let rss = |f: &[f64]| x.iter().zip(f).map(|(v, f)| (f - v * v).powi(2)).sum::<f64>();
+        assert!(rss(&fit) < 0.2 * rss(&noisy));
+    }
+
+    #[test]
+    fn prior_variance_stream_table_is_complete() {
+        for df in 1..=3 {
+            let t = prior_var_stream(df);
+            assert_eq!(t.len(), PV_GRID);
+            for row in t {
+                let tot: u32 = row.iter().sum();
+                assert!((8000..=10000).contains(&tot), "df {df}: {tot} draws inside (-10, 10)");
+            }
+            // x = 0 puts all mass on log(chi^2_df / df); a wider x spreads it over more bins
+            let width = |r: &[u32; PV_BINS]| r.iter().filter(|&&c| c > 0).count();
+            assert!(width(&t[PV_GRID - 1]) > width(&t[0]));
+        }
+    }
+
+    #[test]
+    fn prior_variance_matches_the_data_generating_value() {
+        // residuals drawn from the reference distribution at x = 2 (df = 2) should give about 2
+        let (df, x) = (2usize, 2.0f64);
+        let row = &prior_var_stream(df)[(x / 8.0 * (PV_GRID - 1) as f64).round() as usize];
+        let mut resid = Vec::new();
+        for (k, &c) in row.iter().enumerate() {
+            for j in 0..c {
+                resid.push(-10.0 + 0.5 * (k as f64 + (j as f64 + 0.5) / c as f64));
+            }
+        }
+        let pv = prior_var_small_df(&resid, df as f64);
+        assert!((pv - x).abs() < 0.1, "{pv}");
     }
 }
