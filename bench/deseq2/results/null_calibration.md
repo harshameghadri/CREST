@@ -72,13 +72,16 @@ fits are included in the fit counts but not in the null tables.
 ## Positive control: where CREST and R differ
 
 Observed labels: CREST and R call the same genes in 6 of 8 cell types. FCGR3A+ monocytes: CREST 1480, R 1468
-(22 genes differ, all with an adjusted p-value within 0.005 of 0.1 on one side); CD4 T cells: 1350 and 1349
-(1 gene). Re-fitting these two tables: the parametric trend coefficients differ from R's by 5.0e-4 (b) and
-2e-4 (a) for FCGR3A+ monocytes (CREST 0.029874, 1.74372; R 0.029868, 1.74462), the prior variance by 0.9 %
-(0.7461 against 0.7530) and the fitted trend by up to 5.1e-4. Running R's trend algorithm (reimplemented, with
-R's `glm` stopping rule) on R's gene-wise dispersions returns R's coefficients; on CREST's gene-wise
-dispersions it returns CREST's. The difference therefore lies in four genes whose gene-wise dispersion differs
-between the two (for example gene index 5069 of the table: 0.248 in CREST, 2.2e-6 in R; two genes at the
-floor 1e-8 in CREST and 1.0e-7 and 3.4e-8 in R), not in the trend solver. This is the case described in
-`docs/deseq2.md`, known difference 1. The same counts and the same code give the same results with the
-released 0.4.0 wheel, so the difference is not new in this tree.
+(22 genes differ: 17 are called by CREST only, with adjusted p-values within 0.01 of R's on both sides of 0.1;
+5 are called by R only, with adjusted p-values of 0.03 to 0.08 where CREST's is missing, which was not examined
+further); CD4 T cells: 1350 and 1349 (1 gene). Re-fitting these two tables: the parametric trend coefficients
+differ from R's by 1.9e-4 (a) and 5.1e-4 (b) for FCGR3A+ monocytes (CREST 0.029874, 1.74372; R 0.029868, 1.74462),
+the prior variance by 0.9 % (0.7461 against 0.7530) and the fitted trend by up to 5.1e-4. Running R's trend
+algorithm (reimplemented, with R's `glm` stopping rule) on R's gene-wise dispersions returns R's coefficients;
+on CREST's gene-wise dispersions it returns CREST's. The shift in the trend therefore comes from four genes whose
+gene-wise dispersion differs between the two (for example gene index 5069 of the table: 0.248 in CREST, 2.2e-6 in
+R; two genes at the floor 1e-8 in CREST and 1.0e-7 and 3.4e-8 in R), not from the trend solver. This is the case
+described in `docs/deseq2.md`, known difference 1. The same counts give the same results with the released 0.4.0
+build, so the difference is not new in this tree. The figures quoted for these two cell types in `docs/deseq2.md`
+(1468 / 1469 and 1350 / 1365) were obtained from a different preparation of the data and are not reproduced
+by this run.
