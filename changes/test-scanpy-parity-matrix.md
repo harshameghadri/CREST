@@ -1,0 +1,1 @@
+- Added: a scanpy parity matrix in the test suite. It compares CREST with the installed scanpy on PBMC 3k (and PBMC 10k) for every step of the standard workflow, with one named tolerance per comparison set from measurements on x86-64 and arm64 with scanpy 1.11.5, 1.12.6 and 1.13.0.
