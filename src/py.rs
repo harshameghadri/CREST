@@ -249,9 +249,6 @@ fn umap<'py>(
     if !(min_dist >= 0.0 && min_dist.is_finite()) {
         return Err(pyo3::exceptions::PyValueError::new_err("min_dist must be non-negative and finite"));
     }
-    if min_dist > spread {
-        return Err(pyo3::exceptions::PyValueError::new_err("min_dist must not exceed spread"));
-    }
     let e = undirected(n, contiguous(&rows, "rows")?, contiguous(&cols, "cols")?, contiguous(&weights, "weights")?)?;
     let emb = guarded(py, || {
         let mut edges = Vec::with_capacity(e.len() * 2);

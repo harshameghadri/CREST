@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import warnings
 from typing import Optional, Sequence, Union
 
 import numpy as np
@@ -207,13 +208,17 @@ def umap(bf: BioFrame, min_dist: float = 0.5, spread: float = 1.0, n_components:
     """UMAP embedding of the neighbour graph (scanpy defaults: min_dist=0.5).
 
     umap-learn's objective and default parameters, with CREST's own iterative
-    spectral initialisation. ``min_dist`` must not exceed ``spread`` (umap-learn's rule;
-    ``scanpy.tl.umap`` accepts it) and the graph weights must be finite and non-negative.
+    spectral initialisation. ``min_dist > spread`` is accepted, as in ``scanpy.tl.umap``
+    (``umap.UMAP`` itself raises), with a ``UserWarning``: the layout curve is then fitted outside
+    the range umap-learn supports. The graph weights must be finite and non-negative.
     With more than one thread (and at least 1,000
     cells) the SGD runs in parallel with a different schedule than on one
     thread, so layouts are deterministic for a fixed thread count but differ
     between thread counts.
     """
+    if min_dist > spread:
+        warnings.warn(f"umap: min_dist={min_dist} exceeds spread={spread}; scanpy accepts this, but umap-learn "
+                      "raises because the curve fit is outside its supported range", UserWarning, stacklevel=2)
     rows, cols, w = _graph(bf)
     bf.obsm["X_umap"] = _native.umap(bf.n_obs, rows, cols, w, n_components, min_dist, spread, n_epochs, 100, random_state)
     return bf
