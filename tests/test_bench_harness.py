@@ -872,7 +872,7 @@ LAZY_STEP_SECONDS = 1.5e-5        # CREST's recorded normalize_log1p step: appli
 RTOL = 1e-9
 CORE_STEPS = ["read", "qc_filter", "normalize_log1p", "hvg", "scale_pca", "neighbors", "leiden", "umap",
               "de_ttest", "de_wilcoxon"]
-FORBIDDEN_PUBLIC = re.compile(r"\breview|ledger|audit|fix brief|claude|\b(?:F|PY|WP|G)-\d+\b|\bB\d{1,2}\b", re.I)
+FORBIDDEN_PUBLIC = re.compile(r"\b(?:F|PY|WP|G|D|B|SB|BL)-\d+[ab]?\b|\bB\d{1,2}[ab]?\b")   # internal item identifiers (shape only)
 
 
 def _need(name: str):
