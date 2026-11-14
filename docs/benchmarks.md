@@ -77,7 +77,19 @@ donor, cytokine and cell-type columns are detected automatically. The pseudobulk
 compares IFN-beta with PBS (or, if absent, the most frequent condition with the control).
 `datasets.py --manifest` writes `dataset_manifest.json` (source URLs, SHA-256 of the source and converted
 files, conversion path, verification result); the licence field of each dataset stays empty until it has been
-checked at the data provider. To check what will be used before a long run:
+checked at the data provider; it also lists the cell and gene counts and any verification check that was
+skipped, with the reason.
+
+The 10x 1.3M neuron download is a Cell Ranger v1 file (one group per genome, 64-bit column indices, 2.6 billion
+non-zeros, more than a 32-bit index can address); `datasets.py` streams it into the v3 layout the harness reads, with
+32-bit column indices and 64-bit row pointers, and verifies the result against the download non-zero by non-zero.
+The Stephenson atlas is converted from `raw.X` of the CELLxGENE file with h5py only (gene symbols as names, Ensembl
+identifiers as ids, no CREST reader), and its pseudobulk contrast is `Status` Covid against Healthy: the `disease`
+column also calls the six LPS-stimulated volunteers "normal". `--verify` adds to `verification.json` (a run on one
+dataset keeps the records of the others). The two read-back checks (scanpy's and CREST's reader against h5py) hold the
+whole matrix in memory, so a file with more than `--reader-max-nnz` non-zeros (default 1.5 billion; 0 removes the
+limit) gets both checks reported as skipped, with the reason, and the source-to-converted check still runs. To check
+what will be used before a long run:
 
 ```bash
 python bench/paper/datasets.py --inspect crest-bench/data/Parse_1M_adata_for_cellflow_datasets_with_embeddings.h5ad

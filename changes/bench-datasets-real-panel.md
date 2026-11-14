@@ -1,0 +1,3 @@
+- Benchmark: `datasets.py` converts the 10x 1.3M neuron download (a Cell Ranger v1 file with more than 2 billion non-zeros) to the v3 layout in a streaming pass, so the real-subsample series and `--verify` work on it.
+- Benchmark: the CELLxGENE h5ad conversion no longer imports CREST, keeps gene symbols as names, and writes the donor, condition and cell-type columns of the COVID-19 atlas; its pseudobulk contrast is Covid against Healthy, without the LPS-stimulated volunteers.
+- Benchmark: `datasets.py --verify` keeps the records of earlier runs, compares the scanpy and CREST readers window by window, and reports those checks as skipped (with the reason) above `--reader-max-nnz` non-zeros; `--manifest` lists cells and genes.

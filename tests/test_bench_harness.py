@@ -34,6 +34,8 @@ N_FAKE_CELLS = 300
 K_NEIGHBORS = 15               # n_neighbors; the graphs have K_NEIGHBORS - 1 columns
 N_GENES_BP = 3000              # genes in the BiocParallel chunking tests
 N_WORKERS_BP = 64              # BiocParallel workers of the matched benchmark at the highest k
+TINY_WINDOW = 2                # non-zeros per window in the windowed read-back tests (forces several windows)
+NNZ_LIMIT_BELOW_FIXTURE = 3    # reader-check limit smaller than the non-zeros of the fixtures
 
 
 def _bash(code: str, **env) -> subprocess.CompletedProcess:
@@ -1872,6 +1874,190 @@ def test_the_dataset_listing_labels_synthetic_sets_as_a_supplement(datasets, cap
     line = next(ln for ln in out.splitlines() if ln.startswith("synth_100k"))
     assert "supplement" in line.lower(), f"synthetic set not labelled as a supplement: {line}"
     assert "real" in next(ln for ln in out.splitlines() if ln.startswith("parse_pbmc_1m"))
+
+
+# --------------------------------------------------------------------------- datasets: real-data conversion paths
+def _write_legacy_h5(path: Path, dense, genes, barcodes, genome="mm10"):
+    """A Cell Ranger v1/v2 file: one group per genome, 64-bit column indices (genes x cells, CSC)."""
+    import h5py
+    import scipy.sparse as sp
+    csc = sp.csc_matrix(dense)
+    csc.sort_indices()
+    with h5py.File(path, "w") as f:
+        g = f.create_group(genome)
+        g.create_dataset("barcodes", data=np.array([b.encode() for b in barcodes]))
+        g.create_dataset("data", data=csc.data.astype(np.int32))
+        g.create_dataset("indices", data=csc.indices.astype(np.int64))
+        g.create_dataset("indptr", data=csc.indptr.astype(np.int64))
+        g.create_dataset("shape", data=np.array(dense.shape, np.int32))
+        g.create_dataset("genes", data=np.array([a.encode() for a, _ in genes]))
+        g.create_dataset("gene_names", data=np.array([b.encode() for _, b in genes]))
+
+
+def _write_cxg_h5ad(path: Path, n_cells: int = 12):
+    """A CELLxGENE-style .h5ad: normalised values in X, raw counts in raw.X, Ensembl ids as the gene index, gene
+    symbols in feature_name, and the obs columns of the COVID-19 atlas."""
+    import anndata as ad
+    import pandas as pd
+    import scipy.sparse as sp
+    rng = np.random.default_rng(3)
+    counts = rng.poisson(1.5, (n_cells, len(GENES))).astype(np.float32)
+    norm = np.log1p(counts / np.maximum(counts.sum(1, keepdims=True), 1) * 1e4)
+    obs = pd.DataFrame({"donor_id": [f"D{i % 4}" for i in range(n_cells)],
+                        "Status": ["Covid", "Healthy", "LPS", "Covid"] * (n_cells // 4),
+                        "disease": ["COVID-19", "normal", "normal", "COVID-19"] * (n_cells // 4),
+                        "cell_type": ["T cell", "B cell"] * (n_cells // 2), "sample_id": [f"S{i % 4}" for i in range(n_cells)],
+                        "Site": ["Ncl"] * n_cells, "Collection_Day": ["D0"] * n_cells, "Resample": ["Initial"] * n_cells,
+                        "author_cell_type": ["CD4", "B_cell"] * (n_cells // 2)},
+                       index=[f"cell{i}-x" for i in range(n_cells)])
+    var = pd.DataFrame({"feature_name": [b for _, b in GENES]}, index=[a.replace("ID", "ENSG") for a, _ in GENES])
+    a = ad.AnnData(X=sp.csr_matrix(norm), obs=obs, var=var)
+    a.raw = ad.AnnData(X=sp.csr_matrix(counts), obs=obs, var=var)
+    a.write_h5ad(path)
+    return counts
+
+
+def _unsized(datasets, monkeypatch, name):
+    """The registry entry of ``name`` with its download sizes dropped, so a small stand-in file counts as complete."""
+    files = {f: (u, None) for f, (u, _) in datasets.REGISTRY[name]["files"].items()}
+    monkeypatch.setitem(datasets.REGISTRY, name, {**datasets.REGISTRY[name], "files": files})
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_legacy_cell_ranger_file_converts_to_v3_with_counts_genes_and_barcodes_unchanged(datasets, tmp_path):
+    dense = _counts()
+    _write_legacy_h5(tmp_path / "old.h5", dense, GENES, BARCODES)
+    _has(datasets, "_legacy_h5_to_v3")(tmp_path / "old.h5", tmp_path / "new.h5")
+    X, bc, ids, names = datasets.read_h5_counts(tmp_path / "new.h5")
+    assert (X.toarray() == dense.T).all() and bc == BARCODES
+    assert ids == [g[0] for g in GENES] and names == [g[1] for g in GENES]
+    assert X.indices.dtype == np.int32                                         # 32-bit columns; only the row pointers are 64-bit
+    assert all(c["ok"] for c in _has(datasets, "verify_legacy_dataset")(tmp_path / "old.h5", tmp_path / "new.h5"))
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_legacy_verification_fails_for_a_changed_count_and_a_swapped_barcode(datasets, tmp_path):
+    import h5py
+    _write_legacy_h5(tmp_path / "old.h5", _counts(), GENES, BARCODES)
+    verify = _has(datasets, "verify_legacy_dataset")
+    _has(datasets, "_legacy_h5_to_v3")(tmp_path / "old.h5", tmp_path / "new.h5")
+    with h5py.File(tmp_path / "new.h5", "r+") as f:
+        f["matrix/data"][0] += 1
+    assert not all(c["ok"] for c in verify(tmp_path / "old.h5", tmp_path / "new.h5"))
+    datasets._legacy_h5_to_v3(tmp_path / "old.h5", tmp_path / "again.h5")
+    with h5py.File(tmp_path / "again.h5", "r+") as f:
+        bc = f["matrix/barcodes"][:]
+        f["matrix/barcodes"][0], f["matrix/barcodes"][1] = bc[1], bc[0]
+    assert not all(c["ok"] for c in verify(tmp_path / "old.h5", tmp_path / "again.h5"))
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"verification ran|matrix")
+def test_the_one_million_neuron_download_is_converted_to_v3_and_verifies(datasets, tmp_path, monkeypatch):
+    _unsized(datasets, monkeypatch, "neurons_1m")
+    src = tmp_path / "src" / "neurons_1m"
+    src.mkdir(parents=True)
+    _write_legacy_h5(src / "neurons_1m.h5", _counts(), GENES, BARCODES)
+    out = datasets.build("neurons_1m", tmp_path)
+    res = datasets.verify_dataset("neurons_1m", tmp_path)
+    assert res["ok"], res["checks"]
+    assert any("v1/v2" in c["name"] for c in res["checks"])
+    X, bc, _, _ = datasets.read_h5_counts(out)                                # a v3 file: h5py finds its 'matrix' group
+    assert (X.toarray() == _counts().T).all() and bc == BARCODES
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing|max_nnz")
+def test_reader_checks_are_skipped_with_the_reason_above_the_non_zero_limit(datasets, tmp_path):
+    import inspect
+    _write_mtx_dir(tmp_path / "m", _counts(), GENES, BARCODES)
+    datasets._mtx_dir_to_h5(tmp_path / "m", tmp_path / "ok.h5", "hg19")
+    fn = _has(datasets, "verify_reader_equality")
+    assert "max_nnz" in inspect.signature(fn).parameters, "verify_reader_equality has no max_nnz limit"
+    skipped = fn(tmp_path / "ok.h5", max_nnz=NNZ_LIMIT_BELOW_FIXTURE)
+    assert len(skipped) == 2 and all(c.get("skipped") and "exceed" in c["detail"] for c in skipped), skipped
+    ran = fn(tmp_path / "ok.h5", max_nnz=0)                                    # 0 removes the limit
+    assert all(c["ok"] and not c.get("skipped") for c in ran if "not installed" not in c["detail"]), ran
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
+def test_windowed_readback_detects_a_changed_value_in_a_later_window_and_a_wrong_gene_name(datasets, tmp_path):
+    import scipy.sparse as sp
+    _write_mtx_dir(tmp_path / "m", _counts(), GENES, BARCODES)
+    datasets._mtx_dir_to_h5(tmp_path / "m", tmp_path / "ok.h5", "hg19")
+    X, bc, ids, names = datasets.read_h5_counts(tmp_path / "ok.h5")
+    cmp = _has(datasets, "compare_csr_to_h5")
+    assert X.nnz > 2 * TINY_WINDOW
+    assert cmp(X, bc, names, tmp_path / "ok.h5", window=TINY_WINDOW) == []
+    Y = sp.csr_matrix(X, copy=True)
+    Y.data[-1] += 1                                                            # last non-zero: in the last window
+    assert "values differ" in cmp(Y, bc, names, tmp_path / "ok.h5", window=TINY_WINDOW)[0]
+    Z = sp.csr_matrix(X, copy=True)
+    Z.indices[-1] = X.shape[1] - 1 if Z.indices[-1] != X.shape[1] - 1 else 0     # a different gene in the last non-zero
+    assert cmp(Z, bc, names, tmp_path / "ok.h5", window=TINY_WINDOW)
+    assert "gene names differ" in cmp(X, bc, names[::-1], tmp_path / "ok.h5")[0]
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"overwrote|dropped")
+def test_verification_record_keeps_the_datasets_of_earlier_runs(datasets, tmp_path, monkeypatch):
+    for name in ("pbmc3k", "pbmc68k"):
+        d = tmp_path / "src" / name / "extracted" / "hg19"
+        _write_mtx_dir(d, _counts(), GENES, BARCODES)
+        datasets._mtx_dir_to_h5(d, tmp_path / f"{name}.h5", "hg19")
+    for name in ("pbmc3k", "pbmc68k"):
+        monkeypatch.setattr(sys, "argv", ["datasets.py", "--data-dir", str(tmp_path), "--datasets", name, "--verify"])
+        datasets.main()
+    kept = [v["dataset"] for v in json.loads((tmp_path / "verification.json").read_text())]
+    assert sorted(kept) == ["pbmc3k", "pbmc68k"], f"the second --verify overwrote the record of the first; kept {kept}"
+    monkeypatch.setattr(sys, "argv", ["datasets.py", "--data-dir", str(tmp_path), "--datasets", "pbmc3k", "--manifest"])
+    datasets.main()
+    m = json.loads((tmp_path / "dataset_manifest.json").read_text())
+    assert m["pbmc3k"]["verification"] is True and m["pbmc3k"]["cells"] == len(BARCODES) and m["pbmc3k"]["genes"] == len(GENES)
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"depends on crest")
+def test_h5ad_conversion_reads_raw_counts_keeps_symbols_and_does_not_use_crests_reader(datasets, tmp_path, monkeypatch):
+    pytest.importorskip("anndata")
+    _unsized(datasets, monkeypatch, "covid_stephenson")
+    src = tmp_path / "src" / "covid_stephenson"
+    src.mkdir(parents=True)
+    counts = _write_cxg_h5ad(src / "covid_stephenson.h5ad")
+    monkeypatch.setitem(sys.modules, "crest", None)                            # any import of crest now fails
+    try:
+        out = datasets.build("covid_stephenson", tmp_path)
+    except ImportError as e:
+        raise AssertionError(f"the h5ad conversion depends on crest: {e}") from None
+    X, bc, ids, names = datasets.read_h5_counts(out)
+    assert (X.toarray() == counts).all(), "the converted matrix is not raw.X"
+    assert ids == [a.replace("ID", "ENSG") for a, _ in GENES] and names == [b for _, b in GENES]
+    assert bc[0] == "cell0-x" and len(bc) == counts.shape[0]
+    res = datasets.verify_dataset("covid_stephenson", tmp_path)
+    assert res["ok"], res["checks"]
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"depends on crest|Status|sidecar")
+def test_h5ad_conversion_writes_the_donor_condition_and_cell_type_columns_the_pseudobulk_needs(datasets, tmp_path, monkeypatch):
+    pytest.importorskip("anndata")
+    _unsized(datasets, monkeypatch, "covid_stephenson")
+    src = tmp_path / "src" / "covid_stephenson"
+    src.mkdir(parents=True)
+    _write_cxg_h5ad(src / "covid_stephenson.h5ad")
+    try:
+        datasets.build("covid_stephenson", tmp_path)
+    except ImportError as e:
+        raise AssertionError(f"the h5ad conversion depends on crest: {e}") from None
+    meta = json.loads((tmp_path / "covid_stephenson.meta.json").read_text()) if (tmp_path / "covid_stephenson.meta.json").exists() else {}
+    assert meta.get("condition") == "Status" and meta.get("contrast") == ["Status", "Covid", "Healthy"] and meta.get("pb_levels_only")
+    side = pl.read_parquet(tmp_path / "covid_stephenson.obs.parquet")
+    for col in ("barcode", "donor_id", "Status", "cell_type", "disease", "Collection_Day", "Resample"):
+        assert col in side.columns, f"sidecar has no {col}: {side.columns}"
+    assert side.height == 12 and side["Status"].to_list()[:4] == ["Covid", "Healthy", "LPS", "Covid"]
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"LPS")
+def test_covid_contrast_does_not_count_lps_stimulated_volunteers_as_controls(datasets):
+    spec = datasets.REGISTRY["covid_stephenson"]
+    assert spec["condition"] == "Status" and spec["contrast"] == ["Status", "Covid", "Healthy"], \
+        "the 'disease' column labels LPS-stimulated volunteers 'normal'; the contrast must use Status"
+    assert spec["pb_levels_only"] and "donor_id" in spec["sample"]
 
 
 # --------------------------------------------------------------------------- driver script and documents

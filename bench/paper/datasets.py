@@ -84,10 +84,14 @@ REGISTRY: dict[str, dict] = {
     "covid_stephenson": {
         "files": {"covid_stephenson.h5ad": (f"{CXG}/fe2e847c-1602-4f1b-86a4-112e4dc7a8e3.h5ad", 7058204031)},
         "cells": 647366, "tier": "full", "chemistry": "10x 3'",
-        "description": "Stephenson 2021 COVID-19 PBMC atlas, 120 donors, 3 sites (CELLxGENE)",
+        "description": "Stephenson 2021 COVID-19 PBMC atlas, 120 donors, 3 sites (CELLxGENE collection ddfad306, dataset c7775e88)",
         "citation": "Stephenson et al. (2021) Nat Med 27:904",
-        "batch": "donor_id", "sample": ["donor_id"], "condition": "disease", "contrast": ["disease", "COVID-19", "normal"],
-        "celltype": "cell_type",
+        # The disease column calls healthy volunteers whose cells were stimulated with LPS (6 donors) 'normal' as
+        # well; Status separates Covid / Healthy / Non_covid / LPS, so the pseudobulk contrast uses Status and
+        # keeps its two levels only.
+        "batch": "donor_id", "sample": ["donor_id"], "condition": "Status", "contrast": ["Status", "Covid", "Healthy"],
+        "pb_levels_only": True, "celltype": "cell_type",
+        "obs_extra": ["disease", "sample_id", "Site", "Collection_Day", "Resample", "author_cell_type"],
     },
     "parse_pbmc": {
         # Parse Biosciences "10 million human PBMCs" (12 donors x 90 cytokines + PBS), as
@@ -108,7 +112,8 @@ REGISTRY: dict[str, dict] = {
     "neurons_1m": {
         "files": {"neurons_1m.h5": (f"{TENX}/1.3.0/1M_neurons/1M_neurons_filtered_gene_bc_matrices_h5.h5", 4216018749)},
         "cells": 1306127, "tier": "full", "chemistry": "10x 3' v2",
-        "description": "10x 1.3M mouse brain cells (E18)",
+        "description": "10x 1.3M mouse brain cells (E18); the download is a Cell Ranger v1 file (one group per genome, "
+                       "64-bit column indices, 2.6 billion non-zeros), converted to the v3 layout",
         "citation": "10x Genomics (2017), 1M_neurons",
     },
 }
@@ -122,6 +127,11 @@ SUBSET_TIER = {"parse_pbmc_1m": "full"}
 SUBSAMPLE_SERIES = {"parse_pbmc": (250_000, 500_000),            # with parse_pbmc_1m: 250k / 500k / 1M
                     "neurons_1m": (25_000, 50_000, 100_000, 200_000, 500_000)}
 SUBSAMPLE_SEED = 0
+# --verify reads a converted file back with scanpy and with CREST (each holds the whole matrix: about 8 bytes per
+# non-zero plus a transient copy). Above this many non-zeros the two reader checks are reported as skipped, with the
+# reason, instead of running out of memory; 0 removes the limit.
+READER_CHECK_MAX_NNZ = 1_500_000_000
+WINDOW = 1 << 26                      # non-zeros per window when a file is streamed
 for _parent, _sizes in SUBSAMPLE_SERIES.items():
     for _n in _sizes:
         SUBSETS[protocol.subset_name(_parent, _n)] = (_parent, _n)
@@ -312,49 +322,56 @@ def _build_kang(d: Path, out: Path) -> None:
         out.with_suffix(".obs.parquet"))
 
 
-def _build_h5ad(src: Path, out: Path) -> None:
-    """CELLxGENE h5ad -> 10x h5, streaming the raw counts (raw/X if present, else X)."""
-    import polars as pl
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from crest.io import _h5ad_frame
+# --------------------------------------------------------------------------- Cell Ranger v1/v2 layout
+def _legacy_group(f, genome: str | None = None):
+    """(name, group) of the one genome group of a Cell Ranger v1/v2 ``.h5`` (``<genome>/barcodes``, ``genes``,
+    ``gene_names``, ``data``, ``indices``, ``indptr``, ``shape``)."""
+    genomes = [k for k in f.keys() if isinstance(f[k], h5py.Group) and "barcodes" in f[k] and "gene_names" in f[k]]
+    if genome is None:
+        if len(genomes) != 1:
+            raise RuntimeError(f"expected one genome group in the file, found {genomes}")
+        genome = genomes[0]
+    elif genome not in genomes:
+        raise RuntimeError(f"genome {genome!r} is not in the file; available: {genomes}")
+    return genome, f[genome]
+
+
+def _legacy_h5_to_v3(src: Path, out: Path) -> None:
+    """Cell Ranger v1/v2 ``.h5`` -> Cell Ranger v3 ``.h5``, streamed in windows of non-zeros (the 1M-neuron file
+    has 2.6 billion of them, more than a 32-bit index can address: the row pointers stay 64-bit, the column
+    indices and the counts are stored as 32-bit integers)."""
     with h5py.File(src, "r") as f:
-        X = f["raw/X"] if "raw" in f and "X" in f["raw"] else f["X"]
-        var = _h5ad_frame(f["raw/var"] if "raw" in f and "var" in f["raw"] else f["var"], "gene_ids")
-        obs = _h5ad_frame(f["obs"], "barcode")
-        enc = X.attrs.get("encoding-type", "csr_matrix")
-        enc = enc.decode() if isinstance(enc, bytes) else enc
-        if not enc.startswith("csr"):
-            raise RuntimeError(f"expected CSR counts in {src.name}, found {enc}")
-        n_genes = int(X.attrs["shape"][1])
-        indptr = X["indptr"][:].astype(np.int64)
+        genome, g = _legacy_group(f)
+        n_genes, n_cells = (int(x) for x in g["shape"][:])
+        indptr = g["indptr"][:].astype(np.int64)
+        nnz = int(indptr[-1])
+        if len(indptr) != n_cells + 1 or g["data"].shape[0] != nnz or g["indices"].shape[0] != nnz:
+            raise RuntimeError(f"{src.name}: indptr / data / indices do not agree with shape {n_genes} x {n_cells}")
         tmp = out.with_suffix(".tmp.h5")
-        with h5py.File(tmp, "w") as g:
-            m = g.create_group("matrix")
-            nnz = int(indptr[-1])
+        with h5py.File(tmp, "w") as o:
+            m = o.create_group("matrix")
             ch = (max(1, min(1 << 20, nnz)),)
             dd = m.create_dataset("data", (nnz,), np.int32, compression="gzip", compression_opts=1, chunks=ch)
             di = m.create_dataset("indices", (nnz,), np.int32, compression="gzip", compression_opts=1, chunks=ch)
-            step = 1 << 26
-            for lo in range(0, nnz, step):
-                hi = min(lo + step, nnz)
-                vals = X["data"][lo:hi]
-                if not np.all(np.mod(vals, 1) == 0):
-                    raise RuntimeError(f"{src.name}: non-integer values; no raw counts found")
+            for lo in range(0, nnz, WINDOW):
+                hi = min(lo + WINDOW, nnz)
+                vals, cols = g["data"][lo:hi], g["indices"][lo:hi]
+                if len(vals) and (vals.min() < 0 or vals.max() > np.iinfo(np.int32).max or not np.all(np.mod(vals, 1) == 0)):
+                    raise RuntimeError(f"{src.name}: the values are not non-negative integer counts (non-zeros {lo}-{hi})")
+                if len(cols) and (cols.min() < 0 or cols.max() >= n_genes):
+                    raise RuntimeError(f"{src.name}: a gene index is outside 0..{n_genes - 1} (non-zeros {lo}-{hi})")
                 dd[lo:hi] = vals.astype(np.int32)
-                di[lo:hi] = X["indices"][lo:hi].astype(np.int32)
+                di[lo:hi] = cols.astype(np.int32)
+                print(f"             {hi / max(nnz, 1):6.1%} of {nnz:,} non-zeros", flush=True)
             m.create_dataset("indptr", data=indptr)
-            m.create_dataset("shape", data=np.array([n_genes, len(indptr) - 1], np.int32))
-            m.create_dataset("barcodes", data=_enc(obs["barcode"].to_list()))
-            names = var["feature_name"].to_list() if "feature_name" in var.columns else var["gene_ids"].to_list()
+            m.create_dataset("shape", data=np.array([n_genes, n_cells], np.int32))
+            m.create_dataset("barcodes", data=g["barcodes"][:])
             ft = m.create_group("features")
-            ft.create_dataset("id", data=_enc(var["gene_ids"].to_list()))
-            ft.create_dataset("name", data=_enc(names))
+            ft.create_dataset("id", data=g["genes"][:])
+            ft.create_dataset("name", data=g["gene_names"][:])
             ft.create_dataset("feature_type", data=_enc(["Gene Expression"] * n_genes))
-            ft.create_dataset("genome", data=_enc(["GRCh38"] * n_genes))
+            ft.create_dataset("genome", data=_enc([genome] * n_genes))
         tmp.rename(out)
-    keep = [c for c in ["barcode", "donor_id", "disease", "cell_type", "sex", "assay", "tissue",
-                        "development_stage", "sample_id", "Site", "Status"] if c in obs.columns]
-    obs.select([pl.col(c).cast(pl.Utf8) for c in keep]).write_parquet(out.with_suffix(".obs.parquet"))
 
 
 # --------------------------------------------------------------------------- generic h5ad
@@ -478,8 +495,10 @@ def _resolve_meta(obs: dict, n_genes: int) -> dict:
     return meta
 
 
-def _build_generic_h5ad(src: Path, out: Path) -> None:
-    """Any .h5ad with CSR raw counts -> 10x h5 (streamed) + obs sidecar + meta sidecar."""
+def _build_generic_h5ad(src: Path, out: Path, spec: dict | None = None) -> None:
+    """Any .h5ad with CSR raw counts -> 10x h5 (streamed) + obs sidecar + meta sidecar. ``spec`` (a registry
+    entry) fixes the batch / sample / condition / contrast / cell-type columns when they cannot be detected, and
+    names extra obs columns (``obs_extra``) to keep in the sidecar. Written with h5py only: no CREST."""
     import polars as pl
     with h5py.File(src, "r") as f:
         path, X = _counts_node(f)
@@ -491,6 +510,10 @@ def _build_generic_h5ad(src: Path, out: Path) -> None:
         gid = next((c for c in ("gene_ids", "gene_id", "ensembl_id", "gene_ids-0") if c in var_group), None)
         idv = _obs_column(var_group[gid], 10 ** 9) if gid else None
         ids = list(idv) if idv is not None else names
+        if idv is None and "feature_name" in var_group:       # CELLxGENE: the index holds Ensembl ids, feature_name the symbols
+            sym = _obs_column(var_group["feature_name"], 10 ** 9)
+            if sym is not None:
+                ids, names = names, list(sym)
         obs = read_h5ad_obs(f["obs"])
         shape = X.attrs.get("shape")
         n_cells, n_genes = int(shape[0]), int(shape[1])
@@ -523,7 +546,14 @@ def _build_generic_h5ad(src: Path, out: Path) -> None:
             ft.create_dataset("genome", data=_enc(["GRCh38"] * n_genes))
         tmp.rename(out)
     meta = _resolve_meta(obs, n_genes)
-    keep = ["barcode"] + [c for c in dict.fromkeys([meta.get("batch"), meta.get("condition"), meta.get("celltype")]) if c]
+    for k in ("batch", "sample", "condition", "contrast", "celltype", "pb_levels_only"):
+        if spec and k in spec:
+            meta[k] = spec[k]
+    want = [meta.get("batch"), meta.get("condition"), meta.get("celltype"), *(meta.get("sample") or []), *((spec or {}).get("obs_extra") or [])]
+    missing = [c for c in want if c and c not in obs]
+    if missing:
+        raise RuntimeError(f"{src.name}: obs has no column {missing} (or it has more than 20,000 levels)")
+    keep = ["barcode"] + [c for c in dict.fromkeys(want) if c]
     pl.DataFrame({c: pl.Series(c, np.asarray(obs[c], dtype=str)) for c in keep}).write_parquet(out.with_suffix(".obs.parquet"))
     meta.update({"source": src.name, "counts_path": path, "cells": n_cells, "genes": n_genes})
     out.with_suffix(".meta.json").write_text(json.dumps(meta, indent=1))
@@ -644,14 +674,14 @@ def build(name: str, data_dir: Path) -> Path:
                 t.extractall(ex)
         mtx = next(ex.rglob("matrix.mtx*")).parent
         _mtx_dir_to_h5(mtx, out, "hg19")
-    elif name in ("pbmc10k", "neurons_1m"):
+    elif name == "pbmc10k":
         shutil.copyfile(src_dir / f"{name}.h5", out)
+    elif name == "neurons_1m":
+        _legacy_h5_to_v3(src_dir / "neurons_1m.h5", out)
     elif name == "kang":
         _build_kang(src_dir, out)
-    elif name == "covid_stephenson":
-        _build_h5ad(src_dir / "covid_stephenson.h5ad", out)
-    elif name == "parse_pbmc":
-        _build_generic_h5ad(src_dir / "parse_pbmc.h5ad", out)
+    elif name in ("covid_stephenson", "parse_pbmc"):
+        _build_generic_h5ad(src_dir / f"{name}.h5ad", out, spec)
     else:
         raise KeyError(name)
     return out
@@ -716,25 +746,67 @@ def _scanpy_csr(adata):
     return X, list(adata.obs_names), list(adata.var_names)
 
 
-def verify_reader_equality(h5: Path) -> list[dict]:
-    """The converted h5 read by scanpy and by CREST against h5py's raw read, count for count."""
-    X0, bc0, ids0, names0 = read_h5_counts(h5)
-    ref = (X0.astype(np.float64), bc0, names0)
+def compare_csr_to_h5(X, barcodes, gene_names, h5: Path, window: int = WINDOW) -> list[str]:
+    """A reader's CSR matrix (cells x genes) against a Cell Ranger v3 ``.h5`` read with h5py, count for count,
+    window by window: no full-size temporary is made, so the check costs no more memory than the reader's own
+    result. The row pointers, then the column indices and the values of every non-zero, then the barcodes and gene
+    names in file order. Returns the mismatches (empty list = equal)."""
+    out = []
+    with h5py.File(h5, "r") as f:
+        m = f["matrix"]
+        n_genes, n_cells = (int(x) for x in m["shape"][:])
+        if X.shape != (n_cells, n_genes):
+            return [f"shape reader {X.shape} != file {(n_cells, n_genes)}"]
+        if not np.array_equal(np.asarray(X.indptr, dtype=np.int64), m["indptr"][:].astype(np.int64)):
+            return ["row pointers differ (per-cell non-zero counts)"]
+        nnz = int(X.indptr[-1])
+        for lo in range(0, nnz, window):
+            hi = min(lo + window, nnz)
+            if not np.array_equal(np.asarray(X.indices[lo:hi], dtype=np.int64), m["indices"][lo:hi].astype(np.int64)):
+                return [f"column indices differ in non-zeros {lo}-{hi}"]
+            if not np.array_equal(np.asarray(X.data[lo:hi], dtype=np.float64), m["data"][lo:hi].astype(np.float64)):
+                return [f"values differ in non-zeros {lo}-{hi}"]
+        for what, x, y in (("barcodes", barcodes, _h5_str(m["barcodes"][:])),
+                           ("gene names", gene_names, _h5_str(m["features"]["name"][:]))):
+            x = list(map(str, x))
+            if x != y:
+                k = next((i for i, (p, q) in enumerate(zip(x, y)) if p != q), min(len(x), len(y)))
+                out.append(f"{what} differ at position {k}: {x[k] if k < len(x) else None!r} vs {y[k] if k < len(y) else None!r}")
+    return out
+
+
+def verify_reader_equality(h5: Path, max_nnz: int | None = None) -> list[dict]:
+    """The converted h5 read by scanpy and by CREST against h5py's raw read, count for count (see
+    ``compare_csr_to_h5``). A file with more than ``max_nnz`` non-zeros (default ``READER_CHECK_MAX_NNZ``; 0 = no
+    limit) is not read back: both checks are reported as skipped, with the reason, because each reader would hold
+    the whole matrix in memory."""
+    import gc
+    limit = READER_CHECK_MAX_NNZ if max_nnz is None else max_nnz
+    with h5py.File(h5, "r") as f:
+        nnz = int(f["matrix"]["indptr"][-1])
+    names = ("scanpy.read_10x_h5 == h5py read", "crest.read_10x_h5 == h5py read")
+    if limit and nnz > limit:
+        why = f"{nnz:,} non-zeros exceed the reader-check limit of {limit:,} (each reader holds the whole matrix in memory)"
+        return [_skipped(n, why) for n in names]
     checks = []
     try:
         import scanpy as sc
         a = sc.read_10x_h5(h5)
-        checks.append(_check("scanpy.read_10x_h5 == h5py read", compare_counts(_scanpy_csr(a), ref, ("scanpy", "h5py"))))
+        X = a.X.tocsr()
+        checks.append(_check(names[0], compare_csr_to_h5(X, list(a.obs_names), list(a.var_names), h5)))
+        del a, X
     except ImportError:
-        checks.append(_skipped("scanpy.read_10x_h5 == h5py read", "scanpy is not installed"))
+        checks.append(_skipped(names[0], "scanpy is not installed"))
+    gc.collect()
     try:
         import crest
         b = crest.read_10x_h5(h5)
-        Xc = b.to_scipy(transform=False).tocsr().astype(np.float64)
-        checks.append(_check("crest.read_10x_h5 == h5py read",
-                             compare_counts((Xc, b.obs["barcode"].to_list(), b.var["gene_name"].to_list()), ref, ("crest", "h5py"))))
+        Xc = b.to_scipy(transform=False).tocsr()
+        checks.append(_check(names[1], compare_csr_to_h5(Xc, b.obs["barcode"].to_list(), b.var["gene_name"].to_list(), h5)))
+        del b, Xc
     except ImportError:
-        checks.append(_skipped("crest.read_10x_h5 == h5py read", "crest is not installed"))
+        checks.append(_skipped(names[1], "crest is not installed"))
+    gc.collect()
     return checks
 
 
@@ -809,6 +881,30 @@ def verify_h5ad_dataset(h5ad: Path, h5: Path) -> list[dict]:
     return [_check("source h5ad counts == converted h5 (all non-zeros)", mism)]
 
 
+def verify_legacy_dataset(src_h5: Path, h5: Path) -> list[dict]:
+    """A Cell Ranger v1/v2 ``.h5`` source vs its v3 conversion: row pointers, column indices and values of every
+    non-zero (streamed in windows), barcodes, gene identifiers and gene names."""
+    mism = []
+    with h5py.File(src_h5, "r") as f, h5py.File(h5, "r") as g:
+        _, s = _legacy_group(f)
+        m = g["matrix"]
+        if [int(x) for x in s["shape"][:]] != [int(x) for x in m["shape"][:]]:
+            mism.append(f"shape {s['shape'][:]} vs {m['shape'][:]}")
+        elif not np.array_equal(s["indptr"][:].astype(np.int64), m["indptr"][:].astype(np.int64)):
+            mism.append("row pointers differ")
+        else:
+            bad = _stream_equal(s["indices"], s["data"], m["indices"], m["data"])
+            if bad:
+                mism.append(bad)
+        if _h5_str(s["barcodes"][:]) != _h5_str(m["barcodes"][:]):
+            mism.append("barcodes differ")
+        if _h5_str(s["genes"][:]) != _h5_str(m["features"]["id"][:]):
+            mism.append("gene identifiers differ")
+        if _h5_str(s["gene_names"][:]) != _h5_str(m["features"]["name"][:]):
+            mism.append("gene names differ")
+    return [_check("source v1/v2 h5 counts == converted v3 h5 (all non-zeros)", mism)]
+
+
 def verify_subset(parent_h5: Path, h5: Path, n: int, seed: int, n_check: int = 2000) -> list[dict]:
     """A real subsample vs its parent: the rows are those ``subset_rows`` picks, and ``n_check`` random
     cells (plus the first and last) match the parent cell for cell (count for count, genes in order)."""
@@ -833,7 +929,7 @@ def verify_subset(parent_h5: Path, h5: Path, n: int, seed: int, n_check: int = 2
     return [_check(f"subsample == parent rows ({len(pick)} cells compared, seed {seed})", mism)]
 
 
-def verify_dataset(name: str, data_dir: Path) -> dict:
+def verify_dataset(name: str, data_dir: Path, reader_max_nnz: int | None = None) -> dict:
     """Verify one built dataset; ``ok`` is False when any check fails. Synthetic sets have no source to
     verify against (they are built from another file): only the readers are compared."""
     data_dir = Path(data_dir)
@@ -848,9 +944,11 @@ def verify_dataset(name: str, data_dir: Path) -> dict:
             if name in ("pbmc3k", "pbmc68k"):
                 mtx = next((src_dir / "extracted").rglob("matrix.mtx*")).parent
                 res["checks"] += verify_mtx_dataset(mtx, h5)
-            elif name in ("pbmc10k", "neurons_1m"):
+            elif name == "pbmc10k":
                 same = _sha256(src_dir / f"{name}.h5") == _sha256(h5)
                 res["checks"].append(_check("converted file == downloaded file (sha256; no conversion)", [] if same else ["differ"]))
+            elif name == "neurons_1m":
+                res["checks"] += verify_legacy_dataset(src_dir / "neurons_1m.h5", h5)
             elif name in ("covid_stephenson", "parse_pbmc"):
                 res["checks"] += verify_h5ad_dataset(src_dir / f"{name}.h5ad", h5)
             elif spec:
@@ -859,7 +957,7 @@ def verify_dataset(name: str, data_dir: Path) -> dict:
                 res["checks"] += verify_subset(data_dir / f"{spec[0]}.h5", h5, spec[1], seed)
             elif name == "kang":
                 res["checks"].append(_skipped("source vs converted", "built from GEO files with scipy; reader checks below"))
-            res["checks"] += verify_reader_equality(h5)
+            res["checks"] += verify_reader_equality(h5, reader_max_nnz)
         except Exception as e:  # noqa: BLE001
             res["checks"].append(_check("verification ran", [f"{type(e).__name__}: {e}"]))
     res["ok"] = all(c["ok"] for c in res["checks"])
@@ -885,10 +983,15 @@ def build_manifest(data_dir: Path, names: list[str]) -> dict:
                "licence_note": "not recorded: confirm at the data provider before the run",
                "verification": ver.get(n, {}).get("ok"),
                "conversion": ("scipy.io.mmread (independent of CREST)" if n in ("pbmc3k", "pbmc68k") else
+                              "Cell Ranger v1 h5 -> v3 h5 streaming copy (h5py)" if n == "neurons_1m" else
                               "seeded random subset of the parent" if sub else
                               "CREST synthesize (supplement)" if n in SYNTHETIC else
                               "h5ad -> h5 streaming copy" if n in ("covid_stephenson", "parse_pbmc") else
                               "none (downloaded h5) or scipy (GEO files)")}
+        if h5.exists():
+            with h5py.File(h5, "r") as f:
+                rec["genes"], rec["cells"] = (int(x) for x in f["matrix"]["shape"][:])
+        rec["verification_skipped"] = [c["name"] + ": " + c["detail"] for c in ver.get(n, {}).get("checks", []) if c.get("skipped")]
         if spec:
             rec.update(source_urls={f: u for f, (u, _) in spec["files"].items()}, citation=spec.get("citation"),
                        source_sha256={f: known.get(f) for f in spec["files"]})
@@ -913,6 +1016,9 @@ def main():
     ap.add_argument("--inspect", metavar="H5AD", help="print the layout of an .h5ad and exit")
     ap.add_argument("--verify", action="store_true",
                     help="check the converted files count for count against independent readers; non-zero exit on a mismatch")
+    ap.add_argument("--reader-max-nnz", type=int, default=None, metavar="N",
+                    help=f"with --verify: above N non-zeros the scanpy / CREST read-back checks are skipped and reported "
+                         f"(default {READER_CHECK_MAX_NNZ:,}; 0 = no limit)")
     ap.add_argument("--manifest", action="store_true", help="write dataset_manifest.json (sources, sha256, licence field)")
     ap.add_argument("--subsample", metavar="PARENT", help="build a real-subsample series of PARENT (with --sizes)")
     ap.add_argument("--sizes", nargs="*", type=int, default=[], help="cell counts of the --subsample series")
@@ -945,12 +1051,15 @@ def main():
     if a.verify:
         results = []
         for n in names:
-            r = verify_dataset(n, data_dir)
+            r = verify_dataset(n, data_dir, a.reader_max_nnz)
             results.append(r)
             print(f"== verify {n}: {'ok' if r['ok'] else 'MISMATCH'}")
             for c in r["checks"]:
                 print(f"   [{'ok' if c['ok'] else 'FAIL'}] {c['name']}: {c['detail']}")
-        (data_dir / "verification.json").write_text(json.dumps(results, indent=1))
+        vf = data_dir / "verification.json"
+        merged = {v["dataset"]: v for v in (json.loads(vf.read_text()) if vf.exists() else [])}
+        merged.update({r["dataset"]: r for r in results})          # a run adds to the record, it never drops other datasets
+        vf.write_text(json.dumps(list(merged.values()), indent=1))
         failed = not all(r["ok"] for r in results)
     if a.manifest:
         (data_dir / "dataset_manifest.json").write_text(json.dumps(build_manifest(data_dir, names), indent=1))
