@@ -179,7 +179,19 @@ by its path.
 
 **Test data.** `python scripts/fetch_test_data.py` downloads PBMC 3k and PBMC 10k v3 from
 10x Genomics into `$CREST_TEST_DATA` (default `~/.cache/crest-test-data`), verifies their
-sha256 and skips files that are already present. CI caches the directory.
+sha256 and skips files that are already present. Some tests read real data and skip when it is
+not available; they are controlled by environment variables:
+
+| variable | content | how to set it |
+|---|---|---|
+| `CREST_TEST_PBMC3K` | the extracted PBMC 3k 10x directory (`matrix.mtx`, `genes.tsv`, `barcodes.tsv`) | `python scripts/fetch_test_data.py --print-env` |
+| `CREST_TEST_PBMC_CONNECTIVITIES` | `.npz` of the scanpy connectivities matrix of PBMC 3k | `python scripts/fetch_test_data.py --derive --print-env` (needs the `test` extra) |
+
+`--print-env` prints `export` lines for your shell; `--github-env FILE` appends them to a
+GitHub Actions env file. CI does this in the composite action `.github/actions/test-data`
+(cached, keyed on the script and `pyproject.toml`) in both the `tests` and the `baseline` jobs,
+so these tests run there. A test that needs data must not be listed in
+`tests/skip_allowlist.txt`.
 
 ### Tests that document a defect: `baseline_fails`
 
@@ -202,7 +214,9 @@ def test_chunk_boundary_is_checked():
   for that reference run, and each **passes only if it raises the declared exception**. It
   fails if it passes, raises something else, or is skipped. Collection errors fail the whole
   run, so import the new API inside the test, not at module level. A run with no test marked
-  for the reference is a pass.
+  for the reference is a pass. The run ends with a line such as
+  `baseline v0.4.0: 54 marked test(s) selected, 54 failed as declared`; CI repeats it as an
+  annotation of the job.
 
 To reproduce the `baseline` job locally, install the old build and the test extra in a
 fresh environment and run pytest from a copy of the tests:

@@ -18,6 +18,7 @@ HEADER = "import pytest\n\n"
 @pytest.fixture
 def suite(pytester, monkeypatch):
     monkeypatch.delenv("CREST_BASELINE_REF", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     pytester.makeconftest(CONFTEST)
 
     def make(body, **extra):
@@ -110,6 +111,20 @@ def test_other_refs_and_unmarked_tests_are_deselected(suite):
     result.assert_outcomes(passed=1, deselected=2)
     result = run(pt, "--baseline-ref=rc0")
     result.assert_outcomes(passed=1, deselected=2)
+
+
+def test_summary_line_counts_selected_and_confirmed_tests(suite, monkeypatch):
+    pt = suite(
+        mark() + "def test_a():\n    raise ValueError('x')\n\n"
+        + mark() + "def test_b():\n    pass\n\n"
+        + mark("RuntimeError", ref="rc0") + "def test_c():\n    raise RuntimeError('x')\n"
+    )
+    result = run(pt, "--baseline-ref=v0.4.0")
+    result.stdout.fnmatch_lines(["baseline v0.4.0: 2 marked test(s) selected, 1 failed as declared"])
+    assert "::notice" not in result.stdout.str()
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    result = run(pt, "--baseline-ref=rc0")
+    result.stdout.fnmatch_lines(["::notice title=baseline rc0::baseline rc0: 1 marked test(s) selected, 1 failed as declared"])
 
 
 def test_no_marked_tests_for_the_ref_is_a_pass(suite):

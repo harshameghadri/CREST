@@ -123,6 +123,8 @@ class _CrestPlugin:
         self.allowed = _read_allowlist(allowlist) if allowlist else None
         self.skipped = set()
         self.collect_skipped = set()
+        self.selected = 0  # tests marked for the reference build
+        self.confirmed = 0  # of those, tests that failed as declared
 
     # -- selection ---------------------------------------------------------------------
     def pytest_collection_modifyitems(self, config, items):
@@ -134,6 +136,7 @@ class _CrestPlugin:
         if drop:
             config.hook.pytest_deselected(items=drop)
         items[:] = keep
+        self.selected = len(keep)
 
     def pytest_collectreport(self, report):
         if report.skipped:
@@ -177,6 +180,7 @@ class _CrestPlugin:
                 else:
                     report.outcome = "passed"
                     report.longrepr = None
+                    self.confirmed += 1
 
     # -- skip bookkeeping ----------------------------------------------------------------
     def pytest_runtest_logreport(self, report):
@@ -190,6 +194,12 @@ class _CrestPlugin:
         return sorted(n for n in seen if n not in self.allowed)
 
     def pytest_terminal_summary(self, terminalreporter):
+        if self.ref:
+            line = (f"baseline {self.ref}: {self.selected} marked test(s) selected, "
+                    f"{self.confirmed} failed as declared")
+            terminalreporter.write_line(line)
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                terminalreporter.write_line(f"::notice title=baseline {self.ref}::{line}")
         bad = self._unexpected_skips()
         if bad:
             terminalreporter.section("skipped tests that are not on the allowlist", red=True)
