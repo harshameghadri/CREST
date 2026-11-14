@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import warnings
 from typing import Optional, Sequence, Union
 
 import numpy as np
@@ -114,6 +115,12 @@ def leiden(bf: BioFrame, resolution: float = 1.0, n_iterations: int = 2, random_
     ``flavor="igraph", n_iterations=2``. CREST has one implementation (Traag et
     al. 2019) and no ``flavor`` argument.
 
+    Edge weights must be finite and non-negative (``ValueError`` otherwise). Leiden's move
+    tolerances are absolute, so the graph should be on the scale of the ``crest.pp.neighbors``
+    connectivities (weights up to about 1): a ``RuntimeWarning`` is emitted when the largest
+    weight is below 1e-6, and the partition collapses to singletons near 1e-12. Rescale such
+    weights, e.g. by dividing them by their maximum.
+
     ``n_iterations`` is the number of Leiden iterations, as in scanpy; iterating
     stops early once the partition no longer changes, and a negative value
     (scanpy's ``-1``) iterates until that happens (capped at 10,000 iterations,
@@ -212,6 +219,10 @@ def umap(bf: BioFrame, min_dist: float = 0.5, spread: float = 1.0, n_components:
     (umap-learn places them from the data centroids, which are not available from a
     graph), and each component is scaled into a box around its anchor.
 
+    ``min_dist > spread`` is accepted, as in ``scanpy.tl.umap`` (``umap.UMAP`` itself raises), with a
+    ``UserWarning``: the layout curve is then fitted outside the range umap-learn supports. The graph
+    weights must be finite and non-negative.
+
     ``spectral_max_matvec`` caps the matrix-vector products spent per component
     (default: five per cell, between 1,000 and 50,000). When the cap is reached
     before the tolerance is met a ``RuntimeWarning`` is issued and the layout starts
@@ -222,6 +233,9 @@ def umap(bf: BioFrame, min_dist: float = 0.5, spread: float = 1.0, n_components:
     a fixed thread count but differ between thread counts. Layouts differ from
     those of earlier releases, whose initial layout was not converged.
     """
+    if min_dist > spread:
+        warnings.warn(f"umap: min_dist={min_dist} exceeds spread={spread}; scanpy accepts this, but umap-learn "
+                      "raises because the curve fit is outside its supported range", UserWarning, stacklevel=2)
     rows, cols, w = _graph(bf)
     bf.obsm["X_umap"] = _native.umap(bf.n_obs, rows, cols, w, n_components, min_dist, spread, n_epochs,
                                       spectral_max_matvec, random_state)
