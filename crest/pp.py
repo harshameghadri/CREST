@@ -398,8 +398,21 @@ def neighbors(bf: BioFrame, n_neighbors: int = 15, n_pcs: Optional[int] = None, 
     """kNN graph + UMAP fuzzy connectivities (``sc.pp.neighbors`` with method="umap").
 
     ``n_neighbors`` counts the cell itself, as in scanpy. ``exact=None`` uses exact
-    search up to 20k cells and the IVF + NN-descent index above. ``n_neighbors`` must be at
-    least 2; a value above the number of cells is clamped, with a ``RuntimeWarning``.
+    search up to 20k cells and the approximate IVF + NN-descent index above; a
+    ``UserWarning`` is issued when the approximate index is chosen this way, and
+    ``exact=True`` forces the exact search at any size (``exact=False`` forces the index
+    without a warning). The search that ran is recorded in
+    ``uns["neighbors"]["params"]``: ``knn_method`` (``"exact"`` or ``"approximate"``),
+    ``nprobe`` and ``n_lists`` (the index settings; ``None`` for exact search). The
+    exact search is exact up to float32 rounding of the returned distances, whatever the
+    offset of the embedding. The approximate search probes more inverted lists as the
+    data set grows (about ``2 sqrt(n_lists)``, at least 20) so that its recall does not
+    fall with the number of cells; it is deterministic for a fixed ``random_state`` and
+    thread count.
+
+    ``n_neighbors`` must be at least 2; a value above the number of cells is clamped,
+    with a ``RuntimeWarning``. A NaN or infinite value in the embedding raises
+    ``ValueError`` naming the first affected cell.
     """
     if use_rep not in bf.obsm:
         raise KeyError(f"{use_rep!r} not in obsm; run crest.tl.pca first")
@@ -407,11 +420,24 @@ def neighbors(bf: BioFrame, n_neighbors: int = 15, n_pcs: Optional[int] = None, 
     if n_pcs is not None:
         X = X[:, :n_pcs]
     X = np.ascontiguousarray(X, dtype=np.float32)
+    bad = np.flatnonzero(~np.isfinite(X).all(axis=1)) if X.size else np.empty(0, dtype=np.intp)
+    if bad.size:
+        raise ValueError(
+            f"obsm[{use_rep!r}] contains NaN or Inf in {bad.size} cell(s); first bad row: {int(bad[0])}. "
+            "Remove or impute these cells before computing neighbours.")
+    ran_exact, nprobe, n_lists = _native.knn_plan_info(X.shape[0], exact)
+    if exact is None and not ran_exact:
+        warnings.warn(
+            f"neighbors: {X.shape[0]:,} cells exceed the exact-search limit of 20,000; using the approximate "
+            f"IVF + NN-descent index (n_lists={n_lists}, nprobe={nprobe}), which can miss a small fraction of the "
+            "true neighbours. Pass exact=True for exact search.", UserWarning, stacklevel=2)
     idx, dist = _native.knn_graph(X, n_neighbors - 1, exact=exact, seed=random_state)
     rows, cols, w = _native.connectivities(idx, dist, n_neighbors)
     bf.uns.pop("neighbors_params", None)  # the settings kept by a cell filter are superseded
     bf.uns["neighbors"] = {
-        "params": {"n_neighbors": n_neighbors, "n_pcs": n_pcs, "use_rep": use_rep, "method": "umap"},
+        "params": {"n_neighbors": n_neighbors, "n_pcs": n_pcs, "use_rep": use_rep, "method": "umap",
+                   "knn_method": "exact" if ran_exact else "approximate",
+                   "nprobe": None if ran_exact else int(nprobe), "n_lists": None if ran_exact else int(n_lists)},
         "indices": idx, "distances": dist, "rows": rows, "cols": cols, "weights": w,
     }
     return bf
