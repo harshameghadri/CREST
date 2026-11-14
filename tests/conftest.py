@@ -205,6 +205,8 @@ class _CrestPlugin:
             terminalreporter.section("skipped tests that are not on the allowlist", red=True)
             for node in bad:
                 terminalreporter.write_line(node)
+                if os.environ.get("GITHUB_ACTIONS") == "true":
+                    terminalreporter.write_line(f"::error title=skipped test not on the allowlist::{node}")
             terminalreporter.write_line(
                 f"{len(bad)} unexpected skip(s); install the missing dependency or list the node id in "
                 f"{self.config.getoption('--skip-allowlist')} with a reason"
@@ -230,12 +232,14 @@ class _CrestPlugin:
 def source_root():
     """The repository root, for tests that read repository files or run scripts/.
 
-    $CREST_SOURCE_DIR wins; otherwise the parent of this directory. When the tests run from a
-    copy (or from a source distribution, which carries no scripts/), the test is skipped.
+    $CREST_SOURCE_DIR wins; otherwise the parent of this directory. CI runs the tests from a copy
+    of the repository without crest/ and src/ (so that the installed wheel is imported) and
+    points CREST_SOURCE_DIR at the real checkout. When there is no complete checkout (for
+    example in a source distribution, which carries no scripts/), the test is skipped.
     """
     env = os.environ.get("CREST_SOURCE_DIR")
     root = Path(env) if env else Path(__file__).resolve().parents[1]
-    if not (root / "Cargo.toml").exists() or not (root / "scripts").is_dir():
+    if not all((root / p).exists() for p in ("Cargo.toml", "scripts", "crest/__init__.py")):
         pytest.skip(f"no source checkout at {root} (set CREST_SOURCE_DIR)")
     return root
 

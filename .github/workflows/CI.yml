@@ -96,6 +96,7 @@ jobs:
             numpy: ""
     env:
       CREST_TEST_DATA: ${{ github.workspace }}/.test-data
+      # the tests run from a copy without crest/ and src/; tests that read the version files use the checkout
       CREST_SOURCE_DIR: ${{ github.workspace }}
       NUMBA_CACHE_DIR: ${{ github.workspace }}/.numba-cache
     steps:
@@ -130,8 +131,9 @@ jobs:
       - name: Python tests (scanpy, harmonypy, leidenalg, skmisc and skimage parity included; unlisted skips fail)
         run: |
           . .venv/bin/activate
-          # run from a copy so that the installed wheel, not the source tree, is imported
-          mkdir "$RUNNER_TEMP/run" && cp -r tests pyproject.toml "$RUNNER_TEMP/run/"
+          # run from a copy of the tracked files without crest/ and src/, so that the installed wheel,
+          # not the source tree, is imported while tests can still read docs/, bench/ and scripts/
+          python .github/scripts/make_test_dir.py "$RUNNER_TEMP/run"
           cd "$RUNNER_TEMP/run"
           pytest -ra -p no:cacheprovider --skip-allowlist=tests/skip_allowlist.txt
       - name: Upload the resolved environment
@@ -165,7 +167,6 @@ jobs:
       matrix:
         ref: [v0.4.0, rc0]
     env:
-      CREST_SOURCE_DIR: ${{ github.workspace }}
       CREST_BASELINE_REF: ${{ matrix.ref }}
       NUMBA_CACHE_DIR: ${{ github.workspace }}/.numba-cache
     steps:
@@ -173,6 +174,12 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      - name: Check out the source tree of the reference build
+        # the marked tests run against this tree (docs, bench/, scripts/) as well as against its wheel
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ matrix.ref == 'rc0' && env.RC0_SHA || matrix.ref }}
+          path: baseline-src
       - name: Create a virtual environment
         run: python -m venv .venv
       - name: Install the published v0.4.0 wheel from PyPI
@@ -187,12 +194,6 @@ jobs:
         with:
           path: rc0-wheel
           key: crest-wheel-rc0-${{ env.RC0_SHA }}-linux-x86_64
-      - name: Check out the rc0 commit
-        if: matrix.ref == 'rc0' && steps.rc0-cache.outputs.cache-hit != 'true'
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ env.RC0_SHA }}
-          path: rc0-src
       - uses: dtolnay/rust-toolchain@stable
         if: matrix.ref == 'rc0' && steps.rc0-cache.outputs.cache-hit != 'true'
       - name: Build the rc0 wheel
@@ -200,7 +201,7 @@ jobs:
         run: |
           . .venv/bin/activate
           pip install maturin
-          (cd rc0-src && maturin build --release --out "$GITHUB_WORKSPACE/rc0-wheel")
+          (cd baseline-src && maturin build --release --out "$GITHUB_WORKSPACE/rc0-wheel")
       - name: Install the rc0 wheel
         if: matrix.ref == 'rc0'
         run: |
@@ -216,7 +217,8 @@ jobs:
       - name: Run the tests marked for this reference build
         run: |
           . .venv/bin/activate
-          mkdir "$RUNNER_TEMP/run" && cp -r tests pyproject.toml "$RUNNER_TEMP/run/"
+          # the reference build's tracked files (without crest/ and src/) with this branch's tests on top
+          python .github/scripts/make_test_dir.py "$RUNNER_TEMP/run" --tree baseline-src --overlay-from . tests pyproject.toml
           cd "$RUNNER_TEMP/run"
           python -c "import crest; print(crest.__version__, crest.__file__)"
           pytest -ra -p no:cacheprovider --baseline-ref="$CREST_BASELINE_REF"

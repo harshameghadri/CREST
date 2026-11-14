@@ -205,6 +205,14 @@ def test_unlisted_skip_fails_the_run(suite):
     result.stdout.fnmatch_lines(["*not on the allowlist*", "test_case.py::test_skips"])
 
 
+def test_unlisted_skip_is_annotated_in_github_actions(suite, monkeypatch):
+    pt = suite(SKIPPER)
+    pt.makefile(".txt", skips="")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    result = run(pt, "--skip-allowlist=skips.txt")
+    result.stdout.fnmatch_lines(["::error title=skipped test not on the allowlist::test_case.py::test_skips"])
+
+
 def test_listed_skip_is_accepted(suite):
     pt = suite(SKIPPER)
     pt.makefile(".txt", skips="test_case.py::test_skips  # needs a package that is not installed here\n")

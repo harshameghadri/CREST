@@ -155,9 +155,9 @@ and merges per-thread partial results.
 
 | job | what it does |
 |---|---|
-| `tests` | builds a wheel, installs it with the `test` extra and runs `cargo test --release` and the whole pytest suite on Linux x86-64 with Python 3.10 and NumPy 1.24 (the oldest supported), Linux x86-64 with Python 3.13 and the latest NumPy, and macOS arm64. The tests run from a copy of `tests/`, so they import the installed wheel and not the source tree. |
+| `tests` | builds a wheel, installs it with the `test` extra and runs `cargo test --release` and the whole pytest suite on Linux x86-64 with Python 3.10 and NumPy 1.24 (the oldest supported), Linux x86-64 with Python 3.13 and the latest NumPy, and macOS arm64. The tests run from a copy of the tracked files without `crest/` and `src/` (made by `.github/scripts/make_test_dir.py`), so they import the installed wheel and not the source tree while tests that read `docs/`, `bench/` or `scripts/` still find them. |
 | `test` | one check that summarises `tests` (use this name for branch protection) |
-| `baseline` | runs the tests marked `baseline_fails` against `crest-sc==0.4.0` from PyPI and against a wheel built from the `rc0` commit; see below |
+| `baseline` | runs the tests marked `baseline_fails` against the reference build: the `v0.4.0` tag (wheel from PyPI) and the `rc0` commit (wheel built from it). The tests of the branch run on top of the reference build's source tree, so tests that read repository files (documentation, `bench/`, `scripts/`) see the old content too; see below |
 | `docs` | `sphinx-build -W`, the same build as Read the Docs |
 | `sdist` | builds the source distribution and checks that the repository and the sdist contain only package files |
 | `linux`, `musllinux`, `windows`, `macos` | build the wheels (Linux x86-64 and aarch64, macOS arm64 and x86-64, Windows x64) |
@@ -219,12 +219,14 @@ def test_chunk_boundary_is_checked():
   annotation of the job.
 
 To reproduce the `baseline` job locally, install the old build and the test extra in a
-fresh environment and run pytest from a copy of the tests:
+fresh environment, check out the reference source tree, and run pytest from a scratch
+directory that holds that tree with the tests of your branch on top:
 
 ```bash
 pip install "crest-sc==0.4.0" -r <(python .github/scripts/print_extra.py test)
-mkdir /tmp/run && cp -r tests pyproject.toml /tmp/run && cd /tmp/run
-CREST_SOURCE_DIR=<path to the repository> pytest --baseline-ref=v0.4.0
+git worktree add /tmp/ref v0.4.0          # or the rc0 commit
+python .github/scripts/make_test_dir.py /tmp/run --tree /tmp/ref --overlay-from . tests pyproject.toml
+cd /tmp/run && pytest --baseline-ref=v0.4.0
 ```
 
 A test that passes the baseline job proves that it tests the defect and not something else.
