@@ -4,7 +4,7 @@ harmonypy 2.x combines the per-covariate diversity penalties of a cell by
 multiplying them (it adds their logarithms to the assignment logits); CREST does
 the same. R ``harmony`` 2.0 instead sums the penalty factors (``pow(...) * Phi``
 with a stacked one-hot Phi), so for several covariates the two references
-differ. CREST follows harmonypy, the reference named in CLAUDE.md.
+differ. CREST follows harmonypy, its reference implementation.
 
 Harmony's initialisation is random and the two tools use different random
 streams, so, as in ``test_harmony_mixes_batches_and_keeps_types``, outcomes are

@@ -117,7 +117,6 @@
 - Native `knn_query` (reference -> query kNN, exact or IVF).
 - `scripts/crest_paper_bench.sh` + `bench/paper/`: one-command publication benchmark
   (datasets, per-core CPU/clock/memory monitoring, statistics, figures).
-- `scripts/crest_git_housekeeping.sh`: repository housekeeping (dev branch, stale branches).
 - **Documentation site** (Sphinx + MyST, Read the Docs): installation, quickstart, concepts,
   full API reference, benchmarks, developer guide; `.readthedocs.yaml`; CI `docs` job.
 
