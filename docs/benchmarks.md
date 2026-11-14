@@ -154,9 +154,11 @@ Out-of-core CREST trails in-memory CREST by 5–18%, as before.
 Amdahl serial fraction 0.19, still improving at 64). scanpy 195 s → 93.8 s at its best (8
 threads, 2.08×) then *regresses* to 210 s at 64 (Amdahl serial fraction 0.59).
 
-**Scaling with cells** (core workflow, log-log fit over all six datasets): CREST time ∝
-cells^0.74 (r²=0.995), CREST out-of-core ∝ cells^0.78 (r²=0.997), scanpy ∝ cells^0.91
-(r²=0.999) — CREST scales sublinearly in this range, scanpy close to linear.
+**Scaling with cells.** No scaling exponent is quoted. The exponent that was published
+earlier came from three dataset sizes (one real dataset and two synthetic ones derived from
+it), too few points for a meaningful interval. A fit needs at least five sizes from one
+generator (the `full` tier) and is reported with its 95% interval and number of points
+(`tables/scaling.csv`) once such a run exists.
 
 **Agreement with scanpy:** PCA subspace cosine 1.000 and 15-NN neighbour-set Jaccard in the
 two PCA spaces 1.000 (both computed with CREST's kNN; each tool builds and clusters its own
@@ -172,9 +174,10 @@ Scrublet-equivalent doublet detection vs `scanpy.pp.scrublet` on Kang is **49× 
 identical AUROC (0.863 both, Spearman 0.983 on doublet scores); `ingest` label transfer is
 **17.6× faster** and *more accurate* (90.7% vs 89.8%, label agreement 96.4%); pseudobulk
 DESeq2 on Kang (8 cell types) matches R's significant-gene calls almost exactly (identical
-significant sets in 6 of 8 cell types; 1 and 21 discordant genes in the other two) and is
-63–78× faster than R DESeq2 (single-threaded R vs CREST at 64 threads; not thread-matched) and
-41–79× faster than pydeseq2 (all cores) — pydeseq2 itself diverges from R noticeably more than CREST does on some
+significant sets in 6 of 8 cell types; 1 and 21 discordant genes in the other two). Its speed
+relative to R DESeq2 and pydeseq2 is not quoted here: the earlier figures were not
+thread-matched, and the thread-matched comparison (`bench/deseq2/kang_pseudobulk.py`) is being
+re-run. pydeseq2 itself diverges from R noticeably more than CREST does on some
 cell types (e.g. 914 vs R's 794 significant genes on B cells).
 
 ## Results: 0.3.0, standard tier

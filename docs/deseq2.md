@@ -82,17 +82,11 @@ inputs to R and CREST. Results are in `bench/deseq2/results/`.
 
 ## Speed
 
-On the Kang 2018 cell types (≈ 12–16k expressed genes, 10–16 samples, 9
-coefficients), on the 4-core benchmark machine:
-
-R ran single-threaded (`DESeq()` without BiocParallel) and pydeseq2 on all cores
-(`n_cpus=None`), as in `bench/deseq2/kang_pseudobulk.py`:
-
-| | per cell type | all 8 cell types |
-|---|---|---|
-| R DESeq2 1.42 | 12–19 s | 131 s |
-| pydeseq2 0.5.4 | 20–28 s | 202 s |
-| **CREST** | **0.4–1.2 s** | **7.2 s** (plus 0.4 s to pseudobulk 24k cells) |
+Timings against R DESeq2 and pydeseq2 on the Kang 2018 cell types are thread-matched:
+CREST, R (`DESeq()` serial or with BiocParallel workers) and pydeseq2 (`n_cpus`) are timed
+at the same thread counts, and each tool is also compared at its own best thread count
+(`bench/deseq2/kang_pseudobulk.py`). No speed-up is quoted here until that comparison has been
+re-run; the results will be published in {doc}`benchmarks`.
 
 ## Known differences
 
