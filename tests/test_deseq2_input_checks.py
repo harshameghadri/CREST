@@ -45,8 +45,8 @@ def test_replacement_threshold_of_three_or_more_runs(value):
 def test_pandas_obs_raises_type_error():
     pd = pytest.importorskip("pandas")
     cts, obs = _table()
-    _must_raise(TypeError, lambda: crest.tl.DESeq2(cts, obs.to_pandas(), quiet=True), "polars")
-    assert isinstance(obs, pl.DataFrame) and pd is not None
+    pandas_obs = pd.DataFrame({"condition": obs["condition"].to_list()})
+    _must_raise(TypeError, lambda: crest.tl.DESeq2(cts, pandas_obs, quiet=True), "polars")
 
 
 def test_size_factor_type_iterate_is_not_available():
