@@ -12,7 +12,8 @@ from typing import Optional, Union
 import numpy as np
 import polars as pl
 
-from .core import BioFrame, _publish_parquet_parts, _refuse_live_directory, _warn_if_not_counts, read_parquet
+from .core import (BioFrame, _publish_parquet_parts, _refuse_live_directory, _warn_if_not_counts,
+                   read_parquet)
 
 __all__ = ["read_10x_h5", "read_h5ad", "read_10x_mtx", "read_parquet", "convert_h5_to_parquet_stream"]
 

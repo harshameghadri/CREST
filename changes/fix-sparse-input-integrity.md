@@ -1,0 +1,3 @@
+- Repeated (cell, gene) entries are summed, as scipy does, instead of counting as separate non-zeros: `from_scipy`, `from_csr`, `from_triplets`, `read_h5ad`, `read_10x_h5` and hand-made Parquet parts give the same QC, highly variable genes and PCA as the summed matrix. `from_scipy` no longer sorts or flags the caller's matrix in place.
+- Stored explicit zeros are not counted as non-zeros by any store (`n_genes_by_counts`, `n_cells_expr`, differential expression), and `to_scipy()` drops them.
+- A hand-made Parquet directory whose parts split a cell, are out of cell order, or hold gene or cell ids outside the dataset now raises `ValueError` when read, instead of giving wrong PCA variances or silently dropping genes.
