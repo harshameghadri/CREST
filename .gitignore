@@ -115,3 +115,14 @@ research/
 .venv-bench/
 bench_data/
 bench_results/
+
+# Local development notes and review material: kept outside the package.
+# They live in a private directory next to the clone and must never be committed.
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+HANDOVER.md
+work.md
+review/
+scripts/export_chat.py
+scripts/crest_git_housekeeping.sh
