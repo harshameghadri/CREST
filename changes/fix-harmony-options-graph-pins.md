@@ -4,3 +4,4 @@
   harmonypy (it was 20 when the binding was called directly).
 - Added: tests that pin the connectivities against umap-learn, Leiden modularity against leidenalg, UMAP
   trustworthiness against umap-learn, and the fit of the UMAP curve parameters `a` and `b`.
+- Changed: the documentation names harmonypy 2.1.0 as the compared release and states that the Kang 2018 Harmony figures were measured with harmonypy 2.0.2.

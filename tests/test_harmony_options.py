@@ -137,10 +137,17 @@ def test_scalar_sigma_unchanged():
 
 @pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="harmonypy version")
 def test_docs_name_the_compared_harmonypy_release():
+    """Each document names harmonypy 2.1.0; an older version appears only beside figures measured with it."""
     assert all(p.exists() for p in DOC_FILES[:2]), DOC_FILES
-    stale = []
+    unqualified, missing = [], []
     for p in DOC_FILES:
-        for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
-            if re.search(r"harmonypy\s+2\.0(\.\d+)?\b", line):
-                stale.append(f"{p.name}:{i}")
-    assert not stale, f"harmonypy version in the documentation is not the compared release 2.1.0: {stale}"
+        text = p.read_text(encoding="utf-8")
+        if re.search(r"harmonypy\s+\d+\.\d", text) and not re.search(r"harmonypy\s+2\.1\.0\b", text):
+            missing.append(p.name)
+        for i, line in enumerate(text.splitlines(), 1):
+            if re.search(r"harmonypy\s+2\.0(\.\d+)?\b", line) and "measured" not in line:
+                unqualified.append(f"{p.name}:{i}")
+    assert not (unqualified or missing), (
+        f"harmonypy version in the documentation is not the compared release 2.1.0: "
+        f"unqualified older version at {unqualified}; no mention of 2.1.0 in {missing}"
+    )
