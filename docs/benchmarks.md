@@ -19,7 +19,7 @@ CREST is held to two claims, and both are measured:
 | scale + PCA | scanpy (dense) | identical subspace (0.000° principal angles) |
 | neighbours (connectivities) | scanpy / umap-learn | identical given the same kNN (1e-5) |
 | Leiden | scanpy 1.11 `sc.tl.leiden(flavor="igraph", n_iterations=2)` (ARI, in the paper benchmark); leidenalg (modularity sweep) | similar number of clusters; modularity typically equal or higher than leidenalg's (mean +0.0015 over 20 seeds at resolution 1 on PBMC 68k), occasionally ~0.002 lower on a given seed — both tools' own seed-to-seed variation is of the same order, so this is not a per-seed guarantee. The modularity-sweep script is not yet in the repository |
-| t-test, Wilcoxon | scanpy | scores within 1e-4, same p-values |
+| t-test, Wilcoxon | scanpy | t-test scores within 1e-4; Wilcoxon scores within 3e-4 on PBMC 3k (ties differ at the float32 ulp level of the normalisation; 1e-6 on identical input values); p-values within 4e-4 |
 | `score_genes` | scanpy | identical incl. control-gene sampling (3e-7) |
 | DESeq2 Wald / LRT | R DESeq2 1.42 | ~1e-9 (Wald, simulated), 1e-6 (LRT) |
 | Harmony | harmonypy 2.0 | same iLISI / cLISI / ARI; neighbourhood overlap at seed-noise level |

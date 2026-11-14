@@ -168,8 +168,13 @@ dense PCA (principal angles 0.000°); see {doc}`memory_model`.
 
 Every stochastic step takes `random_state` (default 0). With the same seed:
 
-* the kNN graph and Leiden clusters are identical for any number of threads (checked on Kang,
-  1 vs 4 threads);
+* the kNN neighbour sets and the Leiden labels did not change with the number of threads in any
+  check we ran (Kang, 1 vs 4 threads; a 3,000-cell pipeline in the test suite at 1 and 7 threads;
+  neighbour indices were bit-identical on PBMC 10k at 1, 3 and 10 threads). This is a
+  measurement, not a guarantee: floating-point sums over cells are merged per thread, so statistics
+  such as gene sums and the PCA variance agree between thread counts only to about 1e-14 relative,
+  `X_pca` can differ in rare entries (about 3e-8), and kNN distances and connectivity weights are not
+  guaranteed to be bit-identical;
 * UMAP coordinates are identical for the same number of threads, but differ across thread
   counts, because the parallel optimisation splits the work by thread;
 * Harmony's k-means initialisation is random like harmonypy's, so compare Harmony outcomes
