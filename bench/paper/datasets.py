@@ -127,10 +127,11 @@ SUBSET_TIER = {"parse_pbmc_1m": "full"}
 SUBSAMPLE_SERIES = {"parse_pbmc": (250_000, 500_000),            # with parse_pbmc_1m: 250k / 500k / 1M
                     "neurons_1m": (25_000, 50_000, 100_000, 200_000, 500_000)}
 SUBSAMPLE_SEED = 0
-# --verify reads a converted file back with scanpy and with CREST (each holds the whole matrix: about 8 bytes per
-# non-zero plus a transient copy). Above this many non-zeros the two reader checks are reported as skipped, with the
-# reason, instead of running out of memory; 0 removes the limit.
-READER_CHECK_MAX_NNZ = 1_500_000_000
+# --verify reads a converted file back with scanpy and with CREST, which hold the whole matrix in memory (measured:
+# about 25 bytes per non-zero for scanpy and 50 for CREST's ``to_scipy``). A file with more non-zeros than this is read
+# back in contiguous blocks of whole cells, each block written to a temporary file (``TMPDIR``) and read by both
+# readers, so every cell is still read by both readers; 0 reads the whole file at once.
+READER_CHECK_MAX_NNZ = 250_000_000
 WINDOW = 1 << 26                      # non-zeros per window when a file is streamed
 for _parent, _sizes in SUBSAMPLE_SERIES.items():
     for _n in _sizes:
@@ -746,27 +747,31 @@ def _scanpy_csr(adata):
     return X, list(adata.obs_names), list(adata.var_names)
 
 
-def compare_csr_to_h5(X, barcodes, gene_names, h5: Path, window: int = WINDOW) -> list[str]:
+def compare_csr_to_h5(X, barcodes, gene_names, h5: Path, window: int = WINDOW, rows: tuple[int, int] | None = None) -> list[str]:
     """A reader's CSR matrix (cells x genes) against a Cell Ranger v3 ``.h5`` read with h5py, count for count,
     window by window: no full-size temporary is made, so the check costs no more memory than the reader's own
     result. The row pointers, then the column indices and the values of every non-zero, then the barcodes and gene
-    names in file order. Returns the mismatches (empty list = equal)."""
+    names in file order. ``rows=(first, stop)`` compares X with those cells of the file. Returns the mismatches
+    (empty list = equal)."""
     out = []
     with h5py.File(h5, "r") as f:
         m = f["matrix"]
-        n_genes, n_cells = (int(x) for x in m["shape"][:])
-        if X.shape != (n_cells, n_genes):
-            return [f"shape reader {X.shape} != file {(n_cells, n_genes)}"]
-        if not np.array_equal(np.asarray(X.indptr, dtype=np.int64), m["indptr"][:].astype(np.int64)):
+        n_genes, n_total = (int(x) for x in m["shape"][:])
+        r0, r1 = rows if rows else (0, n_total)
+        if X.shape != (r1 - r0, n_genes):
+            return [f"shape reader {X.shape} != file {(r1 - r0, n_genes)}"]
+        ptr = m["indptr"][r0:r1 + 1].astype(np.int64)
+        base = int(ptr[0])
+        if not np.array_equal(np.asarray(X.indptr, dtype=np.int64), ptr - base):
             return ["row pointers differ (per-cell non-zero counts)"]
         nnz = int(X.indptr[-1])
         for lo in range(0, nnz, window):
             hi = min(lo + window, nnz)
-            if not np.array_equal(np.asarray(X.indices[lo:hi], dtype=np.int64), m["indices"][lo:hi].astype(np.int64)):
-                return [f"column indices differ in non-zeros {lo}-{hi}"]
-            if not np.array_equal(np.asarray(X.data[lo:hi], dtype=np.float64), m["data"][lo:hi].astype(np.float64)):
-                return [f"values differ in non-zeros {lo}-{hi}"]
-        for what, x, y in (("barcodes", barcodes, _h5_str(m["barcodes"][:])),
+            if not np.array_equal(np.asarray(X.indices[lo:hi], dtype=np.int64), m["indices"][base + lo:base + hi].astype(np.int64)):
+                return [f"column indices differ in non-zeros {base + lo}-{base + hi}"]
+            if not np.array_equal(np.asarray(X.data[lo:hi], dtype=np.float64), m["data"][base + lo:base + hi].astype(np.float64)):
+                return [f"values differ in non-zeros {base + lo}-{base + hi}"]
+        for what, x, y in (("barcodes", barcodes, _h5_str(m["barcodes"][r0:r1])),
                            ("gene names", gene_names, _h5_str(m["features"]["name"][:]))):
             x = list(map(str, x))
             if x != y:
@@ -775,38 +780,88 @@ def compare_csr_to_h5(X, barcodes, gene_names, h5: Path, window: int = WINDOW) -
     return out
 
 
+def _cell_blocks(indptr, limit: int) -> list[tuple[int, int]]:
+    """Contiguous blocks ``(first, stop)`` of whole cells with at most ``limit`` non-zeros each (a single cell
+    larger than that is a block of its own)."""
+    n, blocks, r0 = len(indptr) - 1, [], 0
+    while r0 < n:
+        r1 = min(max(int(np.searchsorted(indptr, indptr[r0] + limit, side="right")) - 1, r0 + 1), n)
+        blocks.append((r0, r1))
+        r0 = r1
+    return blocks
+
+
+def _write_block_h5(parent: Path, out: Path, r0: int, r1: int, window: int = WINDOW) -> None:
+    """Cells ``r0:r1`` of a Cell Ranger v3 ``.h5`` as a file of their own (uncompressed, for a quick read-back)."""
+    with h5py.File(parent, "r") as f, h5py.File(out, "w") as g:
+        m, o = f["matrix"], g.create_group("matrix")
+        ptr = m["indptr"][r0:r1 + 1].astype(np.int64)
+        a, nnz = int(ptr[0]), int(ptr[-1] - ptr[0])
+        dd, di = o.create_dataset("data", (nnz,), np.int32), o.create_dataset("indices", (nnz,), np.int32)
+        for lo in range(0, nnz, window):
+            hi = min(lo + window, nnz)
+            dd[lo:hi], di[lo:hi] = m["data"][a + lo:a + hi], m["indices"][a + lo:a + hi]
+        o.create_dataset("indptr", data=ptr - a)
+        o.create_dataset("shape", data=np.array([int(m["shape"][0]), r1 - r0], np.int32))
+        o.create_dataset("barcodes", data=m["barcodes"][r0:r1])
+        m.copy("features", o)
+
+
 def verify_reader_equality(h5: Path, max_nnz: int | None = None) -> list[dict]:
     """The converted h5 read by scanpy and by CREST against h5py's raw read, count for count (see
     ``compare_csr_to_h5``). A file with more than ``max_nnz`` non-zeros (default ``READER_CHECK_MAX_NNZ``; 0 = no
-    limit) is not read back: both checks are reported as skipped, with the reason, because each reader would hold
-    the whole matrix in memory."""
+    limit) is read back in contiguous blocks of whole cells instead of at once, because each reader holds its whole
+    matrix in memory; the detail of the check says how many blocks. A block is a file of its own, so what this does
+    not test is a reader's behaviour on one file with that many non-zeros."""
     import gc
+    import tempfile
     limit = READER_CHECK_MAX_NNZ if max_nnz is None else max_nnz
     with h5py.File(h5, "r") as f:
-        nnz = int(f["matrix"]["indptr"][-1])
-    names = ("scanpy.read_10x_h5 == h5py read", "crest.read_10x_h5 == h5py read")
-    if limit and nnz > limit:
-        why = f"{nnz:,} non-zeros exceed the reader-check limit of {limit:,} (each reader holds the whole matrix in memory)"
-        return [_skipped(n, why) for n in names]
+        indptr = f["matrix"]["indptr"][:].astype(np.int64)
+        n_cells = len(indptr) - 1
+    nnz = int(indptr[-1])
+    whole = [(0, n_cells)]
+    blocks = _cell_blocks(indptr, limit) if limit and nnz > limit else whole
+
+    def run(name, read):
+        """``read(path)`` -> (CSR, barcodes, gene names); compared with the cells ``(r0, r1)`` of ``h5``."""
+        mism = []
+        with tempfile.TemporaryDirectory(prefix="reader-check-") as tmp:
+            for r0, r1 in blocks:
+                src = h5
+                if blocks is not whole:
+                    src = Path(tmp) / "block.h5"
+                    _write_block_h5(h5, src, r0, r1)
+                X, bc, names = read(src)
+                mism += [f"cells {r0}-{r1}: {m}" for m in compare_csr_to_h5(X, bc, names, h5, rows=(r0, r1))]
+                del X
+                gc.collect()
+                if mism:
+                    break
+        c = _check(name, mism)
+        if c["ok"] and blocks is not whole:
+            c["detail"] = f"equal (read back in {len(blocks)} blocks of whole cells of at most {limit:,} non-zeros; {nnz:,} in all)"
+        return c
+
     checks = []
     try:
         import scanpy as sc
-        a = sc.read_10x_h5(h5)
-        X = a.X.tocsr()
-        checks.append(_check(names[0], compare_csr_to_h5(X, list(a.obs_names), list(a.var_names), h5)))
-        del a, X
+
+        def read_scanpy(path):
+            a = sc.read_10x_h5(path)
+            return a.X.tocsr(), list(a.obs_names), list(a.var_names)
+        checks.append(run("scanpy.read_10x_h5 == h5py read", read_scanpy))
     except ImportError:
-        checks.append(_skipped(names[0], "scanpy is not installed"))
-    gc.collect()
+        checks.append(_skipped("scanpy.read_10x_h5 == h5py read", "scanpy is not installed"))
     try:
         import crest
-        b = crest.read_10x_h5(h5)
-        Xc = b.to_scipy(transform=False).tocsr()
-        checks.append(_check(names[1], compare_csr_to_h5(Xc, b.obs["barcode"].to_list(), b.var["gene_name"].to_list(), h5)))
-        del b, Xc
+
+        def read_crest(path):
+            b = crest.read_10x_h5(path)
+            return b.to_scipy(transform=False).tocsr(), b.obs["barcode"].to_list(), b.var["gene_name"].to_list()
+        checks.append(run("crest.read_10x_h5 == h5py read", read_crest))
     except ImportError:
-        checks.append(_skipped(names[1], "crest is not installed"))
-    gc.collect()
+        checks.append(_skipped("crest.read_10x_h5 == h5py read", "crest is not installed"))
     return checks
 
 
@@ -1017,8 +1072,8 @@ def main():
     ap.add_argument("--verify", action="store_true",
                     help="check the converted files count for count against independent readers; non-zero exit on a mismatch")
     ap.add_argument("--reader-max-nnz", type=int, default=None, metavar="N",
-                    help=f"with --verify: above N non-zeros the scanpy / CREST read-back checks are skipped and reported "
-                         f"(default {READER_CHECK_MAX_NNZ:,}; 0 = no limit)")
+                    help=f"with --verify: a file with more than N non-zeros is read back by scanpy and CREST in blocks of whole "
+                         f"cells (default {READER_CHECK_MAX_NNZ:,}; 0 = the whole file at once)")
     ap.add_argument("--manifest", action="store_true", help="write dataset_manifest.json (sources, sha256, licence field)")
     ap.add_argument("--subsample", metavar="PARENT", help="build a real-subsample series of PARENT (with --sizes)")
     ap.add_argument("--sizes", nargs="*", type=int, default=[], help="cell counts of the --subsample series")

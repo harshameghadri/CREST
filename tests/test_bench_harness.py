@@ -1966,16 +1966,21 @@ def test_the_one_million_neuron_download_is_converted_to_v3_and_verifies(dataset
 
 
 @pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing|max_nnz")
-def test_reader_checks_are_skipped_with_the_reason_above_the_non_zero_limit(datasets, tmp_path):
+def test_reader_checks_read_a_large_file_back_in_blocks_of_whole_cells_and_catch_a_difference(datasets, tmp_path):
     import inspect
     _write_mtx_dir(tmp_path / "m", _counts(), GENES, BARCODES)
     datasets._mtx_dir_to_h5(tmp_path / "m", tmp_path / "ok.h5", "hg19")
     fn = _has(datasets, "verify_reader_equality")
     assert "max_nnz" in inspect.signature(fn).parameters, "verify_reader_equality has no max_nnz limit"
-    skipped = fn(tmp_path / "ok.h5", max_nnz=NNZ_LIMIT_BELOW_FIXTURE)
-    assert len(skipped) == 2 and all(c.get("skipped") and "exceed" in c["detail"] for c in skipped), skipped
-    ran = fn(tmp_path / "ok.h5", max_nnz=0)                                    # 0 removes the limit
-    assert all(c["ok"] and not c.get("skipped") for c in ran if "not installed" not in c["detail"]), ran
+    blocks = fn(tmp_path / "ok.h5", max_nnz=NNZ_LIMIT_BELOW_FIXTURE)
+    whole = fn(tmp_path / "ok.h5", max_nnz=0)                                  # 0 removes the limit
+    for res in (blocks, whole):
+        assert all(c["ok"] for c in res), res
+    assert all("blocks of whole cells" in c["detail"] for c in blocks if not c.get("skipped")), blocks
+    assert all("blocks" not in c["detail"] for c in whole)
+    split = _has(datasets, "_cell_blocks")                                     # cells hold 2, 2, 5, 0, 3 non-zeros
+    assert split(np.array([0, 2, 4, 9, 9, 12]), 5) == [(0, 2), (2, 4), (4, 5)]
+    assert split(np.array([0, 2, 4, 9, 9, 12]), 3) == [(0, 1), (1, 2), (2, 3), (3, 5)]   # a cell is never split, a big one stands alone
 
 
 @pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"is missing")
@@ -1994,6 +1999,9 @@ def test_windowed_readback_detects_a_changed_value_in_a_later_window_and_a_wrong
     Z.indices[-1] = X.shape[1] - 1 if Z.indices[-1] != X.shape[1] - 1 else 0     # a different gene in the last non-zero
     assert cmp(Z, bc, names, tmp_path / "ok.h5", window=TINY_WINDOW)
     assert "gene names differ" in cmp(X, bc, names[::-1], tmp_path / "ok.h5")[0]
+    rows = (1, 4)                                                              # a block of cells compared with the same cells of the file
+    assert cmp(X[1:4], bc[1:4], names, tmp_path / "ok.h5", rows=rows) == []
+    assert cmp(X[0:3], bc[0:3], names, tmp_path / "ok.h5", rows=rows)
 
 
 @pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"overwrote|dropped")
