@@ -23,8 +23,8 @@ CREST is held to two claims, and both are measured:
 | `score_genes` | scanpy | identical incl. control-gene sampling (3e-7) |
 | DESeq2 Wald / LRT | R DESeq2 1.42 | ~1e-9 (Wald, simulated), 1e-6 (LRT) |
 | Harmony | harmonypy 2.0 | same iLISI / cLISI / ARI; neighbourhood overlap at seed-noise level |
-| Scrublet | scanpy | same AUROC on demuxlet doublets; Spearman 0.98 |
-| ingest | scanpy | 90.7% vs 89.8% accuracy; same label for 96.4% of cells |
+| Scrublet | scanpy 1.11 | same AUROC on demuxlet doublets; Spearman 0.98 (measured with `include_self_neighbor=False`, see {doc}`downstream`) |
+| ingest | scanpy 1.11 | 90.7% vs 89.8% accuracy; same label for 96.4% of cells |
 
 Details: {doc}`downstream`, {doc}`deseq2`.
 
@@ -172,7 +172,7 @@ roughly quadratically); Harmony 2.3× on Kang (ARI vs cell type 0.82 CREST / 0.8
 15-NN neighbourhood overlap 0.98). Three module runs stand out as new comparisons this round:
 Scrublet-equivalent doublet detection vs `scanpy.pp.scrublet` on Kang is **49× faster** at
 identical AUROC (0.863 both, Spearman 0.983 on doublet scores); `ingest` label transfer is
-**17.6× faster** and *more accurate* (90.7% vs 89.8%, label agreement 96.4%); pseudobulk
+**17.6× faster** and *more accurate* than scanpy 1.11 (90.7% vs 89.8%, label agreement 96.4%); pseudobulk
 DESeq2 on Kang (8 cell types) matches R's significant-gene calls almost exactly (identical
 significant sets in 6 of 8 cell types; 1 and 21 discordant genes in the other two). Its speed
 relative to R DESeq2 and pydeseq2 is not quoted here: the earlier figures were not

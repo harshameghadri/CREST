@@ -128,7 +128,8 @@ def normalize_total(bf: BioFrame, target_sum: Optional[float] = None) -> BioFram
     the cells kept now that have a total above 0, over the genes kept now; the number is resolved
     here and recorded, so a later cell filter does not change it. Pass ``target_sum=1e4`` for the
     value most pipelines use. Not implemented: ``exclude_highly_expressed``, ``max_fraction``,
-    ``layer``.
+    ``layer``. The raw values are expected to be integer counts: a ``UserWarning`` is raised when
+    they are negative or not integers (data that is already normalised or log-transformed).
 
     As in scanpy, each cell is divided by its total over the genes kept *now*. Those
     totals are computed here, in one streamed pass over the raw counts, and stored in
@@ -142,6 +143,7 @@ def normalize_total(bf: BioFrame, target_sum: Optional[float] = None) -> BioFram
         raise ValueError("target_sum must be positive")
     if any(op[0] == "log1p" for op in bf.ops):
         raise ValueError("normalize_total must come before log1p")
+    _warn_if_not_counts(bf.store, "normalize_total", stacklevel=3)
     totals = bf._kept_gene_totals()
     kept = totals[bf.obs["cell_id"].to_numpy().astype(np.int64)]
     if not (np.isfinite(kept).all() and (kept >= 0).all()):  # checked once here, not per chunk
