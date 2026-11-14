@@ -1,8 +1,9 @@
 # Pseudobulk DESeq2 in CREST
 
 `crest.tl.DESeq2` is a Rust port of Bioconductor **DESeq2 1.42** (`DESeq()` +
-`results()`), written against the R and C++ sources, not re-derived from the
-paper. Use it for pseudobulk DE on single-cell data (and for bulk RNA-seq).
+`results()`, with the Wald test or the likelihood-ratio test), written against the R and
+C++ sources, not re-derived from the paper. Use it for pseudobulk DE on single-cell data
+(and for bulk RNA-seq).
 
 ```python
 import crest
@@ -34,10 +35,11 @@ raw integer counts.
 | `estimateDispersionsPriorVar` (`mad²` − `trigamma((m−p)/2)`, floor 0.25) | same |
 | `estimateDispersionsMAP` (+ `dispOutlier`) | same |
 | `nbinomWaldTest` (IRLS with ridge 1e-6, `betaConv`, Wald p-values) | same (refit of non-converged rows: see below) |
+| `nbinomLRT` (`DESeq2(test="LRT", reduced="~ ...")`: deviance of the full vs the reduced design, χ² p-values) | same (LRT statistics within 1e-6 of R) |
 | Cook's distances, `maxCooks`, `refitWithoutOutliers` (≥ 7 replicates) | same |
 | `results()`: coefficient / `c(factor, a, b)` / numeric contrasts, `contrastAllZero`, Cook's cutoff incl. the 2-group heuristic, independent filtering (lowess port of R's `clowess`), BH | same |
 
-Not implemented: LRT, `lfcShrink` (apeglm/ashr/normal), `betaPrior=TRUE`,
+Not implemented: `lfcShrink` (apeglm/ashr/normal), `betaPrior=TRUE`,
 `fitType="local"`/`glmGamPoi`, observation weights, `lfcThreshold`,
 interaction terms in formulas (pass `design_matrix=` instead).
 
@@ -64,6 +66,9 @@ inputs to R and CREST. Results are in `bench/deseq2/results/`.
 
 On the Kang 2018 cell types (≈ 12–16k expressed genes, 10–16 samples, 9
 coefficients), on the 4-core benchmark machine:
+
+R ran single-threaded (`DESeq()` without BiocParallel) and pydeseq2 on all cores
+(`n_cpus=None`), as in `bench/deseq2/kang_pseudobulk.py`:
 
 | | per cell type | all 8 cell types |
 |---|---|---|

@@ -3,7 +3,7 @@
 # The docs are built with Sphinx from docs/. The package is NOT installed: CREST's
 # compiled Rust extension would need a Rust build on Read the Docs. Instead docs/conf.py
 # puts the repository on sys.path and mocks the native module, so autodoc can read every
-# docstring from the pure-Python layer. See docs/readthedocs.md for the step-by-step setup.
+# docstring from the pure-Python layer. Setup notes: "Read the Docs" in docs/development.md.
 version: 2
 
 build:
@@ -13,7 +13,7 @@ build:
 
 sphinx:
   configuration: docs/conf.py
-  fail_on_warning: false
+  fail_on_warning: true      # same as CI's sphinx-build -W
 
 python:
   install:

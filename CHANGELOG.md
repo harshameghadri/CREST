@@ -5,9 +5,10 @@
 ### Changed
 - Final paper benchmark: standard tier, 5 repeats, CPU governor `performance`, commit
   `d75475e` (`dev`, both Leiden parallelisations + the `read_h5ad`/`from_anndata` I/O work).
-  284/284 runs succeeded. Headline best-vs-best speed-up 1.20×–16.70× across 2,700–199,531
-  cells (10.28× on PBMC 68k), memory 1.6×–4.7× lower; CREST scales as cells^0.74 vs scanpy's
-  cells^0.91. Full results in `docs/benchmarks.md`.
+  284/284 runs succeeded. Headline speed-up (the smaller of matched-thread and best-vs-best)
+  ranges from 1.20× to 16.70× across 2,700–199,531 cells (10.28× on PBMC 68k), memory
+  1.6×–4.7× lower; CREST scales as cells^0.74 vs scanpy's cells^0.91. Full results in
+  `docs/benchmarks.md`.
 - `read_h5ad` now keeps every obs/var column (previously only the cell/gene index and
   `gene_ids`), including anndata's categorical encoding (a sub-group of `categories` +
   integer `codes`), expanded to strings the same way `BioFrame.from_anndata` already
@@ -70,8 +71,6 @@
   its parallel runs (was one copy per run). Output bit-identical.
 - Benchmark accuracy: Leiden seed-to-seed baseline (3 seeds per tool on the same graph, untimed)
   reported next to CREST-vs-scanpy ARI.
-
-### Changed
 - Benchmark protocol (`bench/paper/`, `crest_paper_bench.sh`): the headline is the core workflow,
   run at 8 and all threads so every speed-up is reported at matched threads **and** best vs
   best (the smaller is the headline); optional modules run separately so their time and memory

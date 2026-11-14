@@ -27,11 +27,12 @@ are returned as Polars DataFrames and arrays as NumPy.
 .. autofunction:: crest.read_10x_mtx
 .. autofunction:: crest.read_h5ad
 .. autofunction:: crest.read_parquet
+.. autofunction:: crest.io.convert_h5_to_parquet_stream
 ```
 
-Writing: {meth}`BioFrame.write_parquet <crest.core.BioFrame.write_parquet>`,
-{meth}`BioFrame.to_anndata <crest.core.BioFrame.to_anndata>` and
-{meth}`BioFrame.to_scipy <crest.core.BioFrame.to_scipy>`.
+Writing: {meth}`BioFrame.write_parquet <crest.BioFrame.write_parquet>`,
+{meth}`BioFrame.to_anndata <crest.BioFrame.to_anndata>` and
+{meth}`BioFrame.to_scipy <crest.BioFrame.to_scipy>`.
 
 ## Preprocessing: `crest.pp`
 
@@ -134,6 +135,6 @@ All of these are also available as `crest.tl.<name>`.
 ## Native module
 
 `crest.crest` is the compiled Rust extension. Its functions are internal: they take the
-argument tuples yielded by {meth}`BioFrame.iter_ctx <crest.core.BioFrame.iter_ctx>` plus
+argument tuples yielded by {meth}`BioFrame.iter_ctx <crest.BioFrame.iter_ctx>` plus
 preallocated NumPy output arrays. Use the Python API above. The native functions are listed
 in {doc}`development` for contributors.

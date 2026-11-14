@@ -4,9 +4,12 @@ Cells are matched by barcode. Metrics:
 
 * leiden_ari / leiden_nmi   - clusterings (both at resolution 1)
 * leiden_ari_seeds_crest / _scanpy / _cross_mean - mean pairwise ARI over 3 seeds within each
-  tool and across tools (same graph): the seed-to-seed yardstick for leiden_ari
+  tool (each tool re-clusters its own graph) and across tools (clusterings of the two tools'
+  different graphs): the seed-to-seed yardstick for leiden_ari
 * knn15_jaccard             - mean Jaccard of each cell's 15 nearest neighbours in
-                              the two PCA spaces (CREST's exact kNN on both)
+                              the two PCA spaces, both computed with CREST's kNN
+                              (exact up to 20k cells, IVF + NN-descent above). This
+                              compares the PCA spaces, not the two tools' own graphs.
 * pca_subspace_cos_min/mean - cosines of the principal angles between the two
                               50-d PC score subspaces (1 = same subspace)
 * pca_abs_corr_pc1..5       - |Pearson r| of matched PCs (sign is arbitrary)
@@ -62,8 +65,9 @@ def compare(crest_npz: Path, scanpy_npz: Path) -> dict:
     m["leiden_ari"] = float(adjusted_rand_score(la, lb))
     m["leiden_nmi"] = float(normalized_mutual_info_score(la, lb))
     m["n_clusters_crest"], m["n_clusters_scanpy"] = int(len(np.unique(la))), int(len(np.unique(lb)))
-    # seed baseline: how much each tool disagrees with itself on the same graph. CREST vs
-    # scanpy agreement is only meaningful relative to this.
+    # seed baseline: how much each tool disagrees with itself when re-clustering its own graph
+    # with other seeds (the two tools' graphs differ). CREST vs scanpy agreement is only
+    # meaningful relative to this.
     if "leiden_seeds" in a and "leiden_seeds" in b:
         ra = [la] + [x[ia] for x in a["leiden_seeds"]]
         rb = [lb] + [x[ib] for x in b["leiden_seeds"]]

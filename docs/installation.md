@@ -12,7 +12,9 @@ The distribution is called `crest-sc`, because `crest` was taken on PyPI. You st
 Python ≥ 3.10.
 
 Runtime dependencies are small: `numpy`, `polars` and `h5py`. scanpy, anndata and scipy are
-only needed to hand results over to the scverse ecosystem (`BioFrame.to_anndata()`).
+only needed to hand results over to the scverse ecosystem (`BioFrame.to_anndata()`). CREST's
+scanpy parity targets scanpy 1.11 (tested with 1.11.5); a plain `pip install scanpy` may now
+give a newer version.
 
 :::{note}
 Harmony, Scrublet, `seurat_v3` HVGs, `leiden_sweep`, `ingest` and the DESeq2
@@ -32,7 +34,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 # 2. the code
 git clone https://github.com/harshameghadri/CREST
 cd CREST
-git checkout dev
+git checkout v0.4.0      # the release; or `dev` for the development version
 
 # 3. a virtual environment (uv shown; `python -m venv .venv` works too)
 uv venv .venv --python 3.11

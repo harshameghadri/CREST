@@ -66,6 +66,5 @@ api
 :caption: Project
 
 development
-readthedocs
 changelog
 ```
