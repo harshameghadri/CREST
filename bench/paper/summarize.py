@@ -6,7 +6,7 @@ Reads RESULTS_DIR/raw/*.json (+ timelines, accuracy.json, env/) and writes
 RESULTS_DIR/tables/*.csv|.tex, RESULTS_DIR/figures/*.pdf|.png and
 RESULTS_DIR/report.md.
 
-Reporting rules (CLAUDE.md, "honest benchmarks"):
+Reporting rules ("honest benchmarks"):
   * the headline compares the CORE workflow (read ... Wilcoxon); optional modules
     (seurat_v3 HVG, Scrublet, resolution sweep, Harmony, pseudobulk DESeq2) are a
     separate table;

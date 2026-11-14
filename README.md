@@ -154,8 +154,8 @@ PDF/PNG figures and a `.tar.gz`. The pieces live in `bench/paper/`
   above 20k cells an inverted-file index — cells bucketed by k-means, each bucket
   searched against its 20 nearest buckets, like cell lists in molecular dynamics —
   polished by NN-descent (99.7% recall on 108k PBMC cells).
-* **UMAP.** umap-learn's objective and default parameters, with CREST's own iterative
-  spectral initialisation. With more than one thread (and ≥ 1,000 cells) it is optimised in
+* **UMAP.** umap-learn's objective and default parameters, with CREST's own spectral
+  initialisation (restarted Lanczos to a residual tolerance, per connected component). With more than one thread (and ≥ 1,000 cells) it is optimised in
   parallel by domain decomposition: each thread owns a range of cells, writes only those, and reads the rest
   from a snapshot refreshed 16× per epoch. 1-thread and multi-thread runs use different SGD
   schedules, so layouts differ by thread count.

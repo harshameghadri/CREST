@@ -341,7 +341,7 @@ impl<'a> State<'a> {
         }
     }
 
-    fn moe_correct_ridge(&mut self) {
+    fn moe_correct_ridge(&mut self) -> Result<(), String> {
         let (n, d, k, nb, ncov) = (self.n, self.d, self.k, self.nb, self.ncov);
         let multi = ncov > 1;
         // zsum[b] (K × d) = R_bᵀ Z_b
@@ -479,9 +479,11 @@ impl<'a> State<'a> {
                 };
                 cov[(i + 1) * m + i + 1] += lam;
             }
+            // a singular ridge system (lamb or alpha zero or too small) is an error,
+            // not a cluster to skip: skipping would return the input uncorrected
             let inv = match Lu::new(cov, m) {
                 Some(lu) => lu.inverse(),
-                None => continue,
+                None => return Err("ridge system is singular; lamb (or alpha) is zero or too small".into()),
             };
             // W = inv[:,0] z_allᵀ + Σ_i inv[:,i+1] z_sum_iᵀ   (m × d)
             let mut w = vec![0.0f64; m * d];
@@ -548,6 +550,7 @@ impl<'a> State<'a> {
         crate::simd::clean_simd_state();
         let yc = self.y.clone();
         normalize_rows(&yc, &mut self.y, d);
+        Ok(())
     }
 }
 
@@ -643,6 +646,13 @@ pub fn harmony(z: &[f32], n: usize, d: usize, batch: &[u32], levels: &[usize], p
     }
     if p.theta.len() != nb || p.lambda.as_ref().map_or(false, |l| l.len() != nb) {
         return Err("theta/lambda must have one value per batch level".into());
+    }
+    if let Some(l) = &p.lambda {
+        if l.iter().any(|v| !v.is_finite() || *v < 0.0) {
+            return Err("lamb must be finite and not negative".into());
+        }
+    } else if !p.alpha.is_finite() || p.alpha < 0.0 {
+        return Err("alpha must be finite and not negative".into());
     }
     if !(p.block_size > 0.0 && p.block_size <= 1.0) || !(p.sigma > 0.0) {
         return Err("block_size must be in (0, 1] and sigma positive".into());
@@ -755,7 +765,7 @@ pub fn harmony(z: &[f32], n: usize, d: usize, batch: &[u32], levels: &[usize], p
     let mut converged = false;
     for _ in 0..p.max_iter_harmony {
         st.cluster();
-        st.moe_correct_ridge();
+        st.moe_correct_ridge()?;
         if st.harmony_converged() {
             converged = true;
             break;
@@ -833,5 +843,37 @@ mod tests {
         assert!((mean(0, 0, 0) - mean(1, 0, 0)).abs() > 3.0, "cell types merged");
         let h = &out.objective_harmony;
         assert!(h.iter().all(|v| v.is_finite()));
+    }
+
+    fn two_batch_data(n: usize, d: usize) -> (Vec<f32>, Vec<u32>) {
+        let mut rng = StdRng::seed_from_u64(2);
+        let mut z = vec![0.0f32; n * d];
+        let mut batch = vec![0u32; n];
+        for i in 0..n {
+            batch[i] = (i % 2) as u32;
+            for j in 0..d {
+                z[i * d + j] = rng.gen::<f32>() + if j == 0 { 3.0 * batch[i] as f32 } else { 0.0 };
+            }
+        }
+        (z, batch)
+    }
+
+    #[test]
+    fn rejects_zero_negative_and_non_finite_lamb() {
+        let (n, d) = (400usize, 5usize);
+        let (z, batch) = two_batch_data(n, d);
+        for bad in [-2.0, f64::INFINITY, f64::NAN] {
+            let mut p = params(2, 8);
+            p.lambda = Some(vec![bad; 2]);
+            let err = harmony(&z, n, d, &batch, &[2], &p).err().expect("must fail");
+            assert!(err.contains("lamb"), "{err}");
+        }
+        let mut p = params(2, 8);
+        p.lambda = Some(vec![0.0; 2]);
+        let err = harmony(&z, n, d, &batch, &[2], &p).err().expect("lamb = 0 must fail");
+        assert!(err.contains("singular") && err.contains("lamb"), "{err}");
+        let mut p = params(2, 8);
+        p.lambda = Some(vec![1.0; 2]);
+        assert!(harmony(&z, n, d, &batch, &[2], &p).is_ok());
     }
 }

@@ -224,9 +224,8 @@ def test_invalid_weight_on_a_dropped_diagonal_entry_is_rejected_too(graph):
 
 
 @w_marker
-def test_umap_rejects_inconsistent_parameters(graph):
+def test_umap_rejects_non_finite_parameters(graph):
     n, rows, cols, w = graph
-    raises_value_error(lambda: _native.umap(n, rows, cols, w, 2, 2.0, 1.0), "min_dist")
     raises_value_error(lambda: _native.umap(n, rows, cols, w, 2, 0.5, np.inf), "spread")
     raises_value_error(lambda: _native.umap(n, rows, cols, w, 2, np.inf, np.inf), "min_dist|spread")
 
@@ -423,3 +422,24 @@ def test_no_panic_escapes_as_base_exception(seed):
         except BaseException as e:  # noqa: BLE001
             escaped.append(f"{name}: {type(e).__name__}")
     assert not escaped, f"{len(escaped)} calls raised a BaseException, first: {escaped[0]}"
+
+
+@baseline_fails(ref="v0.4.0", raises=AssertionError, match="no warning for min_dist")
+def test_tl_umap_warns_but_returns_an_embedding_when_min_dist_exceeds_spread(graph):
+    """scanpy.tl.umap accepts min_dist > spread, so CREST does too (with a warning)."""
+    import crest
+    n, rows, cols, w = graph
+    bf = crest.BioFrame.from_scipy(sp.random(n, 8, density=0.3, format="csr", dtype=np.float32, random_state=0))
+    bf.uns["neighbors"] = {"rows": rows, "cols": cols, "weights": w}
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        crest.tl.umap(bf, min_dist=2.0, spread=1.0, n_epochs=20)
+    assert any(issubclass(r.category, UserWarning) and "min_dist" in str(r.message) and "spread" in str(r.message) for r in rec), \
+        "no warning for min_dist > spread"
+    emb = bf.obsm["X_umap"]
+    assert emb.shape == (n, 2) and np.isfinite(emb).all()
+    # an ordinary call stays silent
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        crest.tl.umap(bf, min_dist=0.5, spread=1.0, n_epochs=20)
+    assert not [r for r in rec if "min_dist" in str(r.message)]

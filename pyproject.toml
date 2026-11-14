@@ -45,7 +45,13 @@ Issues = "https://github.com/harshameghadri/CREST/issues"
 python-source = "."
 module-name = "crest.crest"
 features = ["pyo3/extension-module"]
-exclude = ["crest/__pycache__/**"]
+exclude = [
+    "crest/__pycache__/**",
+    # the source distribution carries only what is needed to build and test the package
+    { path = "bench/**/*", format = "sdist" },
+    { path = "scripts/**/*", format = "sdist" },
+    { path = ".github/**/*", format = "sdist" },
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
