@@ -27,7 +27,8 @@ is set to ``--n-jobs`` (default ``--threads``) here. ``--variant`` and ``--contr
 the run (the settings themselves come from the environment); a control run's files carry a suffix.
 
 Endpoints. Everything the tool needs for the workflow is imported first, in a timed block
-(``import_seconds``); ``startup_seconds`` is the time from process creation to the end of that block;
+(``import_seconds``); ``startup_seconds`` is the time from the start of the process (the parent's spawn timestamp when run_all.py
+launched it, else the operating system's process creation time) to the end of that block;
 ``total_seconds`` is the timed pipeline (every step plus the garbage collections and result
 extraction between them); ``end_to_end_seconds = startup_seconds + total_seconds`` is the primary
 endpoint. The sum of the step timers (``core_seconds`` in the report) is secondary, and
@@ -431,7 +432,16 @@ def import_tool(tool: str, profile: str) -> dict:
 
 
 def _process_age_seconds() -> float | None:
-    """Seconds since this process was created (None if the platform does not say)."""
+    """Seconds since this process was started: since the parent's spawn timestamp (``CREST_BENCH_SPAWN_TIME``,
+    set by run_all.py just before it starts the process; accurate to milliseconds), else since the operating
+    system's process creation time (psutil; on Linux its resolution is limited by the boot time's one-second
+    rounding). None if neither is available."""
+    spawn = os.environ.get("CREST_BENCH_SPAWN_TIME")
+    if spawn:
+        try:
+            return max(0.0, time.time() - float(spawn))
+        except ValueError:
+            pass
     try:
         import psutil
         return max(0.0, time.time() - psutil.Process(os.getpid()).create_time())
@@ -477,7 +487,8 @@ def main():
 
     # timed start-up block: everything the workflow imports (part of the end-to-end endpoint)
     imports = import_tool(a.tool, a.profile)
-    startup = _process_age_seconds()  # process creation -> end of the imports
+    startup = _process_age_seconds()  # process start -> end of the imports
+    startup_source = "spawn-time" if os.environ.get("CREST_BENCH_SPAWN_TIME") else "process-create-time"
     rss_after_imports = _rss_gb()
     _meta(path.stem, path)  # loads the registry module now, so its import is not charged to a step
 
@@ -531,7 +542,8 @@ def main():
     report = {"tool": a.tool, "dataset": path.stem, "profile": a.profile, "threads": a.threads, "pinned": a.pin,
               "pin_cpus": pin_cpus, "variant": a.variant, "control": a.control, "n_jobs": N_JOBS or THREADS,
               "repeat": a.repeat, "status": status, "error": err, "n_cells": int(len(res["leiden"])) if res else None,
-              "total_seconds": total, "startup_seconds": startup, "import_seconds": imports["seconds"],
+              "total_seconds": total, "startup_seconds": startup, "startup_source": startup_source,
+              "import_seconds": imports["seconds"],
               "import_breakdown": imports["per_module"], "import_errors": imports["errors"],
               "end_to_end_seconds": protocol.end_to_end_seconds(startup, total) if status == "ok" else None,
               "untracked_seconds": total - step_sum, "quiet": quiet, "sample_interval_s": a.sample_interval,

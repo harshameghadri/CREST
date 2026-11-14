@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import types
 from argparse import Namespace
 from pathlib import Path
@@ -1104,6 +1105,7 @@ def test_a_run_gets_exactly_the_environment_of_its_settings(run_all, tmp_path, m
     run_all.run(job, a, logs)
     env = seen["env"]
     assert env.get("NUMBA_THREADING_LAYER") == "workqueue", "threading layer not set"
+    assert abs(float(env["CREST_BENCH_SPAWN_TIME"]) - time.time()) < 60.0     # the spawn timestamp run_one measures from
     assert env["NUMBA_NUM_THREADS"] == "64" and env["OPENBLAS_NUM_THREADS"] == "64"
     assert "--pin" in seen["cmd"] and seen["cmd"][seen["cmd"].index("--n-jobs") + 1] == "64"
     job2 = dict(job, variant="default", settings=protocol.variant_settings("scanpy", "default", 64))
@@ -1597,7 +1599,8 @@ def test_lean_in_place_subsetting_gives_the_same_matrix_as_view_and_copy():
     sp = pytest.importorskip("scipy.sparse")
     rng = np.random.default_rng(0)
     X = sp.random(40, 30, density=0.3, format="csr", random_state=1, dtype=np.float32)
-    a = ad.AnnData(X.copy(), var=pl.DataFrame({"g": [f"g{i}" for i in range(30)]}).to_pandas().set_index("g"))
+    import pandas as pd
+    a = ad.AnnData(X.copy(), var=pd.DataFrame(index=[f"g{i}" for i in range(30)]))
     a.var["highly_variable"] = rng.random(30) < 0.5
     a.raw = a
     ref = a[:, a.var.highly_variable].copy()
@@ -1681,7 +1684,9 @@ def test_one_run_records_endpoints_load_pinning_and_memory_baseline(tmp_path):
     h5 = tmp_path / "tinyds.h5"
     _tiny_dataset(h5)
     out = tmp_path / "out"
-    env = {**os.environ, "RAYON_NUM_THREADS": "2", "OMP_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "2"}
+    env = {**os.environ, "RAYON_NUM_THREADS": "2", "OMP_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "2",
+           "CREST_BENCH_SPAWN_TIME": repr(time.time())}
+    t_spawn = time.time()
     cmd = [sys.executable, str(REPO / "bench" / "paper" / "run_one.py"), "--tool", "crest", "--data", str(h5), "--out", str(out),
            "--profile", "core", "--threads", "2", "--repeat", "0", "--pin"]
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=300)
@@ -1691,6 +1696,7 @@ def test_one_run_records_endpoints_load_pinning_and_memory_baseline(tmp_path):
     rec = json.loads((out / "crest__tinyds__core__t2__r0.json").read_text())
     assert rec["status"] == "ok", rec.get("error")
     assert rec.get("startup_seconds", None) is not None, "startup_seconds not recorded"
+    assert rec["startup_source"] == "spawn-time" and 0.0 < rec["startup_seconds"] < time.time() - t_spawn
     steps = sum(s["seconds"] for s in rec["steps"].values())
     assert rec["untracked_seconds"] == pytest.approx(rec["total_seconds"] - steps, abs=1e-6)
     assert rec["end_to_end_seconds"] == pytest.approx(rec["startup_seconds"] + rec["total_seconds"], abs=1e-6)

@@ -240,6 +240,7 @@ def run(job: dict, a, log_dir: Path, raw: Path | None = None, force: bool = Fals
     if job["profile"] == "full" and a.scrublet_max_cells:
         cmd += ["--scrublet-max-cells", str(a.scrublet_max_cells)]
     t0 = time.time()
+    env["CREST_BENCH_SPAWN_TIME"] = repr(t0)   # run_one measures its start-up from here
     with open(log_dir / f"{tag}.log", "w") as lf:
         p = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, env=env, start_new_session=True)
         try:
