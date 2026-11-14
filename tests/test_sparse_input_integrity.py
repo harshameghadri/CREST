@@ -24,6 +24,7 @@ ad = pytest.importorskip("anndata")
 
 # ---- named tolerances / sizes
 STATS_ATOL = 1e-6          # gene_stats of a split / zero-padded matrix against the canonical one
+DISPERSION_RTOL = 1e-9     # gene statistics of frames holding the same matrix in different chunkings
 EIGENVALUE_ATOL = 1e-10    # PCA variances of aligned Parquet parts against the dense float64 reference
 N_CELLS, N_GENES = 240, 60
 SMALL_PART_NNZ = 1500      # several Parquet parts for the synthetic data
@@ -230,7 +231,9 @@ def test_triplets_with_repeated_cell_gene_pairs_equal_the_summed_matrix(canon_X,
         crest.pp.highly_variable_genes(b, n_top_genes=20, flavor="seurat")
         crest.pp.scale(b, max_value=10)
         crest.tl.pca(b, n_comps=5)
-    assert bf.var["highly_variable"].to_list() == canon.var["highly_variable"].to_list()
+    for col in ("means", "dispersions", "mean_log", "std_log"):
+        np.testing.assert_allclose(bf.var[col].to_numpy(), canon.var[col].to_numpy(), rtol=DISPERSION_RTOL, atol=DISPERSION_RTOL, equal_nan=True,
+                                   err_msg=col)
     np.testing.assert_allclose(bf.uns["pca"]["variance"], canon.uns["pca"]["variance"], atol=STATS_ATOL)
 
 
@@ -272,7 +275,11 @@ def test_stored_zeros_do_not_change_hvg_or_markers(canon_X, tmp_path, kind):
         lognorm(b)
         crest.pp.highly_variable_genes(b, n_top_genes=20, flavor="seurat")
     np.testing.assert_array_equal(bf.var["n_cells_expr"].to_numpy(), canon.var["n_cells_expr"].to_numpy())
-    assert bf.var["highly_variable"].to_list() == canon.var["highly_variable"].to_list()
+    # a gene next to a bin edge or the cut-off can change sides when the chunking differs by one rounding
+    # step, so the statistics before binning are compared, not the flags
+    for col in ("means", "dispersions", "mean_log", "std_log"):
+        np.testing.assert_allclose(bf.var[col].to_numpy(), canon.var[col].to_numpy(), rtol=DISPERSION_RTOL, atol=DISPERSION_RTOL, equal_nan=True,
+                                   err_msg=col)
     for method in ("t-test", "wilcoxon"):
         r1 = crest.tl.rank_genes_groups(bf, "grp", method=method)
         r2 = crest.tl.rank_genes_groups(canon, "grp", method=method)
