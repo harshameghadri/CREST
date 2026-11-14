@@ -158,7 +158,7 @@ fn leiden<'py>(
 
 /// UMAP layout of an undirected weighted graph (umap-learn semantics, parallel SGD).
 #[pyfunction]
-#[pyo3(signature = (n, rows, cols, weights, n_components=2, min_dist=0.5, spread=1.0, n_epochs=None, spectral_n_iter=100, seed=0))]
+#[pyo3(signature = (n, rows, cols, weights, n_components=2, min_dist=0.5, spread=1.0, n_epochs=None, spectral_max_matvec=None, seed=0))]
 fn umap<'py>(
     py: Python<'py>,
     n: usize,
@@ -169,22 +169,30 @@ fn umap<'py>(
     min_dist: f32,
     spread: f32,
     n_epochs: Option<usize>,
-    spectral_n_iter: usize,
+    spectral_max_matvec: Option<usize>,
     seed: u64,
 ) -> PyResult<Bound<'py, PyArray2<f32>>> {
     if n_components == 0 || !(spread > 0.0) || !(min_dist >= 0.0) {
         return Err(pyo3::exceptions::PyValueError::new_err("invalid UMAP parameters"));
     }
     let e = undirected(n, contiguous(&rows, "rows")?, contiguous(&cols, "cols")?, contiguous(&weights, "weights")?)?;
-    let emb = py.allow_threads(|| {
+    let (emb, spectral_ok) = py.allow_threads(|| {
         let mut edges = Vec::with_capacity(e.len() * 2);
         for &(a, b, w) in &e {
             edges.push(Edge { source: a, target: b, weight: w });
             edges.push(Edge { source: b, target: a, weight: w });
         }
         let g = UmapGraph { n, edges };
-        crate::umap::core::embed(&g, n_components, min_dist, spread, n_epochs, spectral_n_iter, seed)
+        crate::umap::core::embed(&g, n_components, min_dist, spread, n_epochs, spectral_max_matvec, seed)
     });
+    if !spectral_ok {
+        PyErr::warn_bound(
+            py,
+            &py.get_type_bound::<pyo3::exceptions::PyRuntimeWarning>(),
+            "umap: the spectral initialisation stopped at its cap on matrix-vector products before reaching its tolerance; the starting layout is approximate (raise spectral_max_matvec)",
+            1,
+        )?;
+    }
     Ok(PyArray1::from_vec_bound(py, emb).reshape([n, n_components])?)
 }
 
@@ -566,6 +574,7 @@ fn deseq2_fit<'py>(
         out.set_item("replaceCounts", v(rc).reshape([g, m])?)?;
     }
     out.set_item("fitType", match fit.fit_type { FitType::Parametric => "parametric", FitType::Mean => "mean" })?;
+    out.set_item("fit_substituted", fit.fit_substituted)?;
     out.set_item("trend", v(fit.trend))?;
     out.set_item("dispPriorVar", fit.disp_prior_var)?;
     out.set_item("varLogDispEsts", fit.var_log_disp_ests)?;

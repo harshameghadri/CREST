@@ -46,7 +46,10 @@ def run_harmony(z: np.ndarray, batches: Sequence[Sequence], theta: Union[float, 
                 random_state: int = 0) -> dict:
     """Harmony on an (N, d) matrix. ``batches`` is a list of per-cell label arrays
     (one per covariate). ``lamb=None`` estimates the ridge penalty per cluster as
-    ``alpha * E`` (harmony2). Returns a dict with ``Z_corr`` (N, d), ``R`` (N, K),
+    ``alpha * E`` (harmony2); ``-1`` is accepted as the same "estimate" sentinel as
+    in harmonypy. A fixed ``lamb`` must be finite and positive: negative or
+    non-finite values, and a ridge of zero (or so small that the per-cluster
+    ridge system is singular), raise ``ValueError``. Returns a dict with ``Z_corr`` (N, d), ``R`` (N, K),
     ``Y`` (K, d), the objectives and ``converged``."""
     z = np.ascontiguousarray(z, dtype=np.float32)
     n = z.shape[0]
@@ -67,6 +70,8 @@ def run_harmony(z: np.ndarray, batches: Sequence[Sequence], theta: Union[float, 
         n_b = np.bincount(batch.ravel(), minlength=off).astype(np.float64)
         th = th * (1 - np.exp(-(n_b / (nclust * tau)) ** 2))
     lam = None if lamb is None or (np.isscalar(lamb) and lamb == -1) else _per_level(lamb, levels, "lamb")
+    if lam is not None and not (np.all(np.isfinite(lam)) and np.all(lam >= 0)):
+        raise ValueError("lamb must be finite and not negative (use None or -1 to estimate it)")
     return _native.harmony(z, batch, levels, nclust, th.tolist(), None if lam is None else lam.tolist(),
                            float(sigma), float(alpha), float(block_size), int(max_iter_harmony),
                            int(max_iter_kmeans), float(epsilon_cluster), float(epsilon_harmony),

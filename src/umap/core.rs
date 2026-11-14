@@ -8,19 +8,26 @@ use rand_distr::{Distribution, Normal};
 ///
 /// `n_epochs = None` uses umap-learn's default (500 for n <= 10k, else 200).
 /// Initialisation follows umap-learn: spectral layout scaled to max |x| = 10,
-/// tiny Gaussian noise, then each dimension rescaled to [0, 10].
+/// tiny Gaussian noise, then each dimension rescaled to [0, 10]. The spectral
+/// layout is iterated to a residual tolerance, capped at `spectral_max_matvec`
+/// matrix-vector products (`None`: [`spectral::default_max_matvec`]).
+///
+/// Returns the embedding and whether the spectral initialisation met its tolerance.
 pub fn embed(
     g: &graph::UmapGraph,
     n_components: usize,
     min_dist: f32,
     spread: f32,
     n_epochs: Option<usize>,
-    spectral_n_iter: usize,
+    spectral_max_matvec: Option<usize>,
     seed: u64,
-) -> Vec<f32> {
+) -> (Vec<f32>, bool) {
     let n = g.n;
     let n_epochs = n_epochs.unwrap_or(if n <= 10_000 { 500 } else { 200 });
-    let mut emb = spectral::spectral_layout(g, n_components, spectral_n_iter, seed);
+    let cap = spectral_max_matvec.unwrap_or_else(|| spectral::default_max_matvec(n));
+    let spec = spectral::spectral_layout(g, n_components, cap, seed);
+    let spectral_converged = spec.converged;
+    let mut emb = spec.emb;
 
     let maxabs = emb.iter().fold(0.0f32, |m, v| m.max(v.abs()));
     let expansion = if maxabs > 0.0 { 10.0 / maxabs } else { 1.0 };
@@ -44,5 +51,5 @@ pub fn embed(
 
     let (a, b) = utils::find_ab_params(spread, min_dist);
     sgd::optimize_layout(g, &mut emb, n_components, n_epochs, a, b, seed);
-    emb
+    (emb, spectral_converged)
 }

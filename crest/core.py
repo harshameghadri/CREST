@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
+import tempfile
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Optional, Tuple, Union
@@ -123,6 +126,36 @@ class FrameStore:
             lo = hi
 
 
+# ParquetStore objects that are still referenced, so that no writer replaces the part files a
+# live frame is reading (see :func:`_refuse_live_directory`).
+_LIVE_PARQUET_STORES: "weakref.WeakSet" = weakref.WeakSet()
+
+
+def _refuse_live_directory(path: Union[str, Path], what: str) -> None:
+    """Raise ``ValueError`` if ``path`` is the directory that any open :class:`ParquetStore`
+    in this process reads from. Replacing its part files would delete or renumber the data
+    those frames still point at. Nothing is touched before this check."""
+    target = Path(path).resolve()
+    for store in list(_LIVE_PARQUET_STORES):
+        if store.resolved_path == target:
+            raise ValueError(
+                f"{what}: {target} is the directory an open BioFrame reads its counts from, and "
+                "replacing its part files would destroy that data. Write to a different directory "
+                "(or release every frame backed by this one first, e.g. `del bf`); nothing was changed.")
+
+
+def _publish_parquet_parts(staging: Path, target: Path) -> None:
+    """Move a finished dataset (part files, obs.parquet, var.parquet) from ``staging`` into
+    ``target``. The previous parts are removed only now, after the new ones are complete."""
+    for old in target.glob("part-*.parquet"):
+        old.unlink()
+    # parts first, obs/var last: the dataset only looks complete once all three kinds are in place
+    names = sorted(f.name for f in staging.glob("part-*.parquet")) + ["obs.parquet", "var.parquet"]
+    for name in names:
+        if (staging / name).exists():
+            os.replace(staging / name, target / name)
+
+
 class ParquetStore:
     """Raw counts on disk (out-of-core): a directory of ``part-*.parquet`` files.
 
@@ -139,6 +172,8 @@ class ParquetStore:
         if not self.parts:
             raise FileNotFoundError(f"no part-*.parquet files in {self.path}")
         self.n_cells, self.n_genes = int(n_cells), int(n_genes)
+        self.resolved_path = self.path.resolve()
+        _LIVE_PARQUET_STORES.add(self)
 
     @property
     def nnz(self) -> int:
@@ -170,9 +205,11 @@ class BioFrame:
     store : CSRStore, FrameStore or ParquetStore
         The raw counts (in memory, or on disk for :class:`ParquetStore`).
     obs : polars.DataFrame
-        One row per kept cell. ``cell_id`` is the cell's row in ``store``.
+        One row per kept cell. ``cell_id`` is the cell's row in ``store``; the constructors
+        assign it, and an input column of that name is kept as ``cell_id_orig``.
     var : polars.DataFrame
-        One row per kept gene. ``gene_id`` is the gene's column in ``store``.
+        One row per kept gene. ``gene_id`` is the gene's column in ``store``; the constructors
+        assign it, and an input column of that name is kept as ``gene_id_orig``.
     obsm : dict
         Per-cell arrays (``X_pca``, ``X_umap``, ``X_pca_harmony``), rows aligned with ``obs``.
     varm : dict
@@ -233,15 +270,14 @@ class BioFrame:
         return cls.from_csr(X.indptr, X.indices, X.data, X.shape[1], obs, var)
 
     @classmethod
-    def _with_store(cls, store: Store, obs, var) -> "BioFrame":
-        if obs is None:
-            obs = pl.DataFrame({"cell_id": np.arange(store.n_cells, dtype=np.uint32)})
-        elif "cell_id" not in obs.columns:
-            obs = obs.with_columns(pl.Series("cell_id", np.arange(obs.height, dtype=np.uint32)))
-        if var is None:
-            var = pl.DataFrame({"gene_id": np.arange(store.n_genes, dtype=np.uint32)})
-        elif "gene_id" not in var.columns:
-            var = var.with_columns(pl.Series("gene_id", np.arange(var.height, dtype=np.uint32)))
+    def _with_store(cls, store: Store, obs, var, keep_ids: bool = False) -> "BioFrame":
+        """Pair ``store`` with ``obs``/``var``. ``obs["cell_id"]`` and ``var["gene_id"]`` are the
+        store's own row/column ids and are always assigned here as ``0..n-1``; a column of
+        that name in the input is user data and is kept as ``cell_id_orig`` / ``gene_id_orig``.
+        ``keep_ids`` (used by :func:`read_parquet`, whose ids were written by
+        :meth:`write_parquet`) leaves an existing id column alone."""
+        obs = _with_store_ids(obs, "cell_id", store.n_cells, keep_ids)
+        var = _with_store_ids(var, "gene_id", store.n_genes, keep_ids)
         if obs.height != store.n_cells or var.height != store.n_genes:
             raise ValueError(f"obs/var sizes {obs.height}/{var.height} do not match store {store.n_cells}/{store.n_genes}")
         return cls(store=store, obs=obs, var=var)
@@ -267,10 +303,10 @@ class BioFrame:
         """Gene names of the kept genes, as a list of str.
 
         Taken from the first ``var`` column that exists of ``gene_name``,
-        ``gene_symbols`` and ``gene_ids``; otherwise the store's integer
-        ``gene_id`` as strings.
+        ``gene_symbols``, ``gene_ids`` and ``gene_id_orig`` (a ``gene_id`` column that came
+        with the input); otherwise the store's integer ``gene_id`` as strings.
         """
-        for c in ("gene_name", "gene_symbols", "gene_ids"):
+        for c in ("gene_name", "gene_symbols", "gene_ids", "gene_id_orig"):
             if c in self.var.columns:
                 return self.var[c].cast(pl.Utf8).to_list()
         return self.var["gene_id"].cast(pl.Utf8).to_list()
@@ -400,14 +436,21 @@ class BioFrame:
     def to_anndata(self, transform: bool = False):
         """Convert to AnnData (requires ``anndata``). ``X`` holds raw counts unless ``transform``.
 
-        Carries over obs/var (all columns), obsm, varm and uns (``neighbors`` becomes
-        ``obsp["connectivities"]``, scanpy's layout). Use this to hand a ``BioFrame`` to
-        ``sc.pl`` or anything else in the scverse ecosystem.
+        Carries over obs/var (all columns except the store's own ``cell_id`` / ``gene_id``,
+        which have no meaning outside this BioFrame), obsm, varm and uns (``neighbors``
+        becomes ``obsp["connectivities"]``, scanpy's layout). The result can be written with
+        ``AnnData.write_h5ad``: ``uns`` is converted to types the h5ad format stores. Polars
+        result tables become pandas DataFrames, the recorded transforms in ``ops`` become
+        ``"|"``-joined strings (``"normalize_total|10000.0|<fingerprint>"``) and entries that
+        are ``None`` are left out. Use this to hand a ``BioFrame`` to ``sc.pl`` or anything
+        else in the scverse ecosystem.
         """
         import anndata as ad
-        obs, var = _to_pandas(self.obs), _to_pandas(self.var)
-        obs.index = obs.get("barcode", obs["cell_id"]).astype(str).values
+        obs, var = _to_pandas_safe(self.obs), _to_pandas_safe(self.var)
+        obs.index = (obs["barcode"] if "barcode" in obs.columns else obs["cell_id"]).astype(str).values
         var.index = np.array(self.var_names, dtype=str)
+        obs = obs.drop(columns=["cell_id"])  # the store's ids; from_anndata/read_h5ad assign their own
+        var = var.drop(columns=["gene_id"])
         a = ad.AnnData(X=self.to_scipy(transform), obs=obs, var=var)
         for k, v in self.obsm.items():
             a.obsm[k] = v
@@ -415,7 +458,9 @@ class BioFrame:
             a.varm[k] = v
         for k, v in self.uns.items():
             if k != "neighbors":
-                a.uns[k] = v
+                c = _anndata_safe(v)
+                if c is not _DROP:
+                    a.uns[str(k)] = c
         if "neighbors" in self.uns:
             from .pp import connectivities_matrix
             a.obsp["connectivities"] = connectivities_matrix(self)
@@ -430,7 +475,9 @@ class BioFrame:
         can load (``sc.read_loom``, ``sc.read_visium``, ``ad.read_zarr``, ...) — load it as
         an ``AnnData`` with the matching reader, then call this. Carries over ``obs``/``var``
         (every column, not just the index) and ``obsm``; ``varm``, ``uns`` and any ``layers``
-        other than ``X`` are not. Loads the whole matrix into memory, so for files too large
+        other than ``X`` are not. The store's own ``cell_id`` /
+        ``gene_id`` columns are always assigned fresh (``0..n-1``); a column of that name in
+        ``adata.obs`` / ``adata.var`` is kept as ``cell_id_orig`` / ``gene_id_orig``. Loads the whole matrix into memory, so for files too large
         for that, see :func:`crest.read_h5ad` / `convert_h5_to_parquet_stream` instead.
         """
         import scipy.sparse as sp
@@ -444,45 +491,50 @@ class BioFrame:
 
     def write_parquet(self, path: Union[str, Path], nnz_per_part: int = 1 << 23) -> None:
         """Write raw counts (kept cells/genes, current ids) as a Parquet dataset
-        directory of whole-cell parts of ~``nnz_per_part`` non-zeros each."""
+        directory of whole-cell parts of ~``nnz_per_part`` non-zeros each.
+
+        Raises ``ValueError``, before touching anything, if ``path`` is the directory this
+        frame (or any other open frame) reads its counts from: that would replace the data
+        being streamed. Write to a new directory instead. Existing ``part-*.parquet`` files in
+        another target directory are replaced, but only after the new dataset is complete, so
+        a failed write leaves the old one in place.
+        """
         path = Path(path)
+        _refuse_live_directory(path, "write_parquet")
         path.mkdir(parents=True, exist_ok=True)
-        for old in path.glob("part-*.parquet"):
-            old.unlink()
-        buf, n_buf, part = [], 0, 0
+        staging = Path(tempfile.mkdtemp(prefix=".write-", dir=path))  # same file system as the target
+        try:
+            buf, n_buf, part = [], 0, 0
 
-        def flush():
-            nonlocal buf, n_buf, part
-            if buf:
-                pl.concat(buf).write_parquet(path / f"part-{part:05d}.parquet", compression="zstd")
-                part += 1
-            buf, n_buf = [], 0
+            def flush():
+                nonlocal buf, n_buf, part
+                if buf:
+                    pl.concat(buf).write_parquet(staging / f"part-{part:05d}.parquet", compression="zstd")
+                    part += 1
+                buf, n_buf = [], 0
 
-        for r, g, v in self.iter_chunks(transform=False):
-            lo = 0
-            while lo < len(r):
-                hi = min(lo + nnz_per_part - n_buf, len(r))
-                if hi < len(r):  # end on a cell boundary
-                    hi = int(np.searchsorted(r, r[hi - 1], side="right"))
-                buf.append(pl.DataFrame({"cell_id": r[lo:hi], "gene_id": g[lo:hi], "count": v[lo:hi]}))
-                n_buf += hi - lo
-                lo = hi
-                if n_buf >= nnz_per_part:
-                    flush()
-        flush()
-        self.obs.with_columns(pl.Series("cell_id", np.arange(self.n_obs, dtype=np.uint32))).write_parquet(path / "obs.parquet")
-        self.var.with_columns(pl.Series("gene_id", np.arange(self.n_vars, dtype=np.uint32))).write_parquet(path / "var.parquet")
+            for r, g, v in self.iter_chunks(transform=False):
+                lo = 0
+                while lo < len(r):
+                    hi = min(lo + nnz_per_part - n_buf, len(r))
+                    if hi < len(r):  # end on a cell boundary
+                        hi = int(np.searchsorted(r, r[hi - 1], side="right"))
+                    buf.append(pl.DataFrame({"cell_id": r[lo:hi], "gene_id": g[lo:hi], "count": v[lo:hi]}))
+                    n_buf += hi - lo
+                    lo = hi
+                    if n_buf >= nnz_per_part:
+                        flush()
+            flush()
+            self.obs.with_columns(pl.Series("cell_id", np.arange(self.n_obs, dtype=np.uint32))).write_parquet(staging / "obs.parquet")
+            self.var.with_columns(pl.Series("gene_id", np.arange(self.n_vars, dtype=np.uint32))).write_parquet(staging / "var.parquet")
+            _publish_parquet_parts(staging, path)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def totals_fingerprint(totals: np.ndarray) -> str:
     """Short content hash of stored ``cell_totals`` (recorded in the ``normalize_total`` op)."""
     return hashlib.blake2b(np.ascontiguousarray(totals, np.float64).tobytes(), digest_size=8).hexdigest()
-
-
-def _to_pandas(df: pl.DataFrame):
-    """polars -> pandas without pyarrow (column by column through numpy)."""
-    import pandas as pd
-    return pd.DataFrame({c: df[c].to_numpy() for c in df.columns})
 
 
 def _from_pandas(df, index_name: str) -> pl.DataFrame:
@@ -497,11 +549,101 @@ def _from_pandas(df, index_name: str) -> pl.DataFrame:
     return pl.DataFrame(cols)
 
 
+def _with_store_ids(df, col: str, n: int, keep: bool) -> pl.DataFrame:
+    """``df`` with ``col`` holding the store's ids ``0..n-1`` (see :meth:`BioFrame._with_store`)."""
+    ids = np.arange(n if df is None else df.height, dtype=np.uint32)
+    if df is None:
+        return pl.DataFrame({col: ids})
+    if col in df.columns:
+        if keep:
+            return df
+        kept = f"{col}_orig"
+        if kept in df.columns:
+            raise ValueError(f"the table has both {col!r} and {kept!r}; {col!r} is the store's own id column "
+                             f"and would be renamed {kept!r}: drop or rename one of them first")
+        df = df.rename({col: kept})
+    return df.with_columns(pl.Series(col, ids))
+
+
+def _to_pandas_safe(df: pl.DataFrame):
+    """polars -> pandas (no pyarrow) with every column in a type AnnData can write to h5ad:
+    categorical, list and struct columns become strings (list items joined by ``"|"``), and
+    missing strings become ``""``."""
+    import pandas as pd
+    cols = {}
+    for c in df.columns:
+        s, dt = df[c], df.schema[c]
+        if isinstance(dt, pl.List):
+            s = s.cast(pl.List(pl.Utf8)).list.join("|")
+        elif isinstance(dt, (pl.Struct, pl.Object)):
+            s = s.cast(pl.Utf8)
+        elif dt == pl.Categorical:
+            s = s.cast(pl.Utf8)
+        if s.dtype == pl.Utf8:
+            s = s.fill_null("")
+        cols[c] = s.to_numpy()
+    return pd.DataFrame(cols)
+
+
+_DROP = object()  # "leave this entry out" marker of :func:`_anndata_safe`
+_SCALARS = (str, bool, int, float, np.generic)
+
+
+def _anndata_safe(v):
+    """Convert one ``uns`` value to types the h5ad format can store, or ``_DROP``.
+
+    Polars tables become pandas DataFrames; ``None`` is dropped; a list/tuple of scalars becomes
+    a numpy array; a ragged list of tuples (the recorded ``ops``, of any tuple length) becomes a
+    list of ``"|"``-joined strings; other sequences become a dict keyed by position; dict keys
+    become ``str``; object arrays become string arrays. Numpy arrays, scipy sparse matrices,
+    pandas objects and plain scalars pass through. Anything else is stored as ``str(value)``.
+    """
+    if v is None:
+        return _DROP
+    if isinstance(v, pl.DataFrame):
+        return _to_pandas_safe(v)
+    if isinstance(v, pl.Series):
+        return _anndata_safe(v.to_numpy())
+    if isinstance(v, dict):
+        out = {}
+        for k, x in v.items():
+            c = _anndata_safe(x)
+            if c is not _DROP:
+                out[str(k)] = c
+        return out
+    if isinstance(v, (set, frozenset)):
+        return _anndata_safe(sorted(v, key=str))
+    if isinstance(v, (list, tuple)):
+        items = [x for x in v if x is not None]
+        if all(isinstance(x, _SCALARS) for x in items):
+            if any(isinstance(x, str) for x in items):
+                return np.array([str(x) for x in items], dtype=str)
+            return np.asarray(items)
+        if all(isinstance(x, (list, tuple, *_SCALARS)) and
+               (isinstance(x, _SCALARS) or all(isinstance(y, _SCALARS) for y in x if y is not None))
+               for x in items):
+            return np.array(["|".join(str(y) for y in x if y is not None) if isinstance(x, (list, tuple)) else str(x)
+                             for x in items], dtype=str)
+        return _anndata_safe({str(i): x for i, x in enumerate(items)})
+    if isinstance(v, np.ndarray):
+        if v.dtype == object:
+            return np.array([str(x) for x in v.ravel()], dtype=str).reshape(v.shape)
+        return v
+    if isinstance(v, _SCALARS):
+        return v
+    if isinstance(v, Path):
+        return str(v)
+    mod = type(v).__module__
+    if mod.startswith(("scipy.sparse", "pandas")):
+        return v
+    return str(v)
+
+
 def read_parquet(path: Union[str, Path], chunk_nnz: int = DEFAULT_CHUNK_NNZ) -> BioFrame:
     """Open a Parquet dataset written by :meth:`BioFrame.write_parquet` (out-of-core)."""
     path = Path(path)
     obs = pl.read_parquet(path / "obs.parquet")
     var = pl.read_parquet(path / "var.parquet")
-    bf = BioFrame._with_store(ParquetStore(path, obs.height, var.height), obs, var)
+    bf = BioFrame._with_store(ParquetStore(path, obs.height, var.height), obs, var, keep_ids=True)
     bf.chunk_nnz = chunk_nnz
     return bf

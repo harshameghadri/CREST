@@ -126,7 +126,17 @@ plt.scatter(xy[:, 0], xy[:, 1], c=codes, s=1, cmap="tab20"); plt.gca().set_aspec
 
 adata = bf.to_anndata()          # AnnData with raw counts in X, obs/var/obsm/uns copied
 # import scanpy as sc; sc.pl.umap(adata, color="leiden")
+adata.write_h5ad("pbmc3k.h5ad")  # works after the whole workflow
 ```
+
+`to_anndata` converts `uns` to types the h5ad format stores: the Polars result tables
+(`rank_genes_groups`, `leiden_sweep`) become pandas DataFrames, the recorded transforms in
+`ops` become `"|"`-joined strings (`"normalize_total|10000.0|<fingerprint>"`), and entries that
+are `None` are left out. The store's own `cell_id` / `gene_id` columns are not exported, so
+`BioFrame.from_anndata(adata)` and `crest.read_h5ad(...)` of the written file work after any
+filter. `bf.write_parquet(dir)` refuses (`ValueError`, nothing touched) to write into the
+directory the frame itself reads from, which includes `backed=` datasets: write to a new
+directory instead.
 
 ## 7. Out of core: the same code for a dataset larger than RAM
 
@@ -136,6 +146,10 @@ bf = crest.read_10x_h5("big.h5", backed="big_parquet/")    # converts to Parquet
 
 bf = crest.read_parquet("big_parquet/")                    # reopen later without the .h5
 ```
+
+`backed=` replaces the `part-*.parquet` files already in that directory, once the new dataset
+is complete. It raises `ValueError` if a frame in the same session still reads from the
+directory (release it with `del bf` or use another directory).
 
 With `backed=`, the counts stay on disk and are read one file at a time, so the count matrix
 never has to fit in memory. Per-cell results (the table of cells, PCA, the neighbour graph,
