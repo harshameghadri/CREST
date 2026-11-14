@@ -123,13 +123,8 @@ jobs:
         run: |
           . .venv/bin/activate
           python -c "import numpy; assert numpy.__version__ == '${{ matrix.numpy }}', numpy.__version__"
-      - name: Restore the cached test data
-        uses: actions/cache@v4
-        with:
-          path: .test-data
-          key: test-data-${{ hashFiles('scripts/fetch_test_data.py') }}
-      - name: Fetch the test data (sha256 verified)
-        run: python scripts/fetch_test_data.py
+      - name: Test data (cached, sha256 verified) and the variables the data-dependent tests read
+        uses: ./.github/actions/test-data
       - name: Change fragments are well-formed
         run: python scripts/assemble_changelog.py --check
       - name: Python tests (scanpy, harmonypy, leidenalg, skmisc and skimage parity included; unlisted skips fail)
@@ -216,6 +211,8 @@ jobs:
           . .venv/bin/activate
           python .github/scripts/print_extra.py test > test-requirements.txt
           pip install -r test-requirements.txt
+      - name: Test data (cached, sha256 verified) and the variables the data-dependent tests read
+        uses: ./.github/actions/test-data
       - name: Run the tests marked for this reference build
         run: |
           . .venv/bin/activate

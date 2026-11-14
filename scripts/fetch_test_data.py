@@ -6,6 +6,12 @@ Usage:
     python scripts/fetch_test_data.py pbmc3k           # one dataset
     python scripts/fetch_test_data.py --dest DIR       # explicit directory
     python scripts/fetch_test_data.py --path pbmc10k   # print the path of a dataset (fetch if missing)
+    python scripts/fetch_test_data.py --derive --print-env     # also build the PBMC 3k graph; print export lines
+    python scripts/fetch_test_data.py --derive --github-env "$GITHUB_ENV"    # CI: export them to later steps
+
+Besides the archives, the script prepares what the environment-gated tests read:
+    CREST_TEST_PBMC3K                the extracted PBMC 3k 10x directory (matrix.mtx, genes.tsv, barcodes.tsv)
+    CREST_TEST_PBMC_CONNECTIVITIES   .npz of the scanpy connectivities matrix of PBMC 3k (needs --derive, scanpy and anndata)
 
 The cache directory is $CREST_TEST_DATA, or ~/.cache/crest-test-data when it is not set.
 A file that is already present with the right sha256 is not downloaded again; a file with the
@@ -20,6 +26,7 @@ import argparse
 import hashlib
 import os
 import sys
+import tarfile
 import time
 import urllib.error
 import urllib.request
@@ -101,11 +108,83 @@ def fetch(name, dest=None, spec=None, log=print):
     return target
 
 
+PBMC3K_SUBDIR = "pbmc3k"
+PBMC3K_MTX = Path("filtered_gene_bc_matrices") / "hg19"
+CONNECTIVITIES_FILE = "pbmc3k_connectivities.npz"
+
+
+def extract_pbmc3k(dest=None, log=print):
+    """Unpack the PBMC 3k archive into the cache (once); return the directory with matrix.mtx."""
+    directory = cache_dir(dest)
+    archive = directory / DATASETS["pbmc3k"]["filename"]
+    target = directory / PBMC3K_SUBDIR
+    mtx_dir = target / PBMC3K_MTX
+    if (mtx_dir / "matrix.mtx").exists():
+        return mtx_dir
+    if not archive.exists():
+        raise RuntimeError(f"{archive} is missing; fetch pbmc3k first")
+    target.mkdir(parents=True, exist_ok=True)
+    root = target.resolve()
+    with tarfile.open(archive) as tf:
+        for member in tf.getmembers():
+            if not (target / member.name).resolve().is_relative_to(root):
+                raise RuntimeError(f"unsafe path in {archive}: {member.name}")
+            if not (member.isfile() or member.isdir()):
+                raise RuntimeError(f"unexpected entry in {archive}: {member.name}")
+        # the 'data' filter (Python 3.12+; backported to 3.10.12 and 3.11.4) refuses links and special files too
+        tf.extractall(target, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
+    if not (mtx_dir / "matrix.mtx").exists():
+        raise RuntimeError(f"{archive} does not contain {PBMC3K_MTX}/matrix.mtx")
+    log(f"pbmc3k: extracted to {mtx_dir}")
+    return mtx_dir
+
+
+def derive_connectivities(dest=None, log=print):
+    """Scanpy connectivities matrix of PBMC 3k (standard workflow, 15 neighbours), saved as .npz.
+
+    Needs scanpy and anndata, which the `test` extra installs; the result is cached.
+    """
+    directory = cache_dir(dest)
+    out = directory / CONNECTIVITIES_FILE
+    if out.exists():
+        return out
+    import scanpy as sc
+    import scipy.sparse as sp
+
+    adata = sc.read_10x_mtx(extract_pbmc3k(dest, log), var_names="gene_symbols")
+    sc.pp.filter_cells(adata, min_genes=200)
+    sc.pp.filter_genes(adata, min_cells=3)
+    sc.pp.normalize_total(adata, target_sum=1e4)
+    sc.pp.log1p(adata)
+    sc.pp.highly_variable_genes(adata, n_top_genes=2000)
+    adata = adata[:, adata.var["highly_variable"]].copy()
+    sc.pp.scale(adata, max_value=10)
+    sc.tl.pca(adata, n_comps=50, random_state=0)
+    sc.pp.neighbors(adata, n_neighbors=15, random_state=0)
+    sp.save_npz(out, adata.obsp["connectivities"].tocsr())
+    log(f"pbmc3k: wrote the scanpy connectivities matrix ({adata.n_obs} cells) to {out}")
+    return out
+
+
+def environment(dest=None, derive=False, log=print):
+    """The variables the environment-gated tests read, after making sure their files exist."""
+    directory = cache_dir(dest)
+    env = {"CREST_TEST_DATA": str(directory)}
+    if (directory / DATASETS["pbmc3k"]["filename"]).exists():
+        env["CREST_TEST_PBMC3K"] = str(extract_pbmc3k(dest, log))
+        if derive:
+            env["CREST_TEST_PBMC_CONNECTIVITIES"] = str(derive_connectivities(dest, log))
+    return env
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("names", nargs="*", help="datasets to fetch: " + ", ".join(DATASETS) + " (default: all)")
     ap.add_argument("--dest", help="cache directory (default: $CREST_TEST_DATA or ~/.cache/crest-test-data)")
     ap.add_argument("--path", action="store_true", help="print only the path(s) of the datasets")
+    ap.add_argument("--derive", action="store_true", help="also build the PBMC 3k connectivities .npz (needs scanpy)")
+    ap.add_argument("--github-env", metavar="FILE", help="append the CREST_TEST_* variables to FILE (a GitHub Actions env file)")
+    ap.add_argument("--print-env", action="store_true", help="print the CREST_TEST_* variables as shell export lines")
     args = ap.parse_args(argv)
     names = args.names or list(DATASETS)
     unknown = [n for n in names if n not in DATASETS]
@@ -117,6 +196,16 @@ def main(argv=None):
             path = fetch(name, args.dest, log=log)
             if args.path:
                 print(path)
+        if args.github_env or args.print_env:
+            env = environment(args.dest, args.derive, log=log)
+            if args.github_env:
+                with open(args.github_env, "a") as fh:
+                    fh.writelines(f"{k}={v}\n" for k, v in env.items())
+            if args.print_env:
+                for k, v in env.items():
+                    print(f"export {k}={v}")
+        elif args.derive:
+            derive_connectivities(args.dest, log=log)
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
