@@ -51,8 +51,8 @@
     change, keeping the aggregation parallelisation) reproduced the +0.00152/2-of-20 baseline
     exactly, isolating this specific change as the cause.
   Per the project's accuracy rules, a parity-losing change does not ship even when it is
-  faster: `fast_move_nodes` stays single-threaded. Design notes for a future attempt are in
-  `HANDOVER.md`.
+  faster: `fast_move_nodes` stays single-threaded (the two designs that were tried are
+  described in `docs/benchmarks.md`).
 - Leiden refinement (phase 2) now runs each unrefined community on its own thread (rayon),
   with an RNG seeded from `(seed, community id)` via SplitMix64: a merge only ever pulls a
   node into a sub-community of its own unrefined community, so communities refine
@@ -62,7 +62,7 @@
   leidenalg +0.0015 either way over 20 seeds at resolution 1; the exact per-seed partition
   changes along with the RNG draw sequence, so this is not bit-identical to the old code).
   `fast_move_nodes` (phase 1) is still single-threaded and is now the larger share of
-  Leiden's wall time; parallelising it is the next step (HANDOVER.md).
+  Leiden's wall time; parallelising it is the next step.
 - UMAP (parallel): threads read one shared snapshot of the embedding instead of each copying
   all n rows 16 times per epoch; removes O(threads x cells) copying and ~threads x cells x 8 B
   of memory. Output bit-identical.
@@ -120,7 +120,6 @@
 - `scripts/crest_git_housekeeping.sh`: repository housekeeping (dev branch, stale branches).
 - **Documentation site** (Sphinx + MyST, Read the Docs): installation, quickstart, concepts,
   full API reference, benchmarks, developer guide; `.readthedocs.yaml`; CI `docs` job.
-- `work.md`: the development history; `CLAUDE.md` / `HANDOVER.md` rewritten for new sessions.
 
 ### Removed
 - The `.bio` Polars expression namespace and its Rust plugin code (duplicated the

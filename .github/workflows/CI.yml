@@ -184,6 +184,8 @@ jobs:
         with:
           command: sdist
           args: --out dist
+      - name: Check repository and sdist contents
+        run: python3 .github/scripts/check_package_contents.py dist/*.tar.gz
       - name: Upload sdist
         uses: actions/upload-artifact@v5
         with:
