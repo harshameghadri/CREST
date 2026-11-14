@@ -220,10 +220,14 @@ fn kmeans(pts: Points, nc: usize, iters: usize, seed: u64) -> Vec<f32> {
     cent
 }
 
+/// Smallest number of IVF lists (k-means centroids) used by [`knn_ivf`].
+const IVF_MIN_LISTS: usize = 8;
+
 /// Approximate k-NN via IVF buckets + NN-descent refinement.
 fn knn_ivf(pts: Points, norms: &[f32], k: usize, nprobe: usize, seed: u64) -> (Vec<f32>, Vec<u32>) {
     let (n, d) = (pts.n, pts.d);
-    let nc = (n / 512).clamp(8, 8192);
+    let nc = (n / 512).clamp(IVF_MIN_LISTS, 8192);
+    debug_assert!(nc <= n);
     let cent = kmeans(pts, nc, 8, seed);
     let labels = assign(pts, &cent, nc);
     let mut lists: Vec<Vec<u32>> = vec![Vec::new(); nc];
@@ -344,7 +348,9 @@ pub fn knn(pts: Points, k: usize, exact: Option<bool>, seed: u64) -> KnnGraph {
         return KnnGraph { n, k: 0, indices: vec![], distances: vec![] };
     }
     let norms: Vec<f32> = (0..n).into_par_iter().map(|i| pts.row(i).iter().map(|x| x * x).sum()).collect();
-    let use_exact = exact.unwrap_or(n <= 20_000);
+    // IVF needs at least IVF_MIN_LISTS points (one per inverted list): route tiny
+    // inputs to the exact search instead of panicking
+    let use_exact = exact.unwrap_or(n <= 20_000) || n < IVF_MIN_LISTS;
     let (_, mut topi) = if use_exact {
         knn_brute(pts, &norms, k)
     } else {
@@ -572,4 +578,25 @@ mod query_tests {
         let recall = hit as f64 / (nq * k) as f64;
         assert!(recall > 0.97, "recall {}", recall);
     }
+
+    #[test]
+    fn test_knn_approximate_tiny_inputs() {
+        // exact=false used to panic for n < 8 (more IVF lists than points)
+        for n in 2..40usize {
+            let mut rng = rand::rngs::StdRng::seed_from_u64(n as u64);
+            let data: Vec<f32> = (0..n * 4).map(|_| rng.gen_range(-5.0f32..5.0)).collect();
+            let pts = Points::new(&data, n, 4);
+            let g = knn(pts, 3, Some(false), 0);
+            let ex = knn(pts, 3, Some(true), 0);
+            assert_eq!(g.k, 3.min(n - 1));
+            assert!(g.indices.iter().all(|&j| (j as usize) < n), "placeholder neighbour at n={}", n);
+            for i in 0..n {
+                assert!(g.indices[i * g.k..(i + 1) * g.k].iter().all(|&j| j as usize != i));
+            }
+            if n < IVF_MIN_LISTS {
+                assert_eq!(g.indices, ex.indices);
+            }
+        }
+    }
 }
+
