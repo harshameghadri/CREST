@@ -22,7 +22,7 @@ CREST is held to two claims, and both are measured:
 | t-test, Wilcoxon | scanpy | t-test scores within 1e-4; Wilcoxon scores within 3e-4 on PBMC 3k (ties differ at the float32 ulp level of the normalisation; 1e-6 on identical input values); p-values within 4e-4 |
 | `score_genes` | scanpy | identical incl. control-gene sampling (3e-7) |
 | DESeq2 Wald / LRT | R DESeq2 1.42 | ~1e-9 (Wald, simulated), 1e-6 (LRT) |
-| Harmony | harmonypy 2.0 | same iLISI / cLISI / ARI; neighbourhood overlap at seed-noise level |
+| Harmony | harmonypy 2.1.0 (current figures measured with 2.0.2) | same iLISI / cLISI / ARI; neighbourhood overlap at seed-noise level |
 | Scrublet | scanpy 1.11 | same AUROC on demuxlet doublets; Spearman 0.98 (measured with `include_self_neighbor=False`, see {doc}`downstream`) |
 | ingest | scanpy 1.11 | 90.7% vs 89.8% accuracy; same label for 96.4% of cells |
 

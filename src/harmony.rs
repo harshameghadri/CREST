@@ -23,7 +23,8 @@ use std::collections::HashMap;
 
 pub struct Params {
     pub n_clusters: usize,
-    pub sigma: f64,
+    /// soft-assignment width: one value per cluster (`n_clusters` entries)
+    pub sigma: Vec<f64>,
     /// diversity penalty per batch level (all covariates, concatenated)
     pub theta: Vec<f64>,
     /// fixed ridge penalty per level; `None` = estimate as `alpha * E`
@@ -654,8 +655,14 @@ pub fn harmony(z: &[f32], n: usize, d: usize, batch: &[u32], levels: &[usize], p
     } else if !p.alpha.is_finite() || p.alpha < 0.0 {
         return Err("alpha must be finite and not negative".into());
     }
-    if !(p.block_size > 0.0 && p.block_size <= 1.0) || !(p.sigma > 0.0) {
-        return Err("block_size must be in (0, 1] and sigma positive".into());
+    if !(p.block_size > 0.0 && p.block_size <= 1.0) {
+        return Err("block_size must be in (0, 1]".into());
+    }
+    if p.sigma.len() != k {
+        return Err(format!("sigma needs one value per cluster ({} clusters, {} values)", k, p.sigma.len()));
+    }
+    if p.sigma.iter().any(|v| !(v.is_finite() && *v > 0.0)) {
+        return Err("sigma must be finite and positive".into());
     }
     if p.max_iter_harmony == 0 {
         return Err("max_iter_harmony must be >= 1".into());
@@ -746,7 +753,7 @@ pub fn harmony(z: &[f32], n: usize, d: usize, batch: &[u32], levels: &[usize], p
         level_range,
         batch_sizes,
         pr_b,
-        sigma: vec![p.sigma; k],
+        sigma: p.sigma.clone(),
         o: vec![],
         e: vec![],
         cell_pairs,
@@ -801,7 +808,7 @@ mod tests {
     fn params(nb: usize, k: usize) -> Params {
         Params {
             n_clusters: k,
-            sigma: 0.1,
+            sigma: vec![0.1; k],
             theta: vec![2.0; nb],
             lambda: None,
             alpha: 0.2,

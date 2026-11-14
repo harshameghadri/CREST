@@ -1,6 +1,6 @@
 """Harmony batch integration on a low-dimensional embedding (Rust, harmony2 algorithm).
 
-Same algorithm, defaults and outputs as ``harmonypy.run_harmony`` 2.x (what
+Same algorithm, defaults and outputs as ``harmonypy.run_harmony`` 2.1 (what
 ``scanpy.external.pp.harmony_integrate`` calls) and R ``harmony`` >= 1.2.
 """
 
@@ -39,7 +39,8 @@ def _per_level(x, n_levels: Sequence[int], name: str) -> np.ndarray:
 
 
 def run_harmony(z: np.ndarray, batches: Sequence[Sequence], theta: Union[float, Sequence[float]] = 2.0,
-                lamb: Optional[Union[float, Sequence[float]]] = None, sigma: float = 0.1,
+                lamb: Optional[Union[float, Sequence[float]]] = None,
+                sigma: Union[float, Sequence[float]] = 0.1,
                 nclust: Optional[int] = None, tau: float = 0.0, block_size: float = 0.05,
                 max_iter_harmony: int = 10, max_iter_kmeans: int = 4, epsilon_cluster: float = 1e-3,
                 epsilon_harmony: float = 1e-2, alpha: float = 0.2, batch_prop_cutoff: float = 1e-5,
@@ -49,7 +50,9 @@ def run_harmony(z: np.ndarray, batches: Sequence[Sequence], theta: Union[float, 
     ``alpha * E`` (harmony2); ``-1`` is accepted as the same "estimate" sentinel as
     in harmonypy. A fixed ``lamb`` must be finite and positive: negative or
     non-finite values, and a ridge of zero (or so small that the per-cluster
-    ridge system is singular), raise ``ValueError``. Returns a dict with ``Z_corr`` (N, d), ``R`` (N, K),
+    ridge system is singular), raise ``ValueError``. ``sigma`` (the width of the soft cluster
+    assignment) is a positive scalar used for every cluster, or an array with one positive value per
+    cluster (length ``nclust``, as in harmonypy). Returns a dict with ``Z_corr`` (N, d), ``R`` (N, K),
     ``Y`` (K, d), the objectives and ``converged``."""
     z = np.ascontiguousarray(z, dtype=np.float32)
     n = z.shape[0]
@@ -72,8 +75,15 @@ def run_harmony(z: np.ndarray, batches: Sequence[Sequence], theta: Union[float, 
     lam = None if lamb is None or (np.isscalar(lamb) and lamb == -1) else _per_level(lamb, levels, "lamb")
     if lam is not None and not (np.all(np.isfinite(lam)) and np.all(lam >= 0)):
         raise ValueError("lamb must be finite and not negative (use None or -1 to estimate it)")
+    sig = np.asarray(sigma, dtype=np.float64)
+    if sig.ndim > 1 or (sig.ndim == 1 and len(sig) != nclust):
+        raise ValueError(f"sigma must be a scalar or have one value per cluster (nclust={nclust}), "
+                         f"got shape {sig.shape}")
+    if not (np.all(np.isfinite(sig)) and np.all(sig > 0)):
+        raise ValueError("sigma must be finite and positive")
+    sig = float(sig) if sig.ndim == 0 else sig.tolist()
     return _native.harmony(z, batch, levels, nclust, th.tolist(), None if lam is None else lam.tolist(),
-                           float(sigma), float(alpha), float(block_size), int(max_iter_harmony),
+                           sig, float(alpha), float(block_size), int(max_iter_harmony),
                            int(max_iter_kmeans), float(epsilon_cluster), float(epsilon_harmony),
                            float(batch_prop_cutoff), int(random_state))
 
