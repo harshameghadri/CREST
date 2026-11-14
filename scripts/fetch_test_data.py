@@ -40,6 +40,8 @@ DATASETS = {
     },
 }
 CHUNK = 1 << 20
+# the 10x download host answers the default urllib user agent with 403, so identify the script
+USER_AGENT = "crest-fetch-test-data/1.0 (+https://github.com/harshameghadri/CREST)"
 
 
 def cache_dir(dest=None):
@@ -63,7 +65,8 @@ def download(url, target, retries=3, timeout=60):
     last = None
     for attempt in range(1, retries + 1):
         try:
-            with urllib.request.urlopen(url, timeout=timeout) as resp, open(part, "wb") as out:
+            request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(request, timeout=timeout) as resp, open(part, "wb") as out:
                 for block in iter(lambda: resp.read(CHUNK), b""):
                     out.write(block)
             os.replace(part, target)

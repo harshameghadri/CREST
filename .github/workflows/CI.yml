@@ -424,7 +424,7 @@ jobs:
 
   publish:
     # final tags -> PyPI (environment `pypi`, owner approval); rc tags and manual dry runs -> TestPyPI (environment `testpypi`)
-    name: publish to ${{ needs.version.outputs.publish_target }}
+    name: publish
     needs: [version, test, docs, sdist, linux, musllinux, windows, macos, smoke]
     if: ${{ needs.version.outputs.publish_target == 'pypi' || needs.version.outputs.publish_target == 'testpypi' }}
     runs-on: ubuntu-latest
