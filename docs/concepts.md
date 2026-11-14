@@ -98,6 +98,18 @@ suffix in the AnnData index, with a warning; the original symbols stay in `var["
 | `FrameStore` | in memory: a Polars DataFrame of `(cell_id, gene_id, count)` triplets sorted by cell, about 12 bytes per non-zero | `read_10x_mtx`, `read_h5ad` (dense `X`), `BioFrame.from_triplets` |
 | `ParquetStore` | **on disk**: a directory of `part-*.parquet` files of `(cell_id, gene_id, count)` triplets, each file holding whole cells (~8.4 M non-zeros by default), plus `obs.parquet` and `var.parquet` | `read_10x_h5(path, backed=dir)` streams the .h5 into it; `bf.write_parquet(dir)` then `crest.read_parquet(dir)` |
 
+**What the stores accept.** A (cell, gene) pair is stored at most once, and the order of the genes
+within a cell is free (Cell Ranger `.h5` files list them in descending order). Repeated entries
+would count as two non-zeros, so they are summed, as scipy does: `BioFrame.from_scipy`,
+`from_csr`, `from_triplets`, `read_h5ad` and `read_10x_h5` do it on a copy and never change the
+caller's matrix, and a hand-made Parquet directory is summed part by part. `CSRStore(...)` itself
+raises `ValueError` for a repeat. A Parquet directory must hold whole cells per part, in cell order, with
+ids inside `n_cells` / `n_genes`; every part is checked when it is read and a split cell or an
+out-of-range id raises `ValueError` (a split cell would otherwise be processed as two cells and
+give wrong PCA variances). A stored `0.0` is never counted as a non-zero: `n_genes_by_counts`,
+`n_cells_by_counts`, `n_cells_expr`, the Wilcoxon zero blocks and `to_scipy()` ignore it
+(`store.nnz` counts stored entries).
+
 All three expose the same `chunks()` iterator, so every analysis function works unchanged on
 all of them. The Parquet store is what makes CREST *out-of-core*: only one file is in memory
 at a time, so the **count matrix** never has to fit in RAM. What still grows with the number
