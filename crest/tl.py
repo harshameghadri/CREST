@@ -22,7 +22,12 @@ __all__ = ["pca", "leiden", "umap", "rank_genes_groups", "score_genes",
 
 # --------------------------------------------------------------------------- PCA
 def _scale_params(bf: BioFrame, mask: np.ndarray):
-    """Per-gene log-scale mean/std (ddof=1) for the current ops, cached by HVG."""
+    """Per-gene log-scale mean/std (ddof=1) of the current cells and ops.
+
+    Reuses the var ``mean_log``/``std_log`` cached by ``highly_variable_genes`` only
+    while ``uns["hvg"]["ops"]`` equals ``bf.ops``; a cell filter drops that key (the
+    statistics belong to the old cells), so the values are recomputed in one pass.
+    """
     cached = bf.uns.get("hvg", {}).get("ops") == bf.ops and "mean_log" in bf.var.columns
     if cached:
         mean, std = bf.var["mean_log"].to_numpy(), bf.var["std_log"].to_numpy()
