@@ -1,0 +1,3 @@
+- `BioFrame.write_parquet(path)` and `read_10x_h5(..., backed=path)` raise `ValueError` instead of deleting the data when `path` is the directory an open frame reads from; elsewhere, existing parts are replaced only after the new dataset is complete.
+- `to_anndata()` followed by `from_anndata()`, and `write_h5ad` followed by `read_h5ad`, work after cell or gene filters: the store's `cell_id` / `gene_id` are no longer exported, and a `cell_id` / `gene_id` column in the input is kept as `cell_id_orig` / `gene_id_orig` instead of being mistaken for the store ids.
+- `bf.to_anndata().write_h5ad(...)` works after the standard workflow: Polars result tables become pandas DataFrames, recorded transforms become strings and `None` entries are dropped.

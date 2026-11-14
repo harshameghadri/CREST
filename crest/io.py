@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import gzip
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Optional, Union
 
 import numpy as np
 import polars as pl
 
-from .core import BioFrame, read_parquet
+from .core import BioFrame, _publish_parquet_parts, _refuse_live_directory, read_parquet
 
 __all__ = ["read_10x_h5", "read_h5ad", "read_10x_mtx", "read_parquet", "convert_h5_to_parquet_stream"]
 
@@ -56,9 +58,15 @@ def read_10x_h5(path: Union[str, Path], gex_only: bool = True, backed: Optional[
 
     With ``backed=<dir>`` the matrix is streamed to a Parquet dataset in that
     directory (one cell range at a time) and returned as an out-of-core
-    BioFrame; otherwise it is loaded as compact in-memory CSR.
+    BioFrame; otherwise it is loaded as compact in-memory CSR. Existing ``part-*.parquet``
+    files in ``backed`` are replaced, but only once the new dataset is complete; a
+    ``ValueError`` is raised (and nothing is touched) if an open BioFrame still reads from
+    that directory.
     """
     import h5py
+
+    if backed is not None:
+        _refuse_live_directory(backed, "read_10x_h5")
 
     with h5py.File(path, "r") as f:
         m, barcodes, var = _open_10x(f)
@@ -71,28 +79,31 @@ def read_10x_h5(path: Union[str, Path], gex_only: bool = True, backed: Optional[
         else:
             out = Path(backed)
             out.mkdir(parents=True, exist_ok=True)
-            for old in out.glob("part-*.parquet"):
-                old.unlink()
-            indptr = m["indptr"][:].astype(np.int64)
-            n = len(indptr) - 1
-            lo, part = 0, 0
-            while lo < n:
-                # whole cells, ~nnz_per_part non-zeros per part (bounded memory for any cell depth)
-                hi = int(np.searchsorted(indptr, indptr[lo] + nnz_per_part, side="right")) - 1
-                hi = min(max(hi, lo + 1), n)
-                a, b = int(indptr[lo]), int(indptr[hi])
-                cells = np.repeat(np.arange(lo, hi, dtype=np.uint32), np.diff(indptr[lo:hi + 1]))
-                genes = m["indices"][a:b].astype(np.uint32)
-                if len(genes) and int(genes.max()) >= n_genes:  # checked once, at conversion
-                    raise ValueError(f"gene index {int(genes.max())} out of range for n_genes={n_genes}")
-                pl.DataFrame({
-                    "cell_id": cells,
-                    "gene_id": genes,
-                    "count": m["data"][a:b].astype(np.float32),
-                }).write_parquet(out / f"part-{part:05d}.parquet", compression="zstd")
-                lo, part = hi, part + 1
-            obs.with_columns(pl.Series("cell_id", np.arange(obs.height, dtype=np.uint32))).write_parquet(out / "obs.parquet")
-            var.with_columns(pl.Series("gene_id", np.arange(n_genes, dtype=np.uint32))).write_parquet(out / "var.parquet")
+            staging = Path(tempfile.mkdtemp(prefix=".write-", dir=out))  # same file system as the target
+            try:
+                indptr = m["indptr"][:].astype(np.int64)
+                n = len(indptr) - 1
+                lo, part = 0, 0
+                while lo < n:
+                    # whole cells, ~nnz_per_part non-zeros per part (bounded memory for any cell depth)
+                    hi = int(np.searchsorted(indptr, indptr[lo] + nnz_per_part, side="right")) - 1
+                    hi = min(max(hi, lo + 1), n)
+                    a, b = int(indptr[lo]), int(indptr[hi])
+                    cells = np.repeat(np.arange(lo, hi, dtype=np.uint32), np.diff(indptr[lo:hi + 1]))
+                    genes = m["indices"][a:b].astype(np.uint32)
+                    if len(genes) and int(genes.max()) >= n_genes:  # checked once, at conversion
+                        raise ValueError(f"gene index {int(genes.max())} out of range for n_genes={n_genes}")
+                    pl.DataFrame({
+                        "cell_id": cells,
+                        "gene_id": genes,
+                        "count": m["data"][a:b].astype(np.float32),
+                    }).write_parquet(staging / f"part-{part:05d}.parquet", compression="zstd")
+                    lo, part = hi, part + 1
+                obs.with_columns(pl.Series("cell_id", np.arange(obs.height, dtype=np.uint32))).write_parquet(staging / "obs.parquet")
+                var.with_columns(pl.Series("gene_id", np.arange(n_genes, dtype=np.uint32))).write_parquet(staging / "var.parquet")
+                _publish_parquet_parts(staging, out)
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
             bf = read_parquet(out)
     if gex_only and "feature_types" in bf.var.columns:
         bf = bf.filter_genes(pl.col("feature_types") == "Gene Expression")
@@ -150,7 +161,9 @@ def _h5ad_frame(node, index_name: str) -> pl.DataFrame:
 def read_h5ad(path: Union[str, Path]) -> BioFrame:
     """Read ``X`` (CSR, or dense) plus every obs/var column from an .h5ad file, without
     needing ``anndata`` installed. Categorical columns are expanded to strings (matching
-    ``BioFrame.from_anndata``). ``obsm``/``varm``/``uns``/other layers are not read; for
+    ``BioFrame.from_anndata``). A column named ``cell_id`` / ``gene_id`` is kept as
+    ``cell_id_orig`` / ``gene_id_orig``; the frame's own ids are assigned fresh.
+    ``obsm``/``varm``/``uns``/other layers are not read; for
     those, load with `anndata.read_h5ad` and use :meth:`BioFrame.from_anndata` instead.
     """
     import h5py
@@ -228,7 +241,8 @@ def convert_h5_to_parquet_stream(file_path: Union[str, Path], output_path: Union
         A Cell Ranger ``.h5`` matrix.
     output_path : str or pathlib.Path
         Directory for the Parquet parts (created if needed; existing
-        ``part-*.parquet`` files in it are replaced).
+        ``part-*.parquet`` files in it are replaced once the new dataset is complete,
+        and a ``ValueError`` is raised if an open BioFrame still reads from it).
 
     Returns
     -------

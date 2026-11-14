@@ -1,0 +1,4 @@
+- DESeq2: genes refitted after outlier replacement now get their MAP dispersion; previously, if all of them had tiny gene-wise estimates, they were set to the floor value 1e-7.
+- DESeq2: the parametric dispersion trend no longer fails on high-count data (counts in the 1e8 range) where R fits it. When the trend does fail and the mean is substituted, `fit["fit_substituted"]` is `True` and a warning says the results will differ from R.
+- `pseudobulk_de` raises for mistakes in the call (non-integer counts, malformed formula, unknown column, contrast or level) and skips only groups that cannot support the model, naming them in one warning and in `uns[...]["skipped"]`; it raises `NotEstimableError` if no group can be tested.
+- Level order: a warning names the code-point and the case-insensitive (R, en_US) orders when they differ, `DESeq2.last_contrast` records the contrast used, and duplicate coefficient names raise instead of silently selecting the first column.
