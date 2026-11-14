@@ -42,7 +42,7 @@ Harmony's k-means initialisation is random, so the comparison with harmonypy is 
 |---|---|---|---|---|
 | uncorrected | | 1.05 | 1.01 | 0.755 |
 | CREST | **2.1 s** | 1.81 | 1.01 | 0.820 |
-| harmonypy 2.1.0 | 7.4 s | 1.81 | 1.01 | 0.822 |
+| harmonypy 2.0.2 | 7.4 s | 1.81 | 1.01 | 0.822 |
 
 Neighbourhoods agree: a cell's 15 nearest neighbours in CREST's corrected space and in harmonypy's share 98.0% on average. That is the same as the agreement between two seeds of the same tool (CREST 98.4%, harmonypy 98.2%), so the differences are at the level of seed noise.
 

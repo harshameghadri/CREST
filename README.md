@@ -79,7 +79,7 @@ parameters:
 | `score_genes` | identical, including scanpy's control-gene sampling (within 3e-7) |
 | `DESeq2` (pseudobulk) | R DESeq2 1.42: size factors, dispersions, log2FC, p-values within ~1e-9 on simulated designs; identical significant sets in 6 of 8 Kang 2018 cell types; FCGR3A+ monocytes 1468/1469, CD4 T cells 1350 of R's 1365 shared (21 discordant genes) ([docs/deseq2.md](https://github.com/harshameghadri/CREST/blob/main/docs/deseq2.md)); LRT statistics within 1e-6 |
 | `highly_variable_genes(flavor="seurat_v3")` | identical gene sets and ranks, `variances_norm` within 1e-14 (loess port matches `skmisc` to 1e-14) |
-| `harmony` | same integration quality as harmonypy 2.1.0 (iLISI 1.81 vs 1.81, cLISI 1.01, ARI 0.82) at 3.5× the speed; neighbourhoods as close to harmonypy's as two harmonypy seeds are to each other |
+| `harmony` | same integration quality as harmonypy 2.0 (iLISI 1.81 vs 1.81, cLISI 1.01, ARI 0.82) at 3.5× the speed; neighbourhoods as close to harmonypy's as two harmonypy seeds are to each other |
 | `scrublet` | AUROC 0.863 vs 0.863 on Kang 2018 demuxlet doublets, 49× faster |
 | `ingest` | 90.7% vs 89.8% label accuracy mapping stimulated onto control PBMCs, 17.6× faster |
 
