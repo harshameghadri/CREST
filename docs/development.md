@@ -50,7 +50,10 @@ sphinx-build -n -b html docs docs/_build/html     # optional: also report broken
 | `tests/test_crest.py`, `tests/data/` | the test suite; stored R DESeq2 outputs + the R script that makes them |
 | `bench/paper/` | the paper benchmark harness (driven by `scripts/crest_paper_bench.sh`) |
 | `bench/<module>/` | module comparisons with their `results/` |
-| `scripts/` | `crest_paper_bench.sh` |
+| `scripts/` | `crest_paper_bench.sh`; `bump_version.py`, `assemble_changelog.py`, `fetch_test_data.py` (release and test infrastructure, described below) |
+| `tests/conftest.py` | the `baseline_fails` marker and the skip allowlist (both described below) |
+| `changes/` | one change fragment per pull request; see `changes/README.md` |
+| `KNOWN_ISSUES.md` | documented limitations of the current release |
 | `docs/` | this documentation (Sphinx + MyST); `.readthedocs.yaml` at the root |
 | `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `CITATION.cff` | contribution guide, code of conduct, citation metadata |
 
@@ -122,7 +125,7 @@ and merges per-thread partial results.
    instead of panicking.
 4. **Stay scanpy-compatible.** Keep scanpy's names and defaults unless there is a documented
    reason not to.
-5. **Commits:** `feat:`, `fix:`, `bench:`, `docs:`, `chore:` prefixes. Before pushing, run
+5. **Commits:** `feat:`, `fix:`, `bench:`, `docs:`, `chore:`, `test:` prefixes. Before pushing, run
    `cargo test --release && pytest -q`.
 
 ### Recipe: adding a streamed statistic
@@ -142,8 +145,135 @@ and merges per-thread partial results.
 * A release merges `dev` → `main` and tags `vX.Y.Z`. The version lives in `Cargo.toml`;
   `pyproject.toml` and these docs read it from there. `crest/__init__.py` has a copy, so
   update both.
-* CI (`.github/workflows/CI.yml`) runs `cargo test` + `pytest` on pushes to main and on
-  pull requests, and builds wheels for all platforms; a tag publishes them to PyPI.
+* CI (`.github/workflows/CI.yml`) is described in the next section; a tag publishes the
+  wheels as described under "Releasing".
+
+## Continuous integration
+
+`.github/workflows/CI.yml` runs on every pull request and on pushes to `main`, `dev` and
+`release/**`. A new run of a pull request cancels the previous one.
+
+| job | what it does |
+|---|---|
+| `tests` | builds a wheel, installs it with the `test` extra and runs `cargo test --release` and the whole pytest suite on Linux x86-64 with Python 3.10 and NumPy 1.24 (the oldest supported), Linux x86-64 with Python 3.13 and the latest NumPy, and macOS arm64. The tests run from a copy of the tracked files without `crest/` and `src/` (made by `.github/scripts/make_test_dir.py`), so they import the installed wheel and not the source tree while tests that read `docs/`, `bench/` or `scripts/` still find them. |
+| `test` | one check that summarises `tests` (use this name for branch protection) |
+| `baseline` | runs the tests marked `baseline_fails` against the reference build: the `v0.4.0` tag (wheel from PyPI) and the `rc0` commit (wheel built from it). The tests of the branch run on top of the reference build's source tree, so tests that read repository files (documentation, `bench/`, `scripts/`) see the old content too; see below |
+| `docs` | `sphinx-build -W`, the same build as Read the Docs |
+| `sdist` | builds the source distribution and checks that the repository and the sdist contain only package files |
+| `linux`, `musllinux`, `windows`, `macos` | build the wheels (Linux x86-64 and aarch64, macOS arm64 and x86-64, Windows x64) |
+| `smoke` | installs the wheel of each family in a fresh environment, imports it and runs three quick core checks |
+| `version` | checks that the tag, `Cargo.toml` and `crest.__version__` name the same version |
+| `publish`, `github-release` | run only for a tag or a manual TestPyPI dry run; see "Releasing" |
+
+**Reference stack.** The `test` extra in `pyproject.toml` pins scanpy 1.11.5 and the
+pynndescent, umap-learn, harmonypy and leidenalg releases it was validated with, because the
+parity tests compare against them. Do not widen these pins without running the whole suite
+(`tests/test_reference_stack.py` fails if the scanpy calls the parity tests rely on break).
+The runtime dependencies stay unpinned except `numpy>=1.24,<3`.
+
+**Skipped tests.** CI runs pytest with `--skip-allowlist=tests/skip_allowlist.txt` and fails
+if any test is skipped that is not listed there. Every reference package is installed, so a
+skip means that something is broken; install the missing package rather than listing the
+test. An entry is `<node id>  # <reason>`, and a module that is skipped as a whole is listed
+by its path.
+
+**Test data.** `python scripts/fetch_test_data.py` downloads PBMC 3k and PBMC 10k v3 from
+10x Genomics into `$CREST_TEST_DATA` (default `~/.cache/crest-test-data`), verifies their
+sha256 and skips files that are already present. Some tests read real data and skip when it is
+not available; they are controlled by environment variables:
+
+| variable | content | how to set it |
+|---|---|---|
+| `CREST_TEST_PBMC3K` | the extracted PBMC 3k 10x directory (`matrix.mtx`, `genes.tsv`, `barcodes.tsv`) | `python scripts/fetch_test_data.py --print-env` |
+| `CREST_TEST_PBMC_CONNECTIVITIES` | `.npz` of the scanpy connectivities matrix of PBMC 3k | `python scripts/fetch_test_data.py --derive --print-env` (needs the `test` extra) |
+
+`--print-env` prints `export` lines for your shell; `--github-env FILE` appends them to a
+GitHub Actions env file. CI does this in the composite action `.github/actions/test-data`
+(cached, keyed on the script and `pyproject.toml`) in both the `tests` and the `baseline` jobs,
+so these tests run there. A test that needs data must not be listed in
+`tests/skip_allowlist.txt`.
+
+### Tests that document a defect: `baseline_fails`
+
+A test that describes a defect in an earlier build carries the marker
+
+```python
+@pytest.mark.baseline_fails(ref="v0.4.0", raises=IndexError, match="out of bounds")
+def test_chunk_boundary_is_checked():
+    ...
+```
+
+* `ref` names the earlier build: `v0.4.0` is the wheel on PyPI, `rc0` is the integrated tree
+  (commit `d1aaa42`) that the fix branches started from.
+* `raises` is the exception class (or a tuple of classes) that the test must raise on that
+  build, and `match` an optional regular expression searched in `str(exception)`. For a test
+  that fails an assertion, use `raises=AssertionError`; for a `pytest.raises(...)` block that
+  finds nothing to catch, use `raises=pytest.fail.Exception, match="DID NOT RAISE"`.
+* In a normal run the marker does nothing: the test is an ordinary test and must pass.
+* With `pytest --baseline-ref=v0.4.0` (or `CREST_BASELINE_REF=v0.4.0`), only the tests marked
+  for that reference run, and each **passes only if it raises the declared exception**. It
+  fails if it passes, raises something else, or is skipped. Collection errors fail the whole
+  run, so import the new API inside the test, not at module level. A run with no test marked
+  for the reference is a pass. The run ends with a line such as
+  `baseline v0.4.0: 54 marked test(s) selected, 54 failed as declared`; CI repeats it as an
+  annotation of the job.
+
+To reproduce the `baseline` job locally, install the old build and the test extra in a
+fresh environment, check out the reference source tree, and run pytest from a scratch
+directory that holds that tree with the tests of your branch on top:
+
+```bash
+pip install "crest-sc==0.4.0" -r <(python .github/scripts/print_extra.py test)
+git worktree add /tmp/ref v0.4.0          # or the rc0 commit
+python .github/scripts/make_test_dir.py /tmp/run --tree /tmp/ref --overlay-from . tests pyproject.toml
+cd /tmp/run && pytest --baseline-ref=v0.4.0
+```
+
+A test that passes the baseline job proves that it tests the defect and not something else.
+Tests for behaviour that was already correct (pins) carry no marker and must pass on both
+builds.
+
+## Changelog fragments
+
+Do not edit `CHANGELOG.md`. Every pull request adds one file `changes/<branch-name-with-dashes>.md`
+with one to four bullets (`changes/README.md` has the format). At release time
+`python scripts/assemble_changelog.py <version>` turns the fragments into a new
+`CHANGELOG.md` section and deletes them.
+
+## Releasing
+
+1. Merge the release branch into `main`. Fold the change fragments into the changelog with
+   `scripts/assemble_changelog.py`, and set the version with `scripts/bump_version.py 0.5.0rc1`
+   (it edits `Cargo.toml`, `Cargo.lock`, `crest/__init__.py`, `CITATION.cff` and the pinned
+   tags in the README and docs; `tests/test_version_consistency.py` checks that they agree).
+2. Tag `v<version>` in PEP 440 spelling (`v0.5.0rc1`, `v0.5.0`). CI fails at the `version` job
+   unless the tag, `Cargo.toml` and `crest.__version__` are the same version.
+3. A tag with a pre-release marker (`rc`, `a`, `b`) is published to **TestPyPI** only. A final
+   tag is published to **PyPI** after the owner approves the `pypi` environment, and a GitHub
+   Release is then created from the tag (Zenodo archives releases). Neither happens until
+   the tests, docs, sdist, all wheel builds and the smoke test of every wheel family passed.
+4. Dry run: *Actions → CI → Run workflow* with `publish_testpypi` ticked builds everything
+   and publishes to TestPyPI. TestPyPI refuses to upload a file twice, so repeat a dry run only
+   after changing the version.
+
+Publishing uses PyPI trusted publishing (OIDC); the `PYPI_API_TOKEN` repository secret is a
+fallback that is used only if trusted publishing fails.
+
+### One-time settings (repository owner)
+
+1. **pypi.org**, project `crest-sc` → Publishing → add a GitHub trusted publisher: owner
+   `harshameghadri`, repository `CREST`, workflow `CI.yml`, environment `pypi`.
+2. **test.pypi.org**: the same entry with environment `testpypi` (create the project `crest-sc`
+   on TestPyPI first, or add it as a pending publisher).
+3. **GitHub** → Settings → Environments: create `pypi` with *Required reviewers* (the owner)
+   and, under *Deployment branches and tags*, a tag rule `v*`; create `testpypi` with no
+   reviewer.
+4. Optionally add a `TEST_PYPI_API_TOKEN` repository secret as a fallback for TestPyPI.
+   Once a release has gone through trusted publishing, the `PYPI_API_TOKEN` secret can be
+   deleted.
+5. Branch protection for `dev` and `main`: require the checks `test`, `docs`, `sdist`,
+   `baseline (v0.4.0)` and `baseline (rc0)`.
+6. Enable the repository in the Zenodo GitHub integration before the first final tag.
 
 ## Read the Docs
 

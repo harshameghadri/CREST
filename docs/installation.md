@@ -8,13 +8,26 @@ pip install "crest-sc[anndata]"      # + AnnData / scipy interoperability
 ```
 
 The distribution is called `crest-sc`, because `crest` was taken on PyPI. You still write
-`import crest`. Wheels are built for Linux (x86_64, aarch64, …), macOS and Windows on
-Python ≥ 3.10.
+`import crest`. Wheels are published for Python ≥ 3.10 (one `abi3` wheel per platform) on:
+
+| platform | wheels |
+|---|---|
+| Linux x86-64 | manylinux and musllinux |
+| Linux aarch64 | manylinux and musllinux |
+| macOS | arm64 (Apple silicon) and x86-64 |
+| Windows | x64 |
+
+Every wheel family is installed in a fresh environment and smoke-tested in CI before it is
+published. 32-bit x86, armv7 (32-bit ARM) and Windows on ARM are **not** published, because
+CI has no way to test them. On those platforms, build from source (below).
 
 Runtime dependencies are small: `numpy`, `polars` and `h5py`. scanpy, anndata and scipy are
 only needed to hand results over to the scverse ecosystem (`BioFrame.to_anndata()`). CREST's
 scanpy parity targets scanpy 1.11 (tested with 1.11.5); a plain `pip install scanpy` may now
-give a newer version.
+give a newer version. NumPy 1.24 up to (excluding) 3.0 is supported. To run the test suite
+against the same reference stack as CI, install the `test` extra (`pip install -e ".[test]"`
+or `maturin develop --release -E test`): it pins scanpy 1.11.5 together with the pynndescent,
+umap-learn, harmonypy and leidenalg releases it was validated with.
 
 :::{note}
 Harmony, Scrublet, `seurat_v3` HVGs, `leiden_sweep`, `ingest` and the DESeq2

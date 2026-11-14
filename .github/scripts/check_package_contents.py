@@ -16,14 +16,14 @@ import tarfile
 
 REPO_ALLOWED = {
     ".github", ".gitignore", ".readthedocs.yaml",
-    "CHANGELOG.md", "CITATION.cff", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md",
+    "CHANGELOG.md", "CITATION.cff", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md", "KNOWN_ISSUES.md",
     "Cargo.lock", "Cargo.toml", "LICENSE", "README.md", "pyproject.toml",
-    "KNOWN_ISSUES.md", "bench", "changes", "crest", "docs", "scripts", "src", "tests",
+    "bench", "changes", "crest", "docs", "scripts", "src", "tests",
 }
 SDIST_ALLOWED = {
     "PKG-INFO", "pyproject.toml", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE",
-    "CHANGELOG.md", "CITATION.cff", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md",
-    "KNOWN_ISSUES.md", ".gitignore", ".readthedocs.yaml", "crest", "src", "tests", "docs",
+    "CHANGELOG.md", "CITATION.cff", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md", "KNOWN_ISSUES.md",
+    ".gitignore", ".readthedocs.yaml", "crest", "src", "tests", "docs",
 }
 DENIED = re.compile(
     r"(^|/)(CLAUDE(\.local)?\.md|AGENTS\.md|HANDOVER\.md|work\.md)$"
