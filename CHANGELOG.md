@@ -7,8 +7,7 @@
   `d75475e` (`dev`, both Leiden parallelisations + the `read_h5ad`/`from_anndata` I/O work).
   284/284 runs succeeded. Headline speed-up (the smaller of matched-thread and best-vs-best)
   ranges from 1.20× to 16.70× across 2,700–199,531 cells (10.28× on PBMC 68k), memory
-  1.6×–4.7× lower; CREST scales as cells^0.74 vs scanpy's cells^0.91. Full results in
-  `docs/benchmarks.md`.
+  1.6×–4.7× lower. Full results in `docs/benchmarks.md`.
 - `read_h5ad` now keeps every obs/var column (previously only the cell/gene index and
   `gene_ids`), including anndata's categorical encoding (a sub-group of `categories` +
   integer `codes`), expanded to strings the same way `BioFrame.from_anndata` already
@@ -98,8 +97,8 @@
   `results()`: median-of-ratios size factors, Cox-Reid gene-wise dispersions,
   parametric trend, MAP shrinkage, NB-GLM Wald tests, Cook's filtering and
   outlier replacement, and independent filtering. It matches R to ~1e-9 on
-  simulated designs, is ~18× faster than R and ~28× faster than pydeseq2 on
-  Kang 2018 pseudobulk. See `docs/deseq2.md`.
+  simulated designs. Timings against R and pydeseq2 are in `docs/benchmarks.md` once the
+  thread-matched comparison has been re-run. See `docs/deseq2.md`.
 - `crest.tl.pseudobulk` (streamed raw-count sums per sample × group) and
   `crest.tl.pseudobulk_de` (per-cell-type DESeq2 in one call).
 - `bench/deseq2/`: R comparison on simulated designs and on Kang et al. 2018.
