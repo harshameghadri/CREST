@@ -8,6 +8,9 @@ realistic without the near-duplicate cliques that plain resampling creates
 (which inflate Leiden to hundreds of tiny clusters). Written as a Cell Ranger
 v3 .h5 so both scanpy and crest use their native 10x readers.
 
+The synthetic sets are a labelled supplement: their neighbourhood structure comes from CREST's own
+normalisation, PCA and kNN, so scaling statements rest on real subsamples (``datasets.py --subsample``).
+
     python bench/paper/make_dataset.py --src pbmc68k.h5 --cells 500000 --out synth_500k.h5
 """
 

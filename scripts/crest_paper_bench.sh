@@ -18,20 +18,25 @@
 #      installs the pinned benchmark environment (bench/paper/requirements-bench.txt: scanpy 1.11.x etc.)
 #   3. runs the test suites (cargo test, pytest incl. scanpy and R-DESeq2 parity); stops if they fail
 #   4. records the machine: CPU model/cache/governor/turbo, cores, RAM, OS, compilers, BLAS, every package
-#   5. downloads and converts the datasets (resumable, size-checked, SHA-256 recorded)
-#   6. runs every (dataset x tool x repeat) in its own process, interleaved and shuffled: the core
-#      workflow of every dataset at every --main-threads count (CREST and scanpy; matched and best-thread
-#      comparisons), out-of-core CREST at --ooc-threads, separate runs of the optional modules, and a
-#      full thread scan of one dataset; per step: wall and CPU time, parallelism, peak (absolute and
-#      minus baseline) and timeline memory, per-core utilisation and clock, context switches, I/O, energy
-#      (RAPL, if readable); OOM/timeouts recorded as failures; every attempt appended to attempts.jsonl
+#   5. downloads and converts the datasets (resumable, size-checked, SHA-256 recorded; the MTX sets are
+#      converted with scipy, not with CREST's reader), then verifies every converted file count for count
+#      against independent readers (--verify; a mismatch stops the script) and writes dataset_manifest.json
+#   6. optionally (--pilot) the untimed tuning pilot, then runs every (dataset x tool x repeat) in its own
+#      process, interleaved and shuffled: the core workflow of every dataset at every thread count of the
+#      grid (CREST and scanpy; matched and best-thread comparisons), out-of-core CREST, separate runs of the
+#      optional modules, and a full thread scan of one dataset; controls (unpinned, default settings); per
+#      step: wall and CPU time, parallelism, peak (absolute and minus baseline) and timeline memory,
+#      per-core utilisation and clock, context switches, I/O, energy (RAPL, if readable); the end-to-end
+#      process time including the imports; OOM/timeouts recorded as failures; every attempt appended to
+#      attempts.jsonl; runs on a busy host (median foreign load >= 1 core) re-run once, then flagged
 #   7. agreement with scanpy (ARI/NMI, the two tools' actual kNN graphs, kNN recall vs brute force,
 #      same-graph Leiden + igraph modularity, PCA subspace, HVG, DE markers, UMAP trustworthiness, ...)
 #   8. module benchmarks: DESeq2 vs R/pydeseq2 (thread-matched), Harmony vs harmonypy, Scrublet vs scanpy
 #      (demuxlet truth), label transfer vs scanpy.tl.ingest, 20-seed Leiden modularity vs leidenalg
 #   9. statistics (medians, min-max, IQR, speedups at every matched thread count and best vs best,
-#      Mann-Whitney, Hodges-Lehmann, scaling exponents on the synthetic series, Amdahl fits up to the
-#      peak), tables (CSV + LaTeX), figures (PDF + PNG), report.md, and a .tar.gz
+#      Mann-Whitney, Hodges-Lehmann, scaling exponents per series (real subsamples; synthetic sets as a
+#      labelled supplement), Amdahl fits up to the peak), tables (CSV + LaTeX), figures (PDF + PNG),
+#      report.md, and a .tar.gz. The summary stops with an error if a required result file is missing
 #  10. copies the report, tables, figures, module results and environment record into
 #      <workdir>/CREST/bench/paper/results/<host>-<date>/ (with commit, host and versions), ready to
 #      commit; see bench/paper/results/README.md
@@ -47,16 +52,24 @@
 #                          quick tier: 1, 8 and all cores; smoke: 1, 2, 4)
 #   --thread-dataset NAME  dataset for the thread scan               (default: pbmc68k; pbmc10k in the quick tier)
 #   --main-threads "8 64"  thread counts of the main core-workflow runs of CREST and scanpy, on EVERY dataset
-#                          (default: standard/full 8 16 32 64 (those <= all cores, plus all cores);
+#                          (default: standard/full 1 2 4 8 16 32 64 (those <= all cores, plus all cores);
 #                          quick: 8 and all cores; smoke: 2 and 4)
+#   --thread-grid "1 2 4 8" the same, under its protocol name (synonym of --main-threads)
 #   --ooc-threads "8 64"   thread counts of the out-of-core CREST runs (default: 8 and all cores)
+#   --pilot                run the untimed tuning pilot first (numba threading layer, thread counts, BLAS/OpenMP
+#                          threads, scanpy n_jobs; same budget for both tools) and apply its choice
+#   --pilot-datasets "a b" datasets of the pilot                      (default: the thread-scan dataset)
+#   --controls "x y"       control runs kept out of every statistic: unpinned, default-settings
+#                          (default: both in the standard/full tiers, none in quick/smoke)
+#   --lean-scanpy          also run the memory-lean scanpy profile (core runs; reported in its own memory table)
+#   --allow-incomplete     write a draft report although required result files are missing
 #   --module-repeats K     repeats of the optional-module runs       (default: 3; 2 in the quick/smoke tiers)
 #   --scrublet-max-cells N skip Scrublet in module runs above N cells (default: 150000; 0 = never skip)
 #   --scanpy-max-cells N   skip scanpy above N cells (0 = never; default: from RAM, ~12.5k cells per GB)
 #   --timeout SEC          per-run limit                             (default: 7200)
 #   --python X.Y           Python for the venv                       (default: 3.11)
 #   --profile P            full = core workflow + separate module runs; core = core only (default: full)
-#   --no-pin               do not pin thread-scan runs to cores
+#   --no-pin               do not pin any run to cores (the default pins every run, physical cores first)
 #   --skip-tests / --skip-modules / --skip-thread-scan / --skip-build
 #   --install-uv           install uv if missing (https://astral.sh/uv)
 #   --install-rust         install Rust via rustup if missing
@@ -91,6 +104,7 @@ MAIN_THREADS=""
 OOC_THREADS=""
 MODULE_REPEATS=""
 SCRUBLET_MAX=150000
+PILOT=0; PILOT_DS=""; CONTROLS="__default__"; LEAN=0; ALLOW_INCOMPLETE=0
 NO_PIN=0; SKIP_TESTS=0; SKIP_MODULES=0; SKIP_SCAN=0; SKIP_BUILD=0; INSTALL_UV=0; INSTALL_RUST=0
 LIST=0; DRY=0
 
@@ -108,7 +122,12 @@ while [[ $# -gt 0 ]]; do
     --timeout) TIMEOUT="$2"; shift 2 ;;
     --python) PYVER="$2"; shift 2 ;;
     --profile) PROFILE="$2"; shift 2 ;;
-    --main-threads) MAIN_THREADS="$2"; shift 2 ;;
+    --main-threads|--thread-grid) MAIN_THREADS="$2"; shift 2 ;;
+    --pilot) PILOT=1; shift ;;
+    --pilot-datasets) PILOT_DS="$2"; shift 2 ;;
+    --controls) CONTROLS="$2"; shift 2 ;;
+    --lean-scanpy) LEAN=1; shift ;;
+    --allow-incomplete) ALLOW_INCOMPLETE=1; shift ;;
     --ooc-threads) OOC_THREADS="$2"; shift 2 ;;
     --module-repeats) MODULE_REPEATS="$2"; shift 2 ;;
     --scrublet-max-cells) SCRUBLET_MAX="$2"; shift 2 ;;
@@ -121,7 +140,7 @@ while [[ $# -gt 0 ]]; do
     --install-rust) INSTALL_RUST=1; shift ;;
     --list-datasets) LIST=1; shift ;;
     --dry-run) DRY=1; shift ;;
-    -h|--help) sed -n '2,60p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,87p' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (see --help)"; exit 2 ;;
   esac
 done
@@ -184,8 +203,11 @@ if [[ -z "$MAIN_THREADS" ]]; then
   case "$TIER" in
     smoke) MAIN_THREADS="$(clip 2 4)" ;;
     quick) MAIN_THREADS="$(clip 8 "$NCPU")" ;;
-    *)     MAIN_THREADS="$(clip 8 16 32 64 "$NCPU")" ;;
+    *)     MAIN_THREADS="$(clip 1 2 4 8 16 32 64 "$NCPU")" ;;
   esac
+fi
+if [[ "$CONTROLS" == "__default__" ]]; then
+  if [[ $SMALL -eq 1 ]]; then CONTROLS=""; else CONTROLS="unpinned default-settings"; fi
 fi
 if [[ -z "$OOC_THREADS" ]]; then
   if [[ "$TIER" == "smoke" ]]; then OOC_THREADS="$(clip 4)"; else OOC_THREADS="$(clip 8 "$NCPU")"; fi
@@ -259,6 +281,12 @@ else
 fi
 { df -h "$WORKDIR"; findmnt -T "$WORKDIR" -o SOURCE,FSTYPE,OPTIONS 2>/dev/null || true; } > "$E/disk_free.txt"
 { rustc -V; cargo -V; "$PY" -V; uv --version; } > "$E/toolchain.txt" 2>&1
+# SMT sibling map (which logical CPUs share a core), recorded because the pinning policy fills physical cores first
+if [[ "$OS" == "Linux" ]]; then
+  for f in /sys/devices/system/cpu/cpu[0-9]*/topology/thread_siblings_list; do
+    [[ -f "$f" ]] && echo "$(basename "$(dirname "$(dirname "$f")")"): $(cat "$f")"
+  done > "$E/smt_siblings.txt" 2>/dev/null || true
+fi
 uv pip freeze --python "$PY" > "$E/pip_freeze.txt"
 echo "$COMMIT" > "$E/crest_commit.txt"
 # R, DESeq2 and BiocParallel versions of the reference tool (R is not part of the Python venv)
@@ -276,11 +304,29 @@ record_r_versions() {  # directory to write R_versions.txt and R_versions.json i
   fi
 }
 record_r_versions "$E"
+if command -v Rscript >/dev/null 2>&1; then Rscript -e 'suppressMessages({library(DESeq2); library(BiocParallel)}); print(sessionInfo())' > "$E/R_sessionInfo.txt" 2>&1 || true; fi
 R_VERSIONS_JSON="$E/R_versions.json" "$PY" - > "$E/python_env.json" <<'PYEOF'
 import json, numpy, platform, psutil
 from importlib import metadata
 from threadpoolctl import threadpool_info
 import crest, scanpy  # noqa: F401  (load both tools' thread pools before listing them)
+import numba
+from numba import njit, prange
+
+
+@njit(parallel=True)
+def _probe(n):  # compiles a parallel function so that numba reports the threading layer it picked
+    s = 0.0
+    for i in prange(n):
+        s += i
+    return s
+
+
+_probe(1000)
+try:
+    numba_layer = numba.threading_layer()
+except Exception as e:  # noqa: BLE001
+    numba_layer = f"unavailable: {type(e).__name__}"
 vers = {}
 for d in ("crest-sc", "scanpy", "anndata", "numpy", "scipy", "pandas", "polars", "h5py", "scikit-learn", "pynndescent",
           "umap-learn", "numba", "llvmlite", "igraph", "leidenalg", "harmonypy", "pydeseq2", "threadpoolctl"):
@@ -291,7 +337,8 @@ for d in ("crest-sc", "scanpy", "anndata", "numpy", "scipy", "pandas", "polars",
 import os
 r_versions = json.load(open(os.environ["R_VERSIONS_JSON"])) if os.environ.get("R_VERSIONS_JSON") else None
 print(json.dumps({"python": platform.python_version(), "numpy": numpy.__version__, "versions": vers,
-                  "R_versions": r_versions,
+                  "R_versions": r_versions, "numba_threading_layer": numba_layer,
+                  "numba_num_threads": numba.config.NUMBA_NUM_THREADS,
                   "logical_cores": psutil.cpu_count(), "physical_cores": psutil.cpu_count(logical=False),
                   "ram_gb": psutil.virtual_memory().total / 1e9, "threadpools": threadpool_info()}, indent=1, default=str))
 PYEOF
@@ -300,7 +347,7 @@ cat > "$E/summary.md" <<EOF
 **Machine** $(echo $CPU_MODEL | xargs), $NCPU logical cores, ${RAM_GB} GB RAM, $OS ($(uname -r)); governor: $(cat "$E/governor.txt" 2>/dev/null || echo n/a).
 **Software** CREST $COMMIT ($REF), Python $("$PY" -c 'import platform;print(platform.python_version())'), $(rustc -V).
 **Reference tools (R)** $(cat "$E/R_versions.txt").
-**Protocol** core workflow of every dataset at $MAIN_THREADS threads (CREST, scanpy; out-of-core CREST at $OOC_THREADS), $REPEATS repeats per configuration; optional modules in separate runs ($([[ "$PROFILE" == "full" ]] && echo "$MODULE_REPEATS repeats, Scrublet skipped above $SCRUBLET_MAX cells" || echo "not run")); interleaved in shuffled order, fresh process per run, JIT warm-up excluded.
+**Protocol** core workflow of every dataset at $MAIN_THREADS threads (CREST, scanpy; out-of-core CREST at $OOC_THREADS), $REPEATS repeats per configuration; optional modules in separate runs ($([[ "$PROFILE" == "full" ]] && echo "$MODULE_REPEATS repeats, Scrublet skipped above $SCRUBLET_MAX cells" || echo "not run")); interleaved in shuffled order, fresh process per run, JIT warm-up excluded from every endpoint, imports included in the end-to-end time. Pinning: $([[ $NO_PIN -eq 1 ]] && echo "none (--no-pin)" || echo "every run pinned to the first p logical CPUs, physical cores first (SMT siblings in env/smt_siblings.txt)"). Controls: ${CONTROLS:-none}. Tuning pilot: $([[ $PILOT -eq 1 ]] && echo "yes" || echo "no").
 EOF
 cat "$E/summary.md"
 
@@ -314,7 +361,11 @@ if [[ -z "$DATASETS" ]]; then
 fi
 echo "  datasets: $DATASETS"
 [[ $DRY -eq 1 ]] || "$PY" bench/paper/datasets.py --data-dir "$DATA" --datasets $DATASETS 2>&1 | tee "$OUT/logs/datasets.log"
+# every converted file is checked count for count against independent readers; a mismatch stops the run
+[[ $DRY -eq 1 ]] || "$PY" bench/paper/datasets.py --data-dir "$DATA" --datasets $DATASETS --verify --manifest 2>&1 \
+  | tee "$OUT/logs/datasets_verify.log" || die "dataset verification failed (logs/datasets_verify.log)"
 cp "$DATA/checksums.json" "$E/data_checksums.json" 2>/dev/null || true
+for f in verification.json dataset_manifest.json; do cp "$DATA/$f" "$E/$f" 2>/dev/null || true; done
 
 # ------------------------------------------------------------------ 6. runs
 bold "6. Benchmark runs"
@@ -333,9 +384,21 @@ echo "  thread scan on $THREAD_DS: threads $(echo $THREADS $NCPU | tr ' ' '\n' |
 SCAN_ARGS=(--threads-scan $THREADS --thread-dataset "$THREAD_DS")
 [[ $SKIP_SCAN -eq 1 ]] && SCAN_ARGS=()
 PIN_ARGS=(); [[ $NO_PIN -eq 1 ]] && PIN_ARGS=(--no-pin)
+TOOL_ARGS=(--tools crest crest-ooc scanpy); [[ $LEAN -eq 1 ]] && TOOL_ARGS=(--tools crest crest-ooc scanpy scanpy-lean)
+CTL_ARGS=(); [[ -n "$CONTROLS" ]] && CTL_ARGS=(--controls $CONTROLS --control-datasets "$THREAD_DS")
+TUNE_ARGS=()
+if [[ $PILOT -eq 1 ]]; then
+  [[ -n "$PILOT_DS" ]] || PILOT_DS="$THREAD_DS"
+  bold "6a. Tuning pilot (untimed; results in $OUT/pilot, choice in $OUT/tuning.json)"
+  "$PY" bench/paper/run_all.py --data-dir "$DATA" --out "$OUT" --datasets $DATASETS --mode pilot --pilot-datasets $PILOT_DS \
+    --main-threads $MAIN_THREADS --timeout "$TIMEOUT" ${PIN_ARGS[@]+"${PIN_ARGS[@]}"} \
+    $([[ $DRY -eq 1 ]] && echo --dry-run)
+  [[ $DRY -eq 1 ]] || TUNE_ARGS=(--tuning "$OUT/tuning.json")
+fi
+bold "6b. Timed runs"
 "$PY" bench/paper/run_all.py --data-dir "$DATA" --out "$OUT" --datasets $DATASETS --repeats "$REPEATS" \
   --profile "$PROFILE" --main-threads $MAIN_THREADS --ooc-threads $OOC_THREADS --module-repeats "$MODULE_REPEATS" \
-  --scrublet-max-cells "$SCRUBLET_MAX" \
+  --scrublet-max-cells "$SCRUBLET_MAX" ${TOOL_ARGS[@]+"${TOOL_ARGS[@]}"} ${CTL_ARGS[@]+"${CTL_ARGS[@]}"} ${TUNE_ARGS[@]+"${TUNE_ARGS[@]}"} \
   --scanpy-max-cells "$SCANPY_MAX" --timeout "$TIMEOUT" ${SCAN_ARGS[@]+"${SCAN_ARGS[@]}"} ${PIN_ARGS[@]+"${PIN_ARGS[@]}"} \
   $([[ $DRY -eq 1 ]] && echo --dry-run)
 [[ $DRY -eq 1 ]] && exit 0
@@ -381,13 +444,14 @@ fi
 
 # ------------------------------------------------------------------ 9. statistics, figures, archive
 bold "9. Statistics, tables, figures"
-"$PY" bench/paper/summarize.py "$OUT" 2>&1 | tee "$OUT/logs/summarize.log"
+# stops with a non-zero status when a required result file is missing (--allow-incomplete writes a draft)
+"$PY" bench/paper/summarize.py "$OUT" $([[ $ALLOW_INCOMPLETE -eq 1 ]] && echo --allow-incomplete) 2>&1 | tee "$OUT/logs/summarize.log"
 # ------------------------------------------------------------------ 10. committable copy
 bold "10. Committable results"
 KEEP="$SRC/bench/paper/results/$STAMP"
 mkdir -p "$KEEP"/{tables,figures,modules,environment}
 cp "$OUT/report.md" "$KEEP/" 2>/dev/null || true
-for f in accuracy.json plan.json attempts.jsonl; do [[ -f "$OUT/$f" ]] && cp "$OUT/$f" "$KEEP/"; done
+for f in accuracy.json plan.json attempts.jsonl tuning.json missing_files.txt; do [[ -f "$OUT/$f" ]] && cp "$OUT/$f" "$KEEP/"; done
 cp "$OUT"/tables/*.csv "$KEEP/tables/" 2>/dev/null || true
 cp "$OUT"/figures/*.png "$KEEP/figures/" 2>/dev/null || true
 if [[ -d "$OUT/modules" ]]; then
@@ -395,7 +459,7 @@ if [[ -d "$OUT/modules" ]]; then
       -exec sh -c 'mkdir -p "$1/$(dirname "$2")" && cp "$2" "$1/$2"' _ "$KEEP/modules" {} \; )
 fi
 for f in summary.md python_env.json R_versions.txt R_versions.json pip_freeze.txt toolchain.txt crest_commit.txt uname.txt os.txt governor.txt \
-         turbo.txt lscpu.txt data_checksums.json; do [[ -f "$E/$f" ]] && cp "$E/$f" "$KEEP/environment/"; done
+         turbo.txt lscpu.txt data_checksums.json smt_siblings.txt R_sessionInfo.txt verification.json dataset_manifest.json; do [[ -f "$E/$f" ]] && cp "$E/$f" "$KEEP/environment/"; done
 "$PY" - "$KEEP/meta.json" <<PYEOF
 import json, sys
 json.dump({"stamp": "$STAMP", "host": "$(hostname -s 2>/dev/null || hostname)", "commit": "$COMMIT", "ref": "$REF",
