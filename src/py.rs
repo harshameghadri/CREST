@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 use rayon::prelude::*;
 
 use crate::kernels::{self, Cells, ChunkView, Transform};
-use crate::knn::{knn, KnnGraph, Points};
+use crate::knn::{first_non_finite_row, knn, knn_plan, KnnGraph, Points};
 use numpy::{PyReadwriteArrayDyn, PyReadonlyArrayDyn};
 
 fn not_c_contiguous(name: &str) -> PyErr {
@@ -129,11 +129,23 @@ fn knn_graph<'py>(
     if k > n - 1 {
         warn(py, &format!("knn_graph: k={} exceeds the {} other points; clamped to {}", k, n - 1, n - 1))?;
     }
+    if let Some(r) = first_non_finite_row(slice, d) {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!("data contains NaN or Inf (first bad row: {})", r)));
+    }
     let g = guarded(py, || knn(Points::new(slice, n, d), k, exact, seed))?;
     let kk = g.k;
     let idx = PyArray1::from_vec_bound(py, g.indices).reshape([n, kk])?;
     let dist = PyArray1::from_vec_bound(py, g.distances).reshape([n, kk])?;
     Ok((idx, dist))
+}
+
+/// The search `knn_graph` runs for `n` points: `(exact, nprobe, n_lists)`;
+/// `nprobe` and `n_lists` are 0 for the exact search.
+#[pyfunction]
+#[pyo3(signature = (n, exact=None))]
+fn knn_plan_info(n: usize, exact: Option<bool>) -> (bool, usize, usize) {
+    let plan = knn_plan(n, exact);
+    (plan.exact, plan.nprobe, plan.n_lists)
 }
 
 /// UMAP fuzzy simplicial set (scanpy `connectivities`) from a kNN graph whose rows
@@ -833,6 +845,12 @@ fn knn_query<'py>(
     if k > nr {
         warn(py, &format!("knn_query: k={} exceeds the {} reference points; clamped to {}", k, nr, nr))?;
     }
+    if let Some(r) = first_non_finite_row(rs, d) {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!("reference contains NaN or Inf (first bad row: {})", r)));
+    }
+    if let Some(r) = first_non_finite_row(qs, d) {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!("query contains NaN or Inf (first bad row: {})", r)));
+    }
     let g = guarded(py, || crate::knn::knn_query(Points::new(rs, nr, d), Points::new(qs, nq, d), k, exact, seed))?;
     let kk = g.k;
     Ok((PyArray1::from_vec_bound(py, g.indices).reshape([nq, kk])?, PyArray1::from_vec_bound(py, g.distances).reshape([nq, kk])?))
@@ -841,6 +859,7 @@ fn knn_query<'py>(
 #[pymodule]
 fn crest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(knn_graph, m)?)?;
+    m.add_function(wrap_pyfunction!(knn_plan_info, m)?)?;
     m.add_function(wrap_pyfunction!(connectivities, m)?)?;
     m.add_function(wrap_pyfunction!(leiden, m)?)?;
     m.add_function(wrap_pyfunction!(umap, m)?)?;

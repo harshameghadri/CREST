@@ -1,0 +1,4 @@
+- Changed: `pp.scrublet` counts the cell itself as one of its neighbours by default, as scanpy does (`include_self_neighbor=True`); observed-cell scores were 6-11% higher than scanpy's before. Pass `include_self_neighbor=False` for the previous scores.
+- Added: `pp.normalize_total` warns when the matrix holds negative or non-integer values (data that is already normalised).
+- Fixed: the loess fit behind `seurat_v3` raises a clear `ValueError` on heavily tied input, where `skmisc.loess` stops with an error, instead of returning a fit.
+- Changed: the documentation names the scanpy versions behind every `ingest` parity statement and notes that scanpy 1.12.3 centres the query on the reference mean (`center="reference"`).

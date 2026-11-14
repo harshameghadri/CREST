@@ -143,8 +143,9 @@ in {doc}`development` for contributors.
 
 The bindings validate what they are given and raise `ValueError` (never a silent wrong
 result) for arrays that are not C-contiguous (including Fortran-ordered matrices), for
-indices out of range, for NaN, infinite or negative edge weights, for `k < 1`, and for
-more Wilcoxon entries than cells. `knn_graph` / `knn_query` warn when `k` exceeds the
+indices out of range, for NaN, infinite or negative edge weights, for `k < 1`, for NaN or
+infinite values in the points given to `knn_graph` / `knn_query` (the message names the
+first bad row), and for more Wilcoxon entries than cells. `knn_graph` / `knn_query` warn when `k` exceeds the
 number of available points and clamp it. Leiden warns when the largest edge weight is below
 1e-6: its tolerances are absolute, and the partition collapses to singletons near 1e-12.
 A panic inside a kernel is reported as `RuntimeError`.

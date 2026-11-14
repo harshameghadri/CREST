@@ -2,10 +2,16 @@
 
 The query is projected onto the reference PCA (same genes, same scaling
 parameters as the reference; genes the query lacks count as unexpressed) and,
-as in scanpy, centred on its own mean,
-each query cell gets its k nearest reference cells, labels are transferred by
-majority vote, and reference UMAP coordinates by the umap-learn
-``transform`` initialisation (membership-weighted mean of the neighbours).
+by default, centred on its own mean; each query cell gets its k nearest reference
+cells, labels are transferred by majority vote, and reference UMAP coordinates by the
+umap-learn ``transform`` initialisation (membership-weighted mean of the neighbours).
+
+Relation to scanpy: in scanpy 1.11.5 (and up to 1.12.2) ``sc.tl.ingest`` projects the query ``X``
+exactly as supplied, centred on the query's own mean, and leaves any scaling to the user. CREST
+applies the reference's mean / std scaling and clipping to the query itself, so the two projections
+coincide (1.5e-5 on PBMC 3k, scanpy 1.11.5) when the query was scaled with the reference's statistics
+beforehand. scanpy 1.12.3 changed the centring to the reference mean; ``center="reference"`` is that
+convention and ``center="query"`` (the default) is the one of scanpy 1.11.5.
 """
 
 from __future__ import annotations
@@ -64,9 +70,10 @@ def _match_genes(query: BioFrame, P: dict):
 def project_pca(query: BioFrame, ref: BioFrame, center: str = "query") -> np.ndarray:
     """Coordinates of the query cells in the reference PCA space.
 
-    ``center="query"`` (scanpy ``ingest``) centres the query on its own mean,
-    which also removes a global shift between query and reference;
-    ``center="reference"`` uses the reference mean (the plain projection).
+    ``center="query"`` centres the query on its own mean, which also removes a global shift between
+    query and reference (scanpy 1.11.5 to 1.12.2 ``ingest``); ``center="reference"`` uses the
+    reference mean, the plain projection (scanpy >= 1.12.3 ``ingest``). The query is scaled with the
+    reference's statistics here, whereas scanpy projects ``X`` as supplied.
     """
     if "pca" not in ref.uns or "projection" not in ref.uns["pca"]:
         raise KeyError("reference has no PCA projection; run crest.tl.pca on it (CREST >= 0.3)")
@@ -124,7 +131,8 @@ def ingest(query: BioFrame, ref: BioFrame, obs: Union[str, Sequence[str], None] 
     ``n_neighbors`` and the number of PCs searched default to the reference's ``pp.neighbors``
     settings, which a cell filter of the reference keeps (``uns["neighbors_params"]``); without
     them, ``n_neighbors`` must be given (``ValueError`` otherwise) and all PCs are used.
-    ``center`` see :func:`project_pca` (default as scanpy).
+    ``center`` see :func:`project_pca` (the default is scanpy 1.11.5's centring on the query mean;
+    scanpy >= 1.12.3 centres on the reference mean, which is ``center="reference"``).
     """
     Xq = project_pca(query, ref, center)
     params = ref.uns.get("neighbors", {}).get("params") or ref.uns.get("neighbors_params", {}).get("params") or {}

@@ -13,16 +13,27 @@ from __future__ import annotations
 import numpy as np
 
 
+_SINGULAR = ("loess: the local fit at x={q:.6g} is singular: only {k} distinct predictor value(s) carry weight "
+             "within the span, but a degree-{d} fit needs at least {need} (heavily tied predictor values). "
+             "skmisc.loess raises an error on such input too; use a larger span or a lower degree, or check that "
+             "the input is not nearly constant")
+
+
 def _local_fit(xs: np.ndarray, ys: np.ndarray, q: float, nf: int, span: float, degree: int):
     """Value and slope of the local polynomial at ``q`` (netlib ehg127/ehg136)."""
     d2 = (xs - q) ** 2
     part = np.argpartition(d2, nf - 1)[:nf]
     rho = d2[part].max() * max(1.0, span)
-    if rho <= 0:
+    if rho <= 0:  # every point of the neighbourhood has the same x
+        if degree >= 1:
+            raise ValueError(_SINGULAR.format(q=q, k=1, d=degree, need=degree + 1))
         return float(ys[part].mean()), 0.0
     near = part[d2[part] < rho]
     w = (1.0 - np.sqrt(d2[near] / rho) ** 3) ** 3
     t = xs[near] - q
+    k = len(np.unique(t[w > 0]))
+    if k < degree + 1:  # rank-deficient local design: skmisc.loess stops with an error here
+        raise ValueError(_SINGULAR.format(q=q, k=k, d=degree, need=degree + 1))
     X = np.vander(t, degree + 1, increasing=True)
     sw = np.sqrt(w)
     coef, *_ = np.linalg.lstsq(X * sw[:, None], ys[near] * sw, rcond=None)
@@ -62,7 +73,11 @@ def _kd_vertices(xs: np.ndarray, fc: int) -> np.ndarray:
 
 
 def loess_fit(x: np.ndarray, y: np.ndarray, span: float = 0.75, degree: int = 2, cell: float = 0.2) -> np.ndarray:
-    """Fitted values of ``loess(y ~ x, span, degree)`` at the data points."""
+    """Fitted values of ``loess(y ~ x, span, degree)`` at the data points.
+
+    Raises ``ValueError`` where ``skmisc.loess`` stops with an error: when a local neighbourhood holds
+    fewer distinct ``x`` values than the degree needs (heavily tied predictor values), so that the
+    weighted design matrix is rank-deficient and no unique local fit exists."""
     x = np.asarray(x, np.float64)
     y = np.asarray(y, np.float64)
     n = len(x)
