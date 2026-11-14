@@ -6,13 +6,22 @@ with the paired design ``~ ind + stim`` by CREST, R DESeq2 and pydeseq2, and
 the results / wall times compared.
 
     python bench/deseq2/kang_pseudobulk.py [--data bench_data/kang] [--out bench/deseq2/results]
-        [--skip-r] [--skip-pydeseq2] [--threads 1 8 64] [--repeats 3]
+        [--skip-r] [--skip-pydeseq2] [--threads 1 2 4 8 16 32 64] [--repeats 3]
 
 Timings are thread-matched: CREST at RAYON_NUM_THREADS=k (in a fresh process), R DESeq2
 serial (k = 1) or with BiocParallel MulticoreParam(k), pydeseq2 with n_cpus=k, for each k
 in --threads; the report gives the speed-up at every matched k and best vs best, the
 headline being the minimum. CREST's and R's fit diagnostics are logged per cell type, and
 every gene called significant by only one of them is written out with both fits' details.
+
+R is timed at every k so that R's own best thread count is reported (R DESeq2 does not always
+speed up with more BiocParallel workers). A failed R or pydeseq2 call at one k is reported on
+stderr and in the output, the other k values still run, and the script exits with status 2 after
+writing everything it has. R's results are kept for every k and compared with the first
+successful k (``R_padj_ndiff_t<k>`` genes with a different padj, ``sig_R_diff_t<k>`` genes with
+a different significance call). With more than one BiocParallel worker the genes are reordered
+before the matrix is handed to R (see ``gene_order_for_workers``); no gene is removed and the
+results are restored to the input order.
 """
 
 import argparse
@@ -121,7 +130,9 @@ diag <- list(elapsed = el, workers = workers,
   n_grid_map = sum(col("dispIter") >= 100 & nz, na.rm = TRUE),
   n_disp_outlier = sum(col("dispOutlier")[nz], na.rm = TRUE),
   n_replaced = if ("replace" %in% names(mc)) sum(mc$replace, na.rm = TRUE) else 0,
-  deseq2 = as.character(packageVersion("DESeq2")))
+  deseq2 = as.character(packageVersion("DESeq2")),
+  biocparallel = as.character(packageVersion("BiocParallel")),
+  r_version = R.version.string)
 writeLines(jsonlite::toJSON(diag, auto_unbox = TRUE, digits = NA), file.path(d, "diag.json"))
 """
 
@@ -138,16 +149,99 @@ def _thread_env(t: int) -> dict:
     return env
 
 
+class RRunError(RuntimeError):
+    """Rscript exited with a non-zero status; the message carries the tail of its stderr."""
+
+
+R_STDERR_TAIL = 3000  # characters of R's stderr kept in an error message
+
+
+def worker_chunks(n_genes: int, workers: int) -> list:
+    """Row ranges that BiocParallel workers receive in ``DESeq(parallel = TRUE)``: DESeq2
+    splits the rows into ``workers`` consecutive blocks of (almost) equal size."""
+    workers = max(1, min(workers, n_genes))
+    base, extra = divmod(n_genes, workers)
+    out, lo = [], 0
+    for i in range(workers):
+        hi = lo + base + (1 if i < extra else 0)
+        out.append(range(lo, hi))
+        lo = hi
+    return out
+
+
+def gene_order_for_workers(counts, workers: int) -> np.ndarray:
+    """Order in which genes are handed to R. ``counts`` is samples x genes.
+
+    With one worker the order is unchanged. With several, all-zero genes (which are typically
+    stored together at the end of a gene list) are interleaved evenly with the expressed
+    genes, so that every consecutive block of rows that BiocParallel hands to one worker holds
+    expressed genes. Every gene stays in the model, so the baseMean quantiles behind
+    ``results()``' independent filtering and the set of tests adjusted together are the same
+    as in the serial run: dropping the all-zero genes instead would change which genes pass
+    that filter. DESeq2 fits every gene independently, so the order does not change a
+    gene's result."""
+    counts = np.asarray(counts)
+    n = counts.shape[1]
+    if workers <= 1 or n == 0:
+        return np.arange(n)
+    zero = counts.sum(axis=0) == 0
+    nz_idx, z_idx = np.flatnonzero(~zero), np.flatnonzero(zero)
+    if not len(z_idx) or not len(nz_idx):
+        return np.arange(n)
+    # evenly spaced sort keys inside each class; a stable sort merges the two classes
+    keys = np.concatenate([(np.arange(len(nz_idx)) + 0.5) / len(nz_idx), (np.arange(len(z_idx)) + 0.5) / len(z_idx)])
+    return np.concatenate([nz_idx, z_idx])[np.argsort(keys, kind="stable")]
+
+
 def run_r(counts, obs, genes, workers: int = 1):
-    """R DESeq2 in a fresh Rscript; BLAS threads limited to ``workers`` as well."""
+    """R DESeq2 in a fresh Rscript; BLAS threads limited to ``workers`` as well. Raises
+    ``RRunError`` (with R's stderr) if Rscript fails. Results are in the input gene order."""
     d = Path(tempfile.mkdtemp())
+    order = gene_order_for_workers(counts, workers)
     names = obs["pseudobulk"].to_list()
-    pl.DataFrame({"gene": genes}).hstack(pl.DataFrame(counts.T, schema=names)).write_csv(d / "counts.csv")
+    gene_col = [genes[i] for i in order]
+    mat = np.ascontiguousarray(np.asarray(counts)[:, order].T)
+    pl.DataFrame({"gene": gene_col}).hstack(pl.DataFrame(mat, schema=names)).write_csv(d / "counts.csv")
     obs.select(pl.col("pseudobulk").alias("sample"), "ind", "stim").write_csv(d / "coldata.csv")
     (d / "run.R").write_text(R_SCRIPT)
-    subprocess.run(["Rscript", str(d / "run.R"), str(d), str(workers)], check=True, capture_output=True,
-                   env=_thread_env(workers))
-    return pl.read_csv(d / "r.csv", null_values="NA"), json.loads((d / "diag.json").read_text())
+    proc = subprocess.run(["Rscript", str(d / "run.R"), str(d), str(workers)], capture_output=True, text=True,
+                          env=_thread_env(workers))
+    if proc.returncode != 0:
+        raise RRunError(f"Rscript failed with exit status {proc.returncode} (workers = {workers}); "
+                        f"stderr (tail):\n{(proc.stderr or '')[-R_STDERR_TAIL:]}")
+    res = pl.read_csv(d / "r.csv", null_values="NA")
+    return res[np.argsort(order)], json.loads((d / "diag.json").read_text())
+
+
+def timed_over_threads(run, threads: list, label: str) -> dict:
+    """``{k: (result, None)}`` or ``{k: (None, error text)}`` for ``run(k)`` at every k. A
+    failure at one k is printed to stderr and does not stop the other values of k."""
+    out = {}
+    for t in threads:
+        try:
+            out[t] = (run(t), None)
+        except Exception as e:  # noqa: BLE001 - one failed configuration must not lose the others
+            msg = f"{type(e).__name__}: {e}"
+            print(f"  [{label} @ {t}] FAILED: {msg}", file=sys.stderr, flush=True)
+            out[t] = (None, msg)
+    return out
+
+
+def padj_ndiff(ref: pl.DataFrame, other: pl.DataFrame, rtol: float = 1e-8) -> int:
+    """Number of genes whose padj differs between two R runs (a missing value equals a
+    missing value only)."""
+    a, b = ref["padj"].to_numpy(allow_copy=True).astype(float), other["padj"].to_numpy(allow_copy=True).astype(float)
+    na, nb = np.isnan(a), np.isnan(b)
+    both = ~na & ~nb
+    close = np.zeros(len(a), bool)
+    close[both] = np.isclose(a[both], b[both], rtol=rtol, atol=0.0)
+    return int((~((na & nb) | close)).sum())
+
+
+def sig_ndiff(ref: pl.DataFrame, other: pl.DataFrame, alpha: float = 0.1) -> int:
+    """Number of genes whose significance call (padj < alpha) differs between two R runs."""
+    s = lambda r: r["padj"].fill_null(1).to_numpy() < alpha  # noqa: E731
+    return int((s(ref) != s(other)).sum())
 
 
 def run_pydeseq2(counts, obs, genes, n_cpus: int = 1):
@@ -226,7 +320,10 @@ def _speedups(df: pl.DataFrame, threads: list, other: str) -> list[dict]:
     """Total time over cell types, CREST vs ``other`` (R / pydeseq2): matched at each thread
     count, and best vs best; the headline is the minimum."""
     rows = []
-    tot = lambda tool, t: float(df[f"time_{tool}_t{t}"].sum()) if f"time_{tool}_t{t}" in df.columns else None  # noqa: E731
+    # a thread count is used only if every cell type has a time for it (a failed run is a null,
+    # and a sum over the remaining cell types would understate the total)
+    tot = lambda tool, t: (float(df[f"time_{tool}_t{t}"].sum()) if f"time_{tool}_t{t}" in df.columns  # noqa: E731
+                           and df[f"time_{tool}_t{t}"].null_count() == 0 else None)
     for t in threads:
         c, o = tot("CREST", t), tot(other, t)
         if c and o:
@@ -250,13 +347,13 @@ def _md_table(df: pl.DataFrame) -> str:
     return s
 
 
-def main():
+def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default="bench_data/kang")
     ap.add_argument("--out", default="bench/deseq2/results")
     ap.add_argument("--skip-r", action="store_true")
     ap.add_argument("--skip-pydeseq2", action="store_true")
-    ap.add_argument("--threads", nargs="+", type=int, default=[1, 8, 64],
+    ap.add_argument("--threads", nargs="+", type=int, default=[1, 2, 4, 8, 16, 32, 64],
                     help="thread counts: CREST RAYON_NUM_THREADS, R BiocParallel MulticoreParam workers "
                          "(1 = serial), pydeseq2 n_cpus; capped at the logical core count")
     ap.add_argument("--repeats", type=int, default=3, help="CREST timing repeats per cell type (median)")
@@ -264,7 +361,7 @@ def main():
     a = ap.parse_args()
     if a.crest_worker:
         crest_worker(Path(a.crest_worker[0]), Path(a.crest_worker[1]), a.repeats)
-        return
+        return 0
     ncpu = os.cpu_count() or 1
     threads = sorted({min(t, ncpu) for t in a.threads})
     data, out = Path(a.data), Path(a.out)
@@ -294,7 +391,7 @@ def main():
             subs.append((ct, sub))
 
     ctimes = {t: crest_times(subs, t, a.repeats) for t in threads}
-    rows, diags, disc = [], [], []
+    rows, diags, disc, failures, r_info = [], [], [], [], {}
     for ct, sub in subs:
         ds = crest.tl.DESeq2(sub, design="~ ind + stim", quiet=True)
         res = ds.results(("stim", "stim", "ctrl"))
@@ -305,13 +402,25 @@ def main():
             row[f"time_CREST_t{t}"] = float(np.median(ctimes[t][ct]))
         dg = {"cell_type": ct, **{f"CREST_{k}": v for k, v in crest_diagnostics(ds).items()}}
         lp_c = -np.log10(res["pvalue"].fill_null(np.nan).to_numpy())
+        r = None
         if not a.skip_r:
-            r = None
+            runs = timed_over_threads(lambda t: run_r(sub.counts, sub.obs, genes, workers=t), threads, f"R, {ct}")
+            ok_k = [t for t in threads if runs[t][0] is not None]
             for t in threads:
-                rt, rd = run_r(sub.counts, sub.obs, genes, workers=t)
-                row[f"time_R_t{t}"] = rd["elapsed"]
-                if r is None:  # results and diagnostics from the serial run
-                    r, rdiag = rt, rd
+                row[f"time_R_t{t}"] = runs[t][0][1]["elapsed"] if runs[t][0] is not None else None
+                if runs[t][1] is not None:
+                    failures.append({"cell_type": ct, "tool": "R", "threads": t, "error": runs[t][1]})
+            if ok_k:  # reference results and diagnostics: the first thread count that worked (serial if it did)
+                ref_k = ok_k[0]
+                r, rdiag = runs[ref_k][0]
+                row["R_reference_threads"] = ref_k
+                r_info = {k: rdiag.get(k) for k in ("r_version", "deseq2", "biocparallel")}
+                for t in ok_k:  # R's own results at every k, against the reference
+                    rt = runs[t][0][0]
+                    row[f"sig_R_t{t}"] = int((rt["padj"].fill_null(1).to_numpy() < 0.1).sum())
+                    row[f"R_padj_ndiff_t{t}"] = padj_ndiff(r, rt)
+                    row[f"sig_R_diff_t{t}"] = sig_ndiff(r, rt)
+        if r is not None:
             lp_r = -np.log10(r["pvalue"].fill_null(np.nan).to_numpy())
             d_lfc = np.abs(res["log2FoldChange"].fill_null(np.nan).to_numpy() - r["log2FoldChange"].fill_null(np.nan).to_numpy())
             sig_r = r["padj"].fill_null(1).to_numpy() < 0.1
@@ -334,17 +443,22 @@ def main():
                              "betaConv_CREST": bool(f["betaConv"][gi]), "betaConv_R": r["betaConv"][int(gi)],
                              "maxCooks_CREST": float(f["maxCooks"][gi]), "maxCooks_R": r["maxCooks"][int(gi)]})
         if not a.skip_pydeseq2:
+            pruns = timed_over_threads(lambda t: run_pydeseq2(sub.counts, sub.obs, genes, n_cpus=t), threads,
+                                       f"pydeseq2, {ct}")
             pr = None
             for t in threads:
-                pt, el = run_pydeseq2(sub.counts, sub.obs, genes, n_cpus=t)
-                row[f"time_pydeseq2_t{t}"] = el
-                pr = pt if pr is None else pr
-            sig_p = pr["padj"].fillna(1).to_numpy() < 0.1
-            row.update({"sig_pydeseq2": int(sig_p.sum()), "sig_overlap_pydeseq2": int((sig_p & sig_c).sum())})
+                row[f"time_pydeseq2_t{t}"] = pruns[t][0][1] if pruns[t][0] is not None else None
+                if pruns[t][1] is not None:
+                    failures.append({"cell_type": ct, "tool": "pydeseq2", "threads": t, "error": pruns[t][1]})
+                elif pr is None:
+                    pr = pruns[t][0][0]
+            if pr is not None:
+                sig_p = pr["padj"].fillna(1).to_numpy() < 0.1
+                row.update({"sig_pydeseq2": int(sig_p.sum()), "sig_overlap_pydeseq2": int((sig_p & sig_c).sum())})
         rows.append(row)
         diags.append(dg)
         print(row, dg, flush=True)
-    df = pl.DataFrame(rows)
+    df = pl.DataFrame(rows, infer_schema_length=None)
     dgf = pl.DataFrame(diags, infer_schema_length=None)
     sp_rows = (_speedups(df, threads, "R") if not a.skip_r else []) + \
               (_speedups(df, threads, "pydeseq2") if not a.skip_pydeseq2 else [])
@@ -366,7 +480,14 @@ def main():
                  f"BLAS threads limited to k; the window is DESeqDataSetFromMatrix + DESeq + results (as in "
                  f"compare_r.py; CREST's constructor + results is the same work); `time_pydeseq2_t<k>` = pydeseq2 "
                  f"with `n_cpus=k` (DeseqDataSet + deseq2 + DeseqStats.summary). Thread counts: {threads}.\n\n")
+        if r_info:
+            fh.write(f"R reference: {r_info.get('r_version')}, DESeq2 {r_info.get('deseq2')}, BiocParallel "
+                     f"{r_info.get('biocparallel')}.\n\n")
         fh.write(_md_table(df))
+        if failures:
+            fh.write(f"\n**{len(failures)} failed run(s)** (null times above; the other thread counts are unaffected):\n\n"
+                     + "".join(f"* {f['cell_type']}, {f['tool']} @ {f['threads']}: {f['error'][:300]!r}\n"
+                               for f in failures))
         if spf.height:
             fh.write("\nTotal over cell types, CREST vs each tool: matched at every thread count and best vs best; the "
                      "headline is the minimum.\n\n" + _md_table(spf))
@@ -377,8 +498,14 @@ def main():
         if disc:
             fh.write(f"\n{len(disc)} genes are significant (padj < 0.1) in exactly one of CREST and R; per-gene fit "
                      f"details in `kang_discordant_genes.csv`.\n")
-    print(json.dumps({"totals": {c: float(df[c].sum()) for c in df.columns if c.startswith("time_")}}, indent=1))
+    print(json.dumps({"totals": {c: (float(df[c].sum()) if df[c].null_count() == 0 else None)  # null = a failed run
+                          for c in df.columns if c.startswith("time_")},
+                      "failed_runs": len(failures)}, indent=1))
+    if failures:
+        print(f"{len(failures)} run(s) failed (listed in kang_pseudobulk.md); exit status 2", file=sys.stderr)
+        return 2
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

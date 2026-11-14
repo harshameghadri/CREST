@@ -261,7 +261,22 @@ fi
 { rustc -V; cargo -V; "$PY" -V; uv --version; } > "$E/toolchain.txt" 2>&1
 uv pip freeze --python "$PY" > "$E/pip_freeze.txt"
 echo "$COMMIT" > "$E/crest_commit.txt"
-"$PY" - > "$E/python_env.json" <<'PYEOF'
+# R, DESeq2 and BiocParallel versions of the reference tool (R is not part of the Python venv)
+record_r_versions() {  # directory to write R_versions.txt and R_versions.json into
+  local dir="$1" line=""
+  if command -v Rscript >/dev/null 2>&1; then
+    line="$(Rscript -e 'suppressMessages({library(DESeq2); library(BiocParallel)}); cat(paste0("R ", getRversion(), ", DESeq2 ", packageVersion("DESeq2"), ", BiocParallel ", packageVersion("BiocParallel")))' 2>/dev/null | tail -n 1)" || line=""
+  fi
+  if [[ "$line" =~ ^R\ ([0-9][^,]*),\ DESeq2\ ([0-9][^,]*),\ BiocParallel\ ([0-9].*)$ ]]; then
+    echo "$line" > "$dir/R_versions.txt"
+    printf '{"R": "%s", "DESeq2": "%s", "BiocParallel": "%s"}\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" > "$dir/R_versions.json"
+  else
+    echo "R, DESeq2 or BiocParallel not available" > "$dir/R_versions.txt"
+    echo '{"R": null, "DESeq2": null, "BiocParallel": null}' > "$dir/R_versions.json"
+  fi
+}
+record_r_versions "$E"
+R_VERSIONS_JSON="$E/R_versions.json" "$PY" - > "$E/python_env.json" <<'PYEOF'
 import json, numpy, platform, psutil
 from importlib import metadata
 from threadpoolctl import threadpool_info
@@ -273,7 +288,10 @@ for d in ("crest-sc", "scanpy", "anndata", "numpy", "scipy", "pandas", "polars",
         vers[d] = metadata.version(d)
     except metadata.PackageNotFoundError:
         vers[d] = None
+import os
+r_versions = json.load(open(os.environ["R_VERSIONS_JSON"])) if os.environ.get("R_VERSIONS_JSON") else None
 print(json.dumps({"python": platform.python_version(), "numpy": numpy.__version__, "versions": vers,
+                  "R_versions": r_versions,
                   "logical_cores": psutil.cpu_count(), "physical_cores": psutil.cpu_count(logical=False),
                   "ram_gb": psutil.virtual_memory().total / 1e9, "threadpools": threadpool_info()}, indent=1, default=str))
 PYEOF
@@ -281,6 +299,7 @@ CPU_MODEL="$( (grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2) ||
 cat > "$E/summary.md" <<EOF
 **Machine** $(echo $CPU_MODEL | xargs), $NCPU logical cores, ${RAM_GB} GB RAM, $OS ($(uname -r)); governor: $(cat "$E/governor.txt" 2>/dev/null || echo n/a).
 **Software** CREST $COMMIT ($REF), Python $("$PY" -c 'import platform;print(platform.python_version())'), $(rustc -V).
+**Reference tools (R)** $(cat "$E/R_versions.txt").
 **Protocol** core workflow of every dataset at $MAIN_THREADS threads (CREST, scanpy; out-of-core CREST at $OOC_THREADS), $REPEATS repeats per configuration; optional modules in separate runs ($([[ "$PROFILE" == "full" ]] && echo "$MODULE_REPEATS repeats, Scrublet skipped above $SCRUBLET_MAX cells" || echo "not run")); interleaved in shuffled order, fresh process per run, JIT warm-up excluded.
 EOF
 cat "$E/summary.md"
@@ -330,15 +349,25 @@ if [[ $SKIP_MODULES -eq 0 ]]; then
   bold "8. Module benchmarks"
   M="$OUT/modules"
   KANG="$DATA/src/kang"
+  # A failing module does not stop the other modules or the statistics, but is recorded in
+  # $OUT/module_failures.txt; the script exits non-zero at the end (see "module failures").
   run_mod() {  # name, command...
     local name="$1"; shift
     echo "  - $name"
-    if "$@" > "$OUT/logs/module_$name.log" 2>&1; then echo "    ok"; else echo "    FAILED (logs/module_$name.log)"; fi
+    if "$@" > "$OUT/logs/module_$name.log" 2>&1; then
+      echo "    ok"
+    else
+      local rc=$?
+      echo "    FAILED with exit status $rc (logs/module_$name.log)"
+      echo "$name (exit status $rc)" >> "$OUT/module_failures.txt"
+    fi
+    return 0
   }
   R_ARGS=(); command -v Rscript >/dev/null && Rscript -e 'suppressMessages(library(DESeq2))' 2>/dev/null || R_ARGS=(--skip-r)
   [[ ${#R_ARGS[@]} -gt 0 ]] && echo "  (R DESeq2 not found: DESeq2 is compared with pydeseq2 only)"
-  # thread-matched DESeq2: 1, 8 and 64 threads (all cores instead of 64 on smaller machines)
-  DE_THREADS="$(clip 1 8 64 $([[ $NCPU -lt 64 ]] && echo "$NCPU"))"
+  # thread-matched DESeq2 at 1, 2, 4, 8, 16, 32 and 64 threads, so that R's own best worker count
+  # is measured (all cores as the last count on machines with fewer than 64)
+  DE_THREADS="$(clip 1 2 4 8 16 32 64 $([[ $NCPU -lt 64 ]] && echo "$NCPU"))"
   run_mod deseq2_kang "$PY" bench/deseq2/kang_pseudobulk.py --data "$KANG" --out "$M/deseq2" --threads $DE_THREADS ${R_ARGS[@]+"${R_ARGS[@]}"}
   if [[ ${#R_ARGS[@]} -eq 0 ]]; then run_mod deseq2_simulated "$PY" bench/deseq2/compare_r.py --out "$M/deseq2"; fi
   run_mod harmony "$PY" bench/harmony/compare_harmonypy.py --data "$KANG" --out "$M/harmony"
@@ -365,7 +394,7 @@ if [[ -d "$OUT/modules" ]]; then
   ( cd "$OUT/modules" && find . -type f \( -name '*.md' -o -name '*.csv' -o -name '*.json' \) -size -5M \
       -exec sh -c 'mkdir -p "$1/$(dirname "$2")" && cp "$2" "$1/$2"' _ "$KEEP/modules" {} \; )
 fi
-for f in summary.md python_env.json pip_freeze.txt toolchain.txt crest_commit.txt uname.txt os.txt governor.txt \
+for f in summary.md python_env.json R_versions.txt R_versions.json pip_freeze.txt toolchain.txt crest_commit.txt uname.txt os.txt governor.txt \
          turbo.txt lscpu.txt data_checksums.json; do [[ -f "$E/$f" ]] && cp "$E/$f" "$KEEP/environment/"; done
 "$PY" - "$KEEP/meta.json" <<PYEOF
 import json, sys
@@ -373,7 +402,8 @@ json.dump({"stamp": "$STAMP", "host": "$(hostname -s 2>/dev/null || hostname)", 
            "repo": "$REPO", "tier": "$TIER", "datasets": "$DATASETS".split(), "repeats": $REPEATS,
            "main_threads": "$MAIN_THREADS".split(), "ooc_threads": "$OOC_THREADS".split(),
            "thread_scan": "$THREADS".split(), "thread_dataset": "$THREAD_DS", "profile": "$PROFILE",
-           "versions": json.load(open("$E/python_env.json")).get("versions")}, open(sys.argv[1], "w"), indent=1)
+           "versions": json.load(open("$E/python_env.json")).get("versions"),
+           "R_versions": json.load(open("$E/R_versions.json"))}, open(sys.argv[1], "w"), indent=1)
 PYEOF
 echo "  $KEEP  ($(du -sh "$KEEP" | cut -f1); commit it as described in bench/paper/results/README.md)"
 TAR="$WORKDIR/results/crest-bench-$STAMP.tar.gz"
@@ -383,3 +413,9 @@ echo "  report:  $OUT/report.md"
 echo "  figures: $OUT/figures/"
 echo "  archive: $TAR  (send this back; it has everything except the large per-cell outputs)"
 echo "  to commit: cd $SRC && git checkout -b bench/results-$STAMP && git add bench/paper/results/$STAMP && git commit -m 'bench: results $STAMP'"
+# ------------------------------------------------------------------ module failures
+if [[ -s "$OUT/module_failures.txt" ]]; then
+  printf '\033[31mFAILED module(s):\033[0m\n' >&2
+  sed 's/^/  - /' "$OUT/module_failures.txt" >&2
+  exit 1
+fi

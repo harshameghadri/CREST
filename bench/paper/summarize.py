@@ -317,6 +317,19 @@ def not_faster_table(steps: pl.DataFrame, threshold: float = 1.2) -> pl.DataFram
     return pl.DataFrame(rows).sort(["speedup"]) if rows else pl.DataFrame()
 
 
+# A step counts as slower with more threads only if it is at least 1.5x slower AND at least
+# 10 s slower: the ratio alone also flags short steps whose few-second timings differ by noise.
+THREAD_REGRESSION_RATIO = 1.5
+THREAD_REGRESSION_MIN_SECONDS = 10.0
+
+
+def is_thread_regression(t_few: float, t_many: float, ratio: float = THREAD_REGRESSION_RATIO,
+                         min_seconds: float = THREAD_REGRESSION_MIN_SECONDS) -> bool:
+    """Is a step slower with more threads: ``t_many >= ratio * t_few`` and
+    ``t_many - t_few >= min_seconds`` (both must hold)."""
+    return bool(t_many >= ratio * t_few and t_many - t_few >= min_seconds)
+
+
 def step_table(df: pl.DataFrame) -> pl.DataFrame:
     ok = _main_runs(df).filter(pl.col("status") == "ok")
     steps = [c[5:] for c in df.columns if c.startswith("step:")]
