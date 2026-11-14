@@ -311,8 +311,10 @@ community weights at commit time does terminate, but the 20-seed modularity swee
 leidenalg went from +0.00152 mean / 2-of-20 below to **-0.00083 mean / 15-of-20 below** — a
 real, isolated regression (a control run reverting only this change reproduced the
 +0.00152/2-of-20 baseline exactly). Per the accuracy rules above, this does not ship.
-`fast_move_nodes` stays single-threaded; see `HANDOVER.md` for what a future attempt should
-try differently.
+`fast_move_nodes` stays single-threaded. A future attempt could process a bounded batch of
+nodes per round, which reduces the staleness of neighbouring communities at the cost of more
+synchronisation, or first make the sequential algorithm cache-friendlier by renumbering nodes
+so that neighbours are close in memory, which carries no risk to quality.
 
 ## Module benchmarks
 

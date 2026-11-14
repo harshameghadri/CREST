@@ -50,7 +50,7 @@ sphinx-build -n -b html docs docs/_build/html     # optional: also report broken
 | `tests/test_crest.py`, `tests/data/` | the test suite; stored R DESeq2 outputs + the R script that makes them |
 | `bench/paper/` | the paper benchmark harness (driven by `scripts/crest_paper_bench.sh`) |
 | `bench/<module>/` | module comparisons with their `results/` |
-| `scripts/` | `crest_paper_bench.sh`, `crest_git_housekeeping.sh` |
+| `scripts/` | `crest_paper_bench.sh` |
 | `docs/` | this documentation (Sphinx + MyST); `.readthedocs.yaml` at the root |
 | `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `CITATION.cff` | contribution guide, code of conduct, citation metadata |
 
