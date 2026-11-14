@@ -98,16 +98,27 @@ REGISTRY: dict[str, dict] = {
 # at which scanpy still fits in 128 GB (its dense scaled matrix at 9.7M cells would be 78 GB).
 SUBSETS = {"parse_pbmc_1m": ("parse_pbmc", 1_000_000)}
 SUBSET_TIER = {"parse_pbmc_1m": "full"}
-# Controlled scaling series: synthetic cells interpolating real PBMC 68k neighbours.
-SYNTHETIC = {f"synth_{n // 1000}k": n for n in (100_000, 200_000, 500_000, 1_000_000)}
-SYNTH_TIER = {"synth_100k": "standard", "synth_200k": "standard", "synth_500k": "full", "synth_1000k": "full"}
+# Controlled scaling series: synthetic cells interpolating real PBMC 68k neighbours. The
+# cell-count scaling exponents are fitted on this series only (one generator, one source, so
+# only the cell count varies); the standard tier has 4 points (25k-200k, a factor of 8).
+SYNTHETIC = {f"synth_{n // 1000}k": n for n in (25_000, 50_000, 100_000, 200_000, 500_000, 1_000_000)}
+SYNTH_TIER = {"synth_25k": "standard", "synth_50k": "standard", "synth_100k": "standard", "synth_200k": "standard",
+              "synth_500k": "full", "synth_1000k": "full"}
+# A tiny series interpolated from PBMC 3k, for smoke-testing the harness end to end on a laptop
+# (--tier smoke); never part of the paper tiers.
+SYNTHETIC.update({"synth_smoke_2k": 2_000, "synth_smoke_4k": 4_000, "synth_smoke_8k": 8_000})
+SYNTH_TIER.update({k: "smoke" for k in ("synth_smoke_2k", "synth_smoke_4k", "synth_smoke_8k")})
+SYNTH_SOURCE = {k: "pbmc3k" for k in ("synth_smoke_2k", "synth_smoke_4k", "synth_smoke_8k")}  # default pbmc68k
+TIER_ORDER = {"quick": 0, "standard": 1, "full": 2}
 
 
 def tier_datasets(tier: str) -> list[str]:
-    order = {"quick": 0, "standard": 1, "full": 2}[tier]
-    real = [k for k, v in REGISTRY.items() if order >= {"quick": 0, "standard": 1, "full": 2}[v["tier"]]]
-    syn = [k for k, t in SYNTH_TIER.items() if order >= {"quick": 0, "standard": 1, "full": 2}[t]]
-    sub = [k for k, t in SUBSET_TIER.items() if order >= {"quick": 0, "standard": 1, "full": 2}[t]]
+    if tier == "smoke":
+        return ["pbmc3k"] + [k for k, t in SYNTH_TIER.items() if t == "smoke"]
+    order = TIER_ORDER[tier]
+    real = [k for k, v in REGISTRY.items() if order >= TIER_ORDER[v["tier"]]]
+    syn = [k for k, t in SYNTH_TIER.items() if t in TIER_ORDER and order >= TIER_ORDER[t]]
+    sub = [k for k, t in SUBSET_TIER.items() if order >= TIER_ORDER[t]]
     return real + sub + syn
 
 
@@ -517,7 +528,7 @@ def build(name: str, data_dir: Path) -> Path:
         return out
     if name in SYNTHETIC:
         if not out.exists():
-            src = build("pbmc68k", data_dir)
+            src = build(SYNTH_SOURCE.get(name, "pbmc68k"), data_dir)
             from make_dataset import synthesize
             print(f"  [build]    {out.name} from {src.name}")
             synthesize(src, SYNTHETIC[name], out, seed=0)
@@ -565,7 +576,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", default="bench_data")
     ap.add_argument("--datasets", nargs="*")
-    ap.add_argument("--tier", choices=["quick", "standard", "full"])
+    ap.add_argument("--tier", choices=["smoke", "quick", "standard", "full"])
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--inspect", metavar="H5AD", help="print the layout of an .h5ad and exit")
     a = ap.parse_args()
@@ -578,7 +589,8 @@ def main():
         for k, (parent, n) in SUBSETS.items():
             print(f"{k:18s} {n:>9,d} cells  tier={SUBSET_TIER[k]:8s} random subset of {parent}")
         for k, n in SYNTHETIC.items():
-            print(f"{k:18s} {n:>9,d} cells  tier={SYNTH_TIER[k]:8s} synthetic, interpolated from pbmc68k")
+            print(f"{k:18s} {n:>9,d} cells  tier={SYNTH_TIER[k]:8s} synthetic, interpolated from "
+                  f"{SYNTH_SOURCE.get(k, 'pbmc68k')}")
         return
     names = a.datasets or tier_datasets(a.tier or "standard")
     for n in names:

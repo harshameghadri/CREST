@@ -56,6 +56,9 @@ class Monitor:
         self.steps: dict[str, dict] = {}
         self._stop = threading.Event()
         self._peak = 0
+        # RSS when monitoring starts (interpreter, imported libraries, warm-up leftovers):
+        # reported so memory can be given both as the absolute peak and as peak - baseline
+        self.baseline_rss = self._rss()
         psutil.cpu_percent(percpu=True)  # prime
         self.t0 = time.perf_counter()
         self._th = threading.Thread(target=self._run, daemon=True)
@@ -141,7 +144,8 @@ class Monitor:
         self._th.join()
         ru = resource.getrusage(resource.RUSAGE_SELF)
         maxrss = ru.ru_maxrss * (1 if os.uname().sysname == "Darwin" else 1024)
-        return {"ru_maxrss_gb": maxrss / 1e9, "ru_utime_s": ru.ru_utime, "ru_stime_s": ru.ru_stime,
+        # ru_maxrss is the process-lifetime peak, so it includes the warm-up: not a run metric
+        return {"ru_maxrss_lifetime_gb": maxrss / 1e9, "baseline_rss_gb": self.baseline_rss / 1e9, "ru_utime_s": ru.ru_utime, "ru_stime_s": ru.ru_stime,
                 "ru_majflt": ru.ru_majflt, "ru_minflt": ru.ru_minflt, "ru_nvcsw": ru.ru_nvcsw,
                 "ru_nivcsw": ru.ru_nivcsw, "wall_s": time.perf_counter() - self.t0}
 
