@@ -1,8 +1,8 @@
 # Pinned versions for the paper benchmark environment (installed by scripts/crest_paper_bench.sh
 # after `maturin develop -E test,bench`, so these override whatever the extras resolved to).
 #
-# scanpy is pinned to the 1.11 series, the version the parity claims are made against
-# (CLAUDE.md: "scanpy 1.11 for the workflow"). The rest is the set that resolved together with
+# scanpy is pinned to the 1.11 series, the version the parity claims are made against.
+# The rest is the set that resolved together with
 # scanpy 1.11.5 on 2026-10-23 (Python 3.11) and passes the test suite. The installed versions
 # are recorded in every run's JSON (env.versions), in env/python_env.json and env/pip_freeze.txt.
 # To reproduce an earlier run exactly, replace these with the versions from that run's
