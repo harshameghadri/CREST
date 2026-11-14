@@ -555,6 +555,9 @@ pub fn check_rank_sum_counts(genes: &[u32], values: &[f32], groups: &[u32], n_ge
 /// Wilcoxon rank sums of every group vs the rest, per gene, exploiting sparsity:
 /// all implicit zeros form one tie block, so only non-zero values are sorted.
 ///
+/// Values may be negative: the zero block then sits between the negative and the
+/// positive entries, at rank `n_neg + (n_zero + 1) / 2`.
+///
 /// Input: entries (gene_local, value, group) for genes 0..n_genes (any order);
 /// `group_sizes[g]` = number of cells in group g. Returns (rank_sum n_groups ×
 /// n_genes, tie term Σ(t³ - t) per gene).
@@ -593,8 +596,10 @@ pub fn wilcoxon_rank_sums(
             }
             let n_nonzero = e.len() as u64;
             let n_zero = n_total - n_nonzero;
+            // `e` is sorted ascending: the negatives come first, then the zero block, then the positives
+            let n_neg = e.iter().take_while(|x| x.0 < 0.0).count();
             let mut rs = vec![0.0f64; n_groups];
-            let zero_rank = (n_zero as f64 + 1.0) / 2.0;
+            let zero_rank = n_neg as f64 + (n_zero as f64 + 1.0) / 2.0;
             for grp in 0..n_groups {
                 rs[grp] += (group_sizes[grp] - nnz_grp[grp]) as f64 * zero_rank;
             }
@@ -605,8 +610,11 @@ pub fn wilcoxon_rank_sums(
                 while j < e.len() && e[j].0 == e[i].0 {
                     j += 1;
                 }
-                // ranks n_zero + i + 1 ..= n_zero + j, averaged
-                let avg = n_zero as f64 + (i + 1 + j) as f64 / 2.0;
+                // `i` indexes the whole sorted list of non-zeros. A negative entry has rank i + 1 (the
+                // negatives are the smallest values); a positive entry follows the zero block as well,
+                // so its rank is n_zero + i + 1. Tied entries share the average of ranks i + 1 ..= j.
+                let offset = if e[i].0 < 0.0 { 0.0 } else { n_zero as f64 };
+                let avg = offset + (i + 1 + j) as f64 / 2.0;
                 for x in &e[i..j] {
                     rs[x.1 as usize] += avg;
                 }
@@ -839,5 +847,82 @@ mod group_sums_tests {
         let (cm, gm) = ([0i64], [0i32]);
         let (mut s, mut q) = (vec![0.0; 2], vec![0.0; 1]);
         assert!(group_gene_sums(view(&genes, &vals, &indptr, &cm, &gm), &[0], 1, &mut s, Some(&mut q), None, None).is_err());
+    }
+}
+
+#[cfg(test)]
+mod wilcoxon_signed_tests {
+    use super::*;
+
+    /// Average ranks of the dense values (ties share their mean rank) and Σ(t³ - t).
+    fn naive(vals: &[f32]) -> (Vec<f64>, f64) {
+        let n = vals.len();
+        let mut idx: Vec<usize> = (0..n).collect();
+        idx.sort_by(|&a, &b| vals[a].total_cmp(&vals[b]));
+        let (mut ranks, mut tie, mut i) = (vec![0.0f64; n], 0.0f64, 0);
+        while i < n {
+            let mut j = i;
+            while j < n && vals[idx[j]] == vals[idx[i]] {
+                j += 1;
+            }
+            for &k in &idx[i..j] {
+                ranks[k] = (i + 1 + j) as f64 / 2.0;
+            }
+            let t = (j - i) as f64;
+            tie += t * t * t - t;
+            i = j;
+        }
+        (ranks, tie)
+    }
+
+    #[test]
+    fn test_negative_values_rank_below_the_zero_block() {
+        // six cells, groups [0,0,0,1,1,1], values [-3, 0, 0, 2, 0, -1]: ranks 1, 4, 4, 6, 4, 2
+        let vals = [-3.0f32, 0.0, 0.0, 2.0, 0.0, -1.0];
+        let nz: Vec<usize> = (0..6).filter(|&i| vals[i] != 0.0).collect();
+        let grp = [0u32, 0, 0, 1, 1, 1];
+        let (rs, tie) = wilcoxon_rank_sums(&vec![0; nz.len()], &nz.iter().map(|&i| vals[i]).collect::<Vec<_>>(),
+                                           &nz.iter().map(|&i| grp[i]).collect::<Vec<_>>(), 1, &[3, 3]);
+        assert_eq!(rs, vec![9.0, 12.0]);
+        assert_eq!(tie, vec![24.0]);
+    }
+
+    #[test]
+    fn test_signed_values_match_naive_ranks_on_random_cases() {
+        let mut state = 0x2545F4914F6CDD1Du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for case in 0..400 {
+            let n = 3 + (next() % 40) as usize;
+            let n_groups = 2 + (next() % 3) as usize;
+            // small integer values (many ties), about half zeros, a random share of them negative
+            let neg_share = (next() % 101) as f64 / 100.0;
+            let vals: Vec<f32> = (0..n)
+                .map(|_| {
+                    if next() % 2 == 0 {
+                        0.0
+                    } else {
+                        let m = 1.0 + (next() % 4) as f32;
+                        if ((next() % 1000) as f64) / 1000.0 < neg_share { -m } else { m }
+                    }
+                })
+                .collect();
+            let grp: Vec<u32> = (0..n).map(|_| (next() % n_groups as u64) as u32).collect();
+            let mut sizes = vec![0u64; n_groups];
+            grp.iter().for_each(|&g| sizes[g as usize] += 1);
+            let nz: Vec<usize> = (0..n).filter(|&i| vals[i] != 0.0).collect();
+            let (rs, tie) = wilcoxon_rank_sums(&vec![0; nz.len()], &nz.iter().map(|&i| vals[i]).collect::<Vec<_>>(),
+                                               &nz.iter().map(|&i| grp[i]).collect::<Vec<_>>(), 1, &sizes);
+            let (ranks, tie_ref) = naive(&vals);
+            for g in 0..n_groups {
+                let want: f64 = (0..n).filter(|&k| grp[k] == g as u32).map(|k| ranks[k]).sum();
+                assert!((rs[g] - want).abs() < 1e-9, "case {}: group {}: {} vs {} for {:?}", case, g, rs[g], want, vals);
+            }
+            assert!((tie[0] - tie_ref).abs() < 1e-9, "case {}: ties {} vs {}", case, tie[0], tie_ref);
+        }
     }
 }
