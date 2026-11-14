@@ -41,7 +41,7 @@ sphinx-build -n -b html docs docs/_build/html     # optional: also report broken
 | `crest/ingest.py` | projection onto a reference PCA, label and UMAP transfer |
 | `crest/_loess.py` | port of netlib `dloess` (the loess behind R and skmisc), for `seurat_v3` |
 | `src/kernels.rs` | fused chunk kernels over a `ChunkView` (QC, gene stats, Gram / projection, group sums, Wilcoxon) |
-| `src/knn.rs` | kNN: exact tiled GEMM; IVF + NN-descent above 20k cells; `knn_query` (reference → query) |
+| `src/knn.rs` | kNN: exact tiled GEMM screen with exact re-comparison on mean-centred coordinates; IVF + NN-descent above 20k cells (`nprobe` grows with the number of lists); `knn_query` (reference → query, every query probes the lists nearest to itself) |
 | `src/leiden.rs` | Leiden (Traag 2019) + parallel resolution sweep |
 | `src/umap/` | fuzzy simplicial set, spectral init, parallel SGD |
 | `src/harmony.rs` | Harmony (harmony2 algorithm) |
@@ -105,7 +105,7 @@ and merges per-thread partial results.
 | `gram_accumulate`, `pca_from_gram`, `project` | PCA, Scrublet, ingest | Gram matrix with implicit scale / clip; eigendecomposition; projection |
 | `weighted_row_sums` | `score_genes` | per-cell weighted sum over genes |
 | `materialize` | `to_scipy`, `write_parquet` | the filtered / transformed chunk as COO |
-| `knn_graph`, `connectivities` | `neighbors`, Scrublet | kNN; umap-learn fuzzy connectivities |
+| `knn_graph`, `knn_plan_info`, `connectivities` | `neighbors`, Scrublet | kNN; the search (exact or index, `nprobe`) that `knn_graph` runs for a given size; umap-learn fuzzy connectivities |
 | `knn_query` | `ingest` | reference → query kNN |
 | `leiden`, `leiden_sweep` | clustering | Leiden, one or many (resolution, seed) runs in parallel |
 | `umap` | `umap` | layout optimisation |

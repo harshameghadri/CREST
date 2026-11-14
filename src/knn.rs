@@ -10,7 +10,12 @@
 //!   approximate graph is then polished with one round of NN-descent
 //!   ("a neighbour of a neighbour is likely a neighbour", Dong et al. 2011).
 //!
-//! Final distances are recomputed exactly (no GEMM cancellation error).
+//! The GEMM only *screens* candidates. Coordinates are first centred on the
+//! reference mean (accumulated in f64), which makes the expansion translation
+//! invariant, and a candidate is admitted to a top-k list only if its screened
+//! distance, lowered by a rounding-error bound, could beat the current k-th
+//! exact distance; admitted candidates are compared by their exact squared
+//! distance. Final distances are recomputed exactly (no GEMM cancellation error).
 
 use faer::linalg::matmul::matmul;
 use faer::{Accum, MatMut, MatRef, Par};
@@ -43,6 +48,108 @@ pub struct KnnGraph {
     pub k: usize,
     pub indices: Vec<u32>,   // n × k
     pub distances: Vec<f32>, // n × k, Euclidean
+}
+
+/// Index of the first row of `data` (row length `d`) holding a NaN or infinite
+/// value, if any.
+pub fn first_non_finite_row(data: &[f32], d: usize) -> Option<usize> {
+    if d == 0 || data.is_empty() {
+        return None;
+    }
+    data.par_chunks(d).position_first(|row| row.iter().any(|x| !x.is_finite()))
+}
+
+/// Per-column means in f64. Rows are summed in fixed blocks, so the result does
+/// not depend on the number of threads.
+fn column_means(pts: Points) -> Vec<f64> {
+    const BLOCK: usize = 4096;
+    let d = pts.d;
+    let parts: Vec<Vec<f64>> = pts
+        .data
+        .par_chunks(BLOCK * d)
+        .map(|blk| {
+            let mut s = vec![0.0f64; d];
+            for row in blk.chunks_exact(d) {
+                for (a, &x) in s.iter_mut().zip(row) {
+                    *a += x as f64;
+                }
+            }
+            s
+        })
+        .collect();
+    let mut m = vec![0.0f64; d];
+    for p in &parts {
+        for (a, b) in m.iter_mut().zip(p) {
+            *a += b;
+        }
+    }
+    for a in m.iter_mut() {
+        *a /= pts.n as f64;
+    }
+    m
+}
+
+/// `pts - shift`, computed in f64 and rounded once to f32.
+fn centred(pts: Points, shift: &[f64]) -> Vec<f32> {
+    let d = pts.d;
+    let mut out = vec![0.0f32; pts.n * d];
+    out.par_chunks_mut(d).zip(pts.data.par_chunks(d)).for_each(|(o, r)| {
+        for j in 0..d {
+            o[j] = (r[j] as f64 - shift[j]) as f32;
+        }
+    });
+    out
+}
+
+fn row_norms(pts: Points) -> Vec<f32> {
+    (0..pts.n).into_par_iter().map(|i| pts.row(i).iter().map(|x| x * x).sum()).collect()
+}
+
+/// Relative bound on the f32 rounding error of `||q||^2 + ||c||^2 - 2 q.c`
+/// (multiplied by `||q||^2 + ||c||^2`), with a safety factor of about 2.
+#[inline]
+fn gemm_slack_coef(d: usize) -> f32 {
+    (d as f32 + 4.0) * 1.2e-7
+}
+
+/// Exact searches are used up to this many points when `exact` is not given.
+pub const EXACT_MAX_POINTS: usize = 20_000;
+
+/// Which search `knn` runs for a given input size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KnnPlan {
+    pub exact: bool,
+    /// inverted lists probed per list (0 for the exact search)
+    pub nprobe: usize,
+    /// inverted lists of the index (0 for the exact search)
+    pub n_lists: usize,
+}
+
+/// Number of inverted lists used for `n` points.
+fn ivf_lists(n: usize) -> usize {
+    (n / 512).clamp(IVF_MIN_LISTS, 8192)
+}
+
+/// Smallest number of lists probed by the IVF search.
+const IVF_MIN_NPROBE: usize = 20;
+
+/// Lists probed per list of the index. The number of lists grows with n, so a
+/// fixed probe count would search a shrinking fraction of the data and recall
+/// would fall with n; `max(20, ceil(1.5 sqrt(nc)))` keeps it above 0.999 (mean,
+/// with at most 0.1% of cells below 0.8) from 200k to 1M cells on scale-ups of a
+/// PBMC embedding.
+fn ivf_nprobe(nc: usize) -> usize {
+    ((1.5 * (nc as f64).sqrt()).ceil() as usize).max(IVF_MIN_NPROBE)
+}
+
+/// The search `knn(.., n points, exact, ..)` will run.
+pub fn knn_plan(n: usize, exact: Option<bool>) -> KnnPlan {
+    if exact.unwrap_or(n <= EXACT_MAX_POINTS) || n < IVF_MIN_LISTS {
+        KnnPlan { exact: true, nprobe: 0, n_lists: 0 }
+    } else {
+        let nc = ivf_lists(n);
+        KnnPlan { exact: false, nprobe: ivf_nprobe(nc).min(nc), n_lists: nc }
+    }
 }
 
 #[inline]
@@ -89,10 +196,14 @@ fn push_topk(dist: &mut [f32], idx: &mut [u32], d: f32, j: u32) {
 const TILE: usize = 1024;
 
 /// Search `queries` against `cands` (both lists of row ids) and merge into the
-/// queries' top-k lists (`topd`/`topi`, laid out queries.len() × k).
+/// queries' top-k lists (`topd`/`topi`, laid out queries.len() × k; `topd` holds
+/// exact squared distances). `cpts`/`cnorms` are the centred coordinates and
+/// their squared norms used for the GEMM screen.
+#[allow(clippy::too_many_arguments)]
 fn search_block(
     pts: Points,
-    norms: &[f32],
+    cpts: Points,
+    cnorms: &[f32],
     queries: &[u32],
     cands: &[u32],
     k: usize,
@@ -100,32 +211,38 @@ fn search_block(
     topi: &mut [u32],
 ) {
     let d = pts.d;
+    let coef = gemm_slack_coef(d);
     let mut qbuf = vec![0.0f32; queries.len() * d];
     for (r, &q) in queries.iter().enumerate() {
-        qbuf[r * d..(r + 1) * d].copy_from_slice(pts.row(q as usize));
+        qbuf[r * d..(r + 1) * d].copy_from_slice(cpts.row(q as usize));
     }
     let mut cbuf = vec![0.0f32; TILE.min(cands.len()) * d];
     let mut prod = vec![0.0f32; queries.len() * TILE.min(cands.len())];
     for tile in cands.chunks(TILE) {
         let m = tile.len();
         for (r, &c) in tile.iter().enumerate() {
-            cbuf[r * d..(r + 1) * d].copy_from_slice(pts.row(c as usize));
+            cbuf[r * d..(r + 1) * d].copy_from_slice(cpts.row(c as usize));
         }
         let lhs = MatRef::from_row_major_slice(&qbuf, queries.len(), d);
         let rhs = MatRef::from_row_major_slice(&cbuf[..m * d], m, d);
         let dst = MatMut::from_row_major_slice_mut(&mut prod[..queries.len() * m], queries.len(), m);
         matmul(dst, Accum::Replace, lhs, rhs.transpose(), 1.0f32, Par::Seq);
         for (r, &q) in queries.iter().enumerate() {
-            let qn = norms[q as usize];
+            let qn = cnorms[q as usize];
             let row = &prod[r * m..(r + 1) * m];
             let (td, ti) = (&mut topd[r * k..(r + 1) * k], &mut topi[r * k..(r + 1) * k]);
             for (t, &c) in tile.iter().enumerate() {
                 if c == q {
                     continue;
                 }
-                let dist = (qn + norms[c as usize] - 2.0 * row[t]).max(0.0);
-                if dist < td[k - 1] {
-                    push_topk(td, ti, dist, c);
+                let cn = cnorms[c as usize];
+                let screened = qn + cn - 2.0 * row[t];
+                // a NaN screen compares false and is never admitted
+                if screened - coef * (qn + cn) < td[k - 1] {
+                    let dist = sq_dist(pts.row(q as usize), pts.row(c as usize));
+                    if dist < td[k - 1] {
+                        push_topk(td, ti, dist, c);
+                    }
                 }
             }
         }
@@ -133,7 +250,7 @@ fn search_block(
 }
 
 /// Exact k-NN by tiled brute force.
-fn knn_brute(pts: Points, norms: &[f32], k: usize) -> (Vec<f32>, Vec<u32>) {
+fn knn_brute(pts: Points, cpts: Points, cnorms: &[f32], k: usize) -> (Vec<f32>, Vec<u32>) {
     let n = pts.n;
     let all: Vec<u32> = (0..n as u32).collect();
     let mut topd = vec![f32::INFINITY; n * k];
@@ -145,7 +262,7 @@ fn knn_brute(pts: Points, norms: &[f32], k: usize) -> (Vec<f32>, Vec<u32>) {
         .for_each(|(b, (td, ti))| {
             let lo = b * qb;
             let hi = (lo + qb).min(n);
-            search_block(pts, norms, &all[lo..hi], &all, k, td, ti);
+            search_block(pts, cpts, cnorms, &all[lo..hi], &all, k, td, ti);
         });
     (topd, topi)
 }
@@ -224,12 +341,12 @@ fn kmeans(pts: Points, nc: usize, iters: usize, seed: u64) -> Vec<f32> {
 const IVF_MIN_LISTS: usize = 8;
 
 /// Approximate k-NN via IVF buckets + NN-descent refinement.
-fn knn_ivf(pts: Points, norms: &[f32], k: usize, nprobe: usize, seed: u64) -> (Vec<f32>, Vec<u32>) {
+fn knn_ivf(pts: Points, cpts: Points, cnorms: &[f32], k: usize, nprobe: usize, seed: u64) -> (Vec<f32>, Vec<u32>) {
     let (n, d) = (pts.n, pts.d);
-    let nc = (n / 512).clamp(IVF_MIN_LISTS, 8192);
+    let nc = ivf_lists(n);
     debug_assert!(nc <= n);
-    let cent = kmeans(pts, nc, 8, seed);
-    let labels = assign(pts, &cent, nc);
+    let cent = kmeans(cpts, nc, 8, seed);
+    let labels = assign(cpts, &cent, nc);
     let mut lists: Vec<Vec<u32>> = vec![Vec::new(); nc];
     for (i, &c) in labels.iter().enumerate() {
         lists[c as usize].push(i as u32);
@@ -257,7 +374,7 @@ fn knn_ivf(pts: Points, norms: &[f32], k: usize, nprobe: usize, seed: u64) -> (V
                 let cands: Vec<u32> = probes[c].iter().flat_map(|&o| lists[o as usize].iter().copied()).collect();
                 // large buckets: split queries so the product tile stays cache-sized
                 for (qs, (dd, ii)) in queries.chunks(256).zip(td.chunks_mut(256 * k).zip(ti.chunks_mut(256 * k))) {
-                    search_block(pts, norms, qs, &cands, k, dd, ii);
+                    search_block(pts, cpts, cnorms, qs, &cands, k, dd, ii);
                 }
             }
             (td, ti)
@@ -337,7 +454,8 @@ fn knn_ivf(pts: Points, norms: &[f32], k: usize, nprobe: usize, seed: u64) -> (V
 }
 
 /// k nearest neighbours (self excluded). `exact=None` picks brute force for
-/// n <= 20_000 and IVF + NN-descent above.
+/// n <= 20_000 and IVF + NN-descent above. IVF needs at least IVF_MIN_LISTS
+/// points (one per inverted list); tinier inputs use the exact search.
 pub fn knn(pts: Points, k: usize, exact: Option<bool>, seed: u64) -> KnnGraph {
     let n = pts.n;
     if n == 0 {
@@ -347,14 +465,16 @@ pub fn knn(pts: Points, k: usize, exact: Option<bool>, seed: u64) -> KnnGraph {
     if k == 0 {
         return KnnGraph { n, k: 0, indices: vec![], distances: vec![] };
     }
-    let norms: Vec<f32> = (0..n).into_par_iter().map(|i| pts.row(i).iter().map(|x| x * x).sum()).collect();
-    // IVF needs at least IVF_MIN_LISTS points (one per inverted list): route tiny
-    // inputs to the exact search instead of panicking
-    let use_exact = exact.unwrap_or(n <= 20_000) || n < IVF_MIN_LISTS;
-    let (_, mut topi) = if use_exact {
-        knn_brute(pts, &norms, k)
+    // centre on the column means (f64) so the expanded distance is translation invariant
+    let shift = column_means(pts);
+    let cdata = centred(pts, &shift);
+    let cpts = Points::new(&cdata, n, pts.d);
+    let cnorms = row_norms(cpts);
+    let plan = knn_plan(n, exact);
+    let (_, mut topi) = if plan.exact {
+        knn_brute(pts, cpts, &cnorms, k)
     } else {
-        knn_ivf(pts, &norms, k, 20, seed)
+        knn_ivf(pts, cpts, &cnorms, k, plan.nprobe, seed)
     };
     crate::simd::clean_simd_state(); // after faer GEMM tiles
 
@@ -434,29 +554,34 @@ mod tests {
 }
 
 /// Top-k search of query rows against candidate rows of a second point set.
+/// `qp`/`rp` are the original coordinates (exact distances), `cqp`/`crp` the
+/// reference-centred copies used for the GEMM screen.
 #[allow(clippy::too_many_arguments)]
 fn search_block_ref(
     qp: Points,
+    cqp: Points,
     qnorms: &[f32],
-    queries: &[u32],
     rp: Points,
+    crp: Points,
     rnorms: &[f32],
+    queries: &[u32],
     cands: &[u32],
     k: usize,
     topd: &mut [f32],
     topi: &mut [u32],
 ) {
     let d = qp.d;
+    let coef = gemm_slack_coef(d);
     let mut qbuf = vec![0.0f32; queries.len() * d];
     for (r, &q) in queries.iter().enumerate() {
-        qbuf[r * d..(r + 1) * d].copy_from_slice(qp.row(q as usize));
+        qbuf[r * d..(r + 1) * d].copy_from_slice(cqp.row(q as usize));
     }
     let mut cbuf = vec![0.0f32; TILE.min(cands.len()) * d];
     let mut prod = vec![0.0f32; queries.len() * TILE.min(cands.len())];
     for tile in cands.chunks(TILE) {
         let m = tile.len();
         for (r, &c) in tile.iter().enumerate() {
-            cbuf[r * d..(r + 1) * d].copy_from_slice(rp.row(c as usize));
+            cbuf[r * d..(r + 1) * d].copy_from_slice(crp.row(c as usize));
         }
         let lhs = MatRef::from_row_major_slice(&qbuf, queries.len(), d);
         let rhs = MatRef::from_row_major_slice(&cbuf[..m * d], m, d);
@@ -467,70 +592,161 @@ fn search_block_ref(
             let row = &prod[r * m..(r + 1) * m];
             let (td, ti) = (&mut topd[r * k..(r + 1) * k], &mut topi[r * k..(r + 1) * k]);
             for (t, &c) in tile.iter().enumerate() {
-                let dist = (qn + rnorms[c as usize] - 2.0 * row[t]).max(0.0);
-                if dist < td[k - 1] {
-                    push_topk(td, ti, dist, c);
+                let cn = rnorms[c as usize];
+                let screened = qn + cn - 2.0 * row[t];
+                if screened - coef * (qn + cn) < td[k - 1] {
+                    let dist = sq_dist(qp.row(q as usize), rp.row(c as usize));
+                    if dist < td[k - 1] {
+                        push_topk(td, ti, dist, c);
+                    }
                 }
             }
         }
     }
 }
 
+/// Lists probed per query by the IVF path of [`knn_query`]. Queries need not lie on
+/// the reference manifold, so they probe more lists than the points of the index
+/// do: `max(32, ceil(2.5 sqrt(nc)))`.
+fn query_nprobe(nc: usize) -> usize {
+    ((2.5 * (nc as f64).sqrt()).ceil() as usize).max(32).min(nc)
+}
+
+/// The query rows of one search job and the inverted lists they are searched in.
+struct QueryJob {
+    queries: Vec<u32>,
+    lists: Vec<u32>,
+}
+
+/// The `p` inverted lists nearest to every query row (nearest first), `nq × p`.
+fn nearest_lists(cq: Points, cent: &[f32], nc: usize, p: usize) -> Vec<u32> {
+    let d = cq.d;
+    let cnorm: Vec<f32> = cent.chunks_exact(d).map(|c| c.iter().map(|x| x * x).sum()).collect();
+    let block = 512;
+    let mut out = vec![0u32; cq.n * p];
+    out.par_chunks_mut(block * p).enumerate().for_each(|(b, o)| {
+        let lo = b * block;
+        let rows = o.len() / p;
+        let lhs = MatRef::from_row_major_slice(&cq.data[lo * d..(lo + rows) * d], rows, d);
+        let rhs = MatRef::from_row_major_slice(cent, nc, d);
+        let mut prod = vec![0.0f32; rows * nc];
+        matmul(MatMut::from_row_major_slice_mut(&mut prod, rows, nc), Accum::Replace, lhs, rhs.transpose(), 1.0f32, Par::Seq);
+        let mut ds: Vec<(f32, u32)> = Vec::with_capacity(nc);
+        for r in 0..rows {
+            ds.clear();
+            // ||q||^2 is the same for every list, so it does not change the order
+            ds.extend((0..nc).map(|c| (cnorm[c] - 2.0 * prod[r * nc + c], c as u32)));
+            let cmp = |a: &(f32, u32), b: &(f32, u32)| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1));
+            if p < nc {
+                ds.select_nth_unstable_by(p - 1, cmp);
+            }
+            ds[..p].sort_by(cmp);
+            for (slot, e) in o[r * p..(r + 1) * p].iter_mut().zip(&ds[..p]) {
+                *slot = e.1;
+            }
+        }
+    });
+    out
+}
+
+/// Split the queries whose nearest list is the same into search jobs. A job
+/// searches the union of its queries' own nearest lists (so every query sees at
+/// least its `p` nearest lists) and is closed before that union exceeds `cap`
+/// lists or the job holds 256 queries.
+fn split_into_jobs(qs: &[u32], nearest: &[u32], p: usize, cap: usize, member: &mut [bool]) -> Vec<QueryJob> {
+    let mut order: Vec<u32> = qs.to_vec();
+    order.sort_by(|&a, &b| nearest[a as usize * p..(a as usize + 1) * p].cmp(&nearest[b as usize * p..(b as usize + 1) * p]).then(a.cmp(&b)));
+    let mut jobs = Vec::new();
+    let mut cur = QueryJob { queries: Vec::new(), lists: Vec::new() };
+    for &q in &order {
+        let probe = &nearest[q as usize * p..(q as usize + 1) * p];
+        let fresh = probe.iter().filter(|&&l| !member[l as usize]).count();
+        if !cur.queries.is_empty() && (cur.queries.len() >= 256 || cur.lists.len() + fresh > cap) {
+            for &l in &cur.lists {
+                member[l as usize] = false;
+            }
+            jobs.push(std::mem::replace(&mut cur, QueryJob { queries: Vec::new(), lists: Vec::new() }));
+        }
+        for &l in probe {
+            if !member[l as usize] {
+                member[l as usize] = true;
+                cur.lists.push(l);
+            }
+        }
+        cur.queries.push(q);
+    }
+    for &l in &cur.lists {
+        member[l as usize] = false;
+    }
+    if !cur.queries.is_empty() {
+        jobs.push(cur);
+    }
+    jobs
+}
+
 /// k nearest reference rows of each query row (reference-to-query mapping).
 /// `exact=None` is brute force when n_ref × n_query <= 2e8, otherwise an IVF
-/// index over the reference probing the 32 nearest buckets.
+/// index over the reference in which every query probes the lists nearest to
+/// the query itself.
 pub fn knn_query(refp: Points, query: Points, k: usize, exact: Option<bool>, seed: u64) -> KnnGraph {
     let (nr, nq) = (refp.n, query.n);
     let k = k.min(nr);
     if nq == 0 || k == 0 {
         return KnnGraph { n: nq, k: 0, indices: vec![], distances: vec![] };
     }
-    let rnorms: Vec<f32> = (0..nr).into_par_iter().map(|i| refp.row(i).iter().map(|x| x * x).sum()).collect();
-    let qnorms: Vec<f32> = (0..nq).into_par_iter().map(|i| query.row(i).iter().map(|x| x * x).sum()).collect();
+    let d = refp.d;
+    // centre both sets on the reference mean (f64): translation invariant screening
+    let shift = column_means(refp);
+    let crdata = centred(refp, &shift);
+    let cqdata = centred(query, &shift);
+    let (crp, cqp) = (Points::new(&crdata, nr, d), Points::new(&cqdata, nq, d));
+    let rnorms = row_norms(crp);
+    let qnorms = row_norms(cqp);
     let use_exact = exact.unwrap_or((nr as f64) * (nq as f64) <= 2e8);
-    let (lists, qlists, probes): (Vec<Vec<u32>>, Vec<Vec<u32>>, Vec<Vec<u32>>) = if use_exact {
-        (vec![(0..nr as u32).collect()], vec![(0..nq as u32).collect()], vec![vec![0]])
+    let (lists, jobs): (Vec<Vec<u32>>, Vec<QueryJob>) = if use_exact {
+        let jobs = (0..nq as u32)
+            .collect::<Vec<u32>>()
+            .chunks(256)
+            .map(|c| QueryJob { queries: c.to_vec(), lists: vec![0] })
+            .collect();
+        (vec![(0..nr as u32).collect()], jobs)
     } else {
         let nc = (nr / 512).clamp(8, 8192).min(nr);
-        let cent = kmeans(refp, nc, 8, seed);
+        let p = query_nprobe(nc);
+        let cent = kmeans(crp, nc, 8, seed);
         let mut lists = vec![Vec::new(); nc];
-        for (i, &c) in assign(refp, &cent, nc).iter().enumerate() {
+        for (i, &c) in assign(crp, &cent, nc).iter().enumerate() {
             lists[c as usize].push(i as u32);
         }
-        let mut qlists = vec![Vec::new(); nc];
-        for (i, &c) in assign(query, &cent, nc).iter().enumerate() {
-            qlists[c as usize].push(i as u32);
+        let nearest = nearest_lists(cqp, &cent, nc, p);
+        let mut groups: Vec<Vec<u32>> = vec![Vec::new(); nc];
+        for q in 0..nq {
+            groups[nearest[q * p] as usize].push(q as u32);
         }
-        let cp = Points::new(&cent, nc, refp.d);
-        let probes = (0..nc)
-            .into_par_iter()
-            .map(|c| {
-                let mut ds: Vec<(f32, u32)> = (0..nc).map(|o| (sq_dist(cp.row(c), cp.row(o)), o as u32)).collect();
-                let p = 32.min(nc);
-                ds.select_nth_unstable_by(p - 1, |a, b| a.0.total_cmp(&b.0));
-                ds[..p].iter().map(|x| x.1).collect()
-            })
+        let jobs: Vec<QueryJob> = groups
+            .par_iter()
+            .map_init(|| vec![false; nc], |member, qs| split_into_jobs(qs, &nearest, p, 2 * p, member))
+            .collect::<Vec<Vec<QueryJob>>>()
+            .into_iter()
+            .flatten()
             .collect();
-        (lists, qlists, probes)
+        (lists, jobs)
     };
-    let per: Vec<(Vec<u32>, Vec<f32>, Vec<u32>)> = qlists
+    let per: Vec<(Vec<u32>, Vec<u32>)> = jobs
         .par_iter()
-        .enumerate()
-        .flat_map_iter(|(c, qs)| {
-            let cands: Vec<u32> = probes[c].iter().flat_map(|&o| lists[o as usize].iter().copied()).collect();
-            qs.chunks(256)
-                .map(|chunk| {
-                    let mut td = vec![f32::INFINITY; chunk.len() * k];
-                    let mut ti = vec![u32::MAX; chunk.len() * k];
-                    search_block_ref(query, &qnorms, chunk, refp, &rnorms, &cands, k, &mut td, &mut ti);
-                    (chunk.to_vec(), td, ti)
-                })
-                .collect::<Vec<_>>()
+        .map(|job| {
+            let cands: Vec<u32> = job.lists.iter().flat_map(|&o| lists[o as usize].iter().copied()).collect();
+            let mut td = vec![f32::INFINITY; job.queries.len() * k];
+            let mut ti = vec![u32::MAX; job.queries.len() * k];
+            for (qs, (dd, ii)) in job.queries.chunks(256).zip(td.chunks_mut(256 * k).zip(ti.chunks_mut(256 * k))) {
+                search_block_ref(query, cqp, &qnorms, refp, crp, &rnorms, qs, &cands, k, dd, ii);
+            }
+            (job.queries.clone(), ti)
         })
         .collect();
     crate::simd::clean_simd_state();
     let mut topi = vec![u32::MAX; nq * k];
-    for (qs, _, ti) in &per {
+    for (qs, ti) in &per {
         for (r, &q) in qs.iter().enumerate() {
             let q = q as usize;
             topi[q * k..(q + 1) * k].copy_from_slice(&ti[r * k..(r + 1) * k]);
@@ -600,3 +816,95 @@ mod query_tests {
     }
 }
 
+#[cfg(test)]
+mod precision_tests {
+    use super::*;
+    use rand::Rng;
+
+    fn embedding(n: usize, d: usize, seed: u64) -> Vec<f32> {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        (0..n * d).map(|i| rng.gen_range(-1.0f32..1.0) * (3.0 / (1.0 + (i % d) as f32).sqrt())).collect()
+    }
+
+    /// float64 brute-force neighbour sets of the float32 array actually passed.
+    fn truth(data: &[f32], n: usize, d: usize, k: usize, i: usize) -> Vec<u32> {
+        let mut all: Vec<(f64, u32)> = (0..n)
+            .filter(|&j| j != i)
+            .map(|j| {
+                let s: f64 = (0..d).map(|c| (data[i * d + c] as f64 - data[j * d + c] as f64).powi(2)).sum();
+                (s, j as u32)
+            })
+            .collect();
+        all.sort_by(|a, b| a.0.total_cmp(&b.0));
+        all[..k].iter().map(|x| x.1).collect()
+    }
+
+    #[test]
+    fn exact_search_ignores_the_offset_of_the_data() {
+        let (n, d, k) = (1500usize, 40usize, 10usize);
+        let base = embedding(n, d, 7);
+        for offset in [0.0f32, 100.0, 1.0e3, 1.0e4] {
+            let data: Vec<f32> = base.iter().map(|x| x + offset).collect();
+            let g = knn(Points::new(&data, n, d), k, Some(true), 0);
+            let mut hit = 0;
+            for i in (0..n).step_by(5) {
+                let t = truth(&data, n, d, k, i);
+                hit += g.indices[i * k..(i + 1) * k].iter().filter(|j| t.contains(j)).count();
+            }
+            let recall = hit as f64 / ((n / 5) * k) as f64;
+            assert!(recall >= 0.999, "offset {}: recall {}", offset, recall);
+        }
+    }
+
+    #[test]
+    fn small_local_scale_against_a_large_offset_is_exact() {
+        let (n, d, k) = (1200usize, 30usize, 8usize);
+        let data: Vec<f32> = embedding(n, d, 9).iter().map(|x| x * 0.01 + 1.0e3).collect();
+        let g = knn(Points::new(&data, n, d), k, Some(true), 0);
+        let mut hit = 0;
+        for i in 0..n {
+            let t = truth(&data, n, d, k, i);
+            hit += g.indices[i * k..(i + 1) * k].iter().filter(|j| t.contains(j)).count();
+        }
+        assert!(hit as f64 / (n * k) as f64 >= 0.999);
+    }
+
+    #[test]
+    fn non_finite_rows_are_located() {
+        let mut data = vec![1.0f32; 5 * 3];
+        assert_eq!(first_non_finite_row(&data, 3), None);
+        data[4 * 3 + 1] = f32::INFINITY;
+        data[2 * 3] = f32::NAN;
+        assert_eq!(first_non_finite_row(&data, 3), Some(2));
+        assert_eq!(first_non_finite_row(&[], 3), None);
+    }
+
+    #[test]
+    fn plan_matches_the_search_that_runs() {
+        assert!(knn_plan(5, Some(false)).exact, "fewer points than lists falls back to exact");
+        assert!(knn_plan(20_000, None).exact);
+        assert!(!knn_plan(20_001, None).exact);
+        assert!(knn_plan(300_000, Some(true)).exact);
+        let small = knn_plan(30_000, None);
+        let large = knn_plan(1_000_000, None);
+        assert_eq!((small.n_lists, small.nprobe), (58, 20));
+        assert!(large.nprobe > small.nprobe, "nprobe must grow with the number of lists");
+        assert!(large.nprobe <= large.n_lists);
+    }
+
+    #[test]
+    fn query_ivf_probes_by_the_query_not_its_bucket() {
+        // far-away queries must still find their neighbours
+        let (nr, nq, d, k) = (40_000usize, 300usize, 6usize, 8usize);
+        let r = embedding(nr, d, 21);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(22);
+        let q: Vec<f32> = (0..nq * d).map(|_| rng.gen_range(-6.0f32..6.0)).collect();
+        let (rp, qp) = (Points::new(&r, nr, d), Points::new(&q, nq, d));
+        let ex = knn_query(rp, qp, k, Some(true), 0);
+        let ap = knn_query(rp, qp, k, Some(false), 0);
+        let hit: usize = (0..nq).map(|i| ap.indices[i * k..(i + 1) * k].iter().filter(|j| ex.indices[i * k..(i + 1) * k].contains(j)).count()).sum();
+        assert!(hit as f64 / (nq * k) as f64 > 0.98);
+        let again = knn_query(rp, qp, k, Some(false), 0);
+        assert_eq!(ap.indices, again.indices, "IVF query search must be deterministic");
+    }
+}
