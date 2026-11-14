@@ -162,9 +162,10 @@ PDF/PNG figures and a `.tar.gz`. The pieces live in `bench/paper/`
 * **Leiden.** Traag et al. (2019): fast local moving, refinement, aggregation.
 * **DESeq2 in Rust.** A step-by-step port of DESeq2's `DESeq()` / `results()`, one
   parallel pass over genes per stage, with the NB likelihood evaluated without
-  the cancellation R suffers at tiny dispersions. Pseudobulk DE for 8 cell types
-  of Kang 2018 takes 7 s on 4 cores (R DESeq2, single-threaded: 131 s; pydeseq2, all cores:
-  202 s).
+  the cancellation R suffers at tiny dispersions. Timings against R DESeq2 and pydeseq2
+  are measured thread-matched by `bench/deseq2/kang_pseudobulk.py`; they are published in
+  [docs/benchmarks.md](https://github.com/harshameghadri/CREST/blob/main/docs/benchmarks.md)
+  once that comparison has been re-run.
 * **Sparse Wilcoxon.** All implicit zeros of a gene form one tie block with a
   closed-form rank, so only non-zero values are sorted.
 * **Harmony in Rust.** The harmony2 algorithm with cells sorted by batch, so the

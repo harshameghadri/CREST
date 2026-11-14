@@ -50,6 +50,7 @@ warnings.filterwarnings("ignore")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from monitor import Monitor  # noqa: E402
 from datasets import REGISTRY  # noqa: E402
+from accuracy import scanpy_knn_indices  # noqa: E402
 
 RESOLUTIONS = [0.2, 0.5, 1.0, 1.5, 2.0]
 
@@ -268,24 +269,16 @@ def seed_baseline() -> np.ndarray | None:
 
 
 def knn_indices() -> np.ndarray | None:
-    """The kNN graph each tool actually built in the timed run, as (n, k-1) neighbour
-    indices (self excluded; -1 pads rows with fewer neighbours). scanpy: the non-zeros of
-    ``obsp['distances']`` sorted by distance; CREST: ``uns['neighbors']['indices']``."""
+    """The kNN graph each tool actually built in the timed run, as (n, n_neighbors - 1)
+    neighbour indices (self excluded; -1 pads rows with fewer neighbours). scanpy: the
+    non-zeros of ``obsp['distances']`` without the cell itself, sorted by distance and cut to
+    ``n_neighbors - 1`` (see ``accuracy.scanpy_knn_indices``); CREST: ``uns['neighbors']['indices']``."""
     obj = LAST.get("obj")
     if obj is None:
         return None
     if LAST["tool"] == "scanpy":
-        D = obj.obsp["distances"].tocsr()
-        lens = np.diff(D.indptr)
-        k = int(lens.max()) if D.shape[0] else 0
-        if D.shape[0] and (lens == k).all():  # the usual case: every row has k - 1 neighbours
-            dd, ii = D.data.reshape(-1, k), D.indices.reshape(-1, k)
-            return np.take_along_axis(ii, np.argsort(dd, axis=1, kind="stable"), axis=1).astype(np.int32)
-        out = np.full((D.shape[0], k), -1, np.int32)
-        for i in range(D.shape[0]):
-            lo, hi = D.indptr[i], D.indptr[i + 1]
-            out[i, : hi - lo] = D.indices[lo:hi][np.argsort(D.data[lo:hi], kind="stable")]
-        return out
+        params = (obj.uns.get("neighbors") or {}).get("params") or {}
+        return scanpy_knn_indices(obj.obsp["distances"], int(params.get("n_neighbors", N_NEIGHBORS)))
     return np.asarray(obj.uns["neighbors"]["indices"]).astype(np.int32)
 
 

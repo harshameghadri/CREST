@@ -1,0 +1,1 @@
+- Documentation: removed the DESeq2 speed-up figures against R and pydeseq2 (they came from different runs and machines and were not thread-matched) and the cells-scaling exponents (fitted to three dataset sizes). They are replaced by a pointer to the benchmark results, which are being regenerated.

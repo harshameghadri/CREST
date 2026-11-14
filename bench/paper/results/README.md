@@ -14,7 +14,7 @@ traced to a commit. It holds:
 | `attempts.jsonl` | every run attempt, including failed ones that a resume later retried |
 | `plan.json` | the planned runs, in execution order |
 | `modules/` | the module benchmarks (DESeq2 vs R / pydeseq2, Harmony, Scrublet, ingest, modularity sweep) |
-| `environment/` | machine and software record (`summary.md`, `python_env.json`, `pip_freeze.txt`, `lscpu.txt`, ...) |
+| `environment/` | machine and software record (`summary.md`, `python_env.json`, `R_versions.txt` / `R_versions.json` (R, DESeq2 and BiocParallel of the DESeq2 reference), `pip_freeze.txt`, `lscpu.txt`, ...) |
 
 Raw per-run JSON, timelines and per-cell outputs are not committed (too large); they are in
 the `crest-bench-<stamp>.tar.gz` archive the script writes next to the results.
