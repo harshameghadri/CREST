@@ -315,13 +315,17 @@ def test_deseq2_matches_r(name):
         np.testing.assert_allclose(a, b, rtol=tol, atol=1e-12, equal_nan=True, err_msg=col)
 
 
+SMALL_DF_PRIOR_VAR_RTOL = 1e-9   # 2 vs 2 prior variance against R (R's value is the floor 0.25 on this table)
+SMALL_DF_SIG_DIFF = 0            # genes called differently at padj < 0.1
+
+
 def test_deseq2_small_df_close_to_r():
-    """2 vs 2: the prior variance is estimated by simulation in R, exactly here."""
+    """2 vs 2: the prior variance reproduces R's simulated reference distribution (R's own value)."""
     ds, res, r, meta = _deseq_case("two_vs_two")
-    assert abs(ds.fit["dispPriorVar"] - meta["priorVar"]) < 0.05 * meta["priorVar"]
+    assert abs(ds.fit["dispPriorVar"] - meta["priorVar"]) <= SMALL_DF_PRIOR_VAR_RTOL * meta["priorVar"]
     sig_c = res["padj"].fill_null(1).to_numpy() < 0.1
     sig_r = r["padj"].fill_null(1).to_numpy() < 0.1
-    assert (sig_c != sig_r).sum() <= 2
+    assert (sig_c != sig_r).sum() <= SMALL_DF_SIG_DIFF
 
 
 def test_pseudobulk_sums_and_de(tmp_path):

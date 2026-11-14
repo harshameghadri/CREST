@@ -1,6 +1,6 @@
 """Pseudobulk differential expression with DESeq2, implemented in Rust.
 
-``DESeq2`` reproduces R's ``DESeq()`` + ``results()`` (DESeq2 1.42): median-of-
+``DESeq2`` reproduces R's ``DESeq()`` + ``results()`` (reference: R 4.5.2, DESeq2 1.50.2): median-of-
 ratios size factors, Cox-Reid gene-wise dispersions, parametric trend, MAP
 shrinkage, NB-GLM Wald tests, Cook's distance filtering / outlier replacement and
 independent filtering. The per-gene work runs in parallel in native code.
@@ -13,8 +13,10 @@ Differences from R are documented in ``docs/deseq2.md``: when the parametric
 trend fails DESeq2 substitutes a local regression, here the mean is used, which
 can change the results noticeably (reported in ``messages`` and as
 ``fit["fit_substituted"]``); rows IRLS cannot fit are refined by Newton's method
-rather than L-BFGS-B; for designs with <= 3 residual degrees of freedom the prior
-variance uses exact integration instead of R's 10⁴-draw simulation.
+rather than L-BFGS-B. Under ``test="LRT"`` the Cook's distances use the full-model
+means, as DESeq2 >= 1.50 (1.42 differs). For designs with <= 3 residual degrees of freedom the
+prior variance uses R's own simulated reference distribution (tabulated from ``set.seed(2)``),
+so it equals R's value, which is one draw of a Monte-Carlo estimate (``docs/deseq2.md``).
 """
 
 from __future__ import annotations
@@ -170,6 +172,8 @@ def _check_unique_names(names: Sequence[str]) -> None:
 
 def _build_design(obs: pl.DataFrame, design: str, ref_levels: Optional[Dict[str, str]] = None):
     """``model_matrix`` without the rank check (formula, column and name validation only)."""
+    if not isinstance(obs, pl.DataFrame):
+        raise TypeError(f"obs must be a polars DataFrame, not {type(obs).__name__} (convert a pandas table with pl.from_pandas)")
     ref_levels = ref_levels or {}
     rhs = design.strip()
     if not rhs.startswith("~"):
@@ -282,7 +286,7 @@ class DESeq2:
         ``sizeFactors(dds)`` in R).
     sf_type : str
         ``"ratio"`` (median of ratios, the DESeq2 default) or ``"poscounts"``
-        (for data where every gene has a zero).
+        (for data where every gene has a zero). R's ``"iterate"`` is not available.
     fit_type : str
         Dispersion trend: ``"parametric"`` (default) or ``"mean"``. When the parametric
         fit does not converge R substitutes a local regression; here the mean trend is
@@ -290,7 +294,8 @@ class DESeq2:
         the results will differ from R (``quiet=True`` suppresses the warning, not the flag).
     min_replicates_for_replace : float
         Replace Cook's outliers in sample groups with at least this many
-        samples (default 7, as DESeq2's ``minReplicatesForReplace``).
+        samples (default 7, as DESeq2's ``minReplicatesForReplace``). At least 3, as in R;
+        ``float("inf")`` switches replacement off.
     min_mu : float
         Lower bound on the fitted means in the GLM fit (default 0.5, as
         DESeq2's ``minmu``).
@@ -316,6 +321,9 @@ class DESeq2:
         dispersion trend), ``fitType`` (the trend used) and ``fit_substituted``
         (``True`` when the parametric trend was requested but failed and the mean
         was used instead).
+    last_results_info : dict
+        Set by :meth:`results`: the contrast, the Cook's cut-off, the independent-filtering threshold
+        and ``"na"``, the boolean masks that say why a p-value or adjusted p-value is missing.
     last_contrast : str
         Label of the contrast ``results()`` last computed (a coefficient name,
         ``factor_num_vs_den`` for a tuple, or ``numeric: [...]``); ``None`` before.
@@ -334,6 +342,9 @@ class DESeq2:
         counts = np.asarray(counts, dtype=np.float64)
         if counts.ndim != 2:
             raise ValueError("counts must be a 2-D (samples × genes) array")
+        if not min_replicates_for_replace >= 3:
+            raise ValueError("min_replicates_for_replace must be at least 3: a count outlier cannot be identified with fewer "
+                             "replicates (DESeq2 stops in the same way); pass float('inf') to switch replacement off")
         m, g = counts.shape
         if design_matrix is not None:
             X = np.ascontiguousarray(design_matrix, dtype=np.float64)
@@ -399,7 +410,7 @@ class DESeq2:
         """(lfc, se, stat, pvalue, all-zero mask) on the log2 scale."""
         f, names = self.fit, self.coef_names
         beta, cov = f["beta"], f["beta_cov"]
-        counts = f.get("replaceCounts", self.counts.T)  # genes × samples used for the fit
+        counts = self.counts.T  # genes × samples, original: R's contrast zero test ignores replaced counts
 
         def coef(i, sign=1.0):
             se = np.sqrt(np.maximum(cov[:, i, i], 0))
@@ -467,7 +478,11 @@ class DESeq2:
         ``(factor, numerator, denominator)`` tuple, or a numeric vector over the
         coefficients. Default: the last coefficient (check ``last_contrast`` for
         the one used; its sign depends on the reference level, see ``ref_levels``). Returns gene, baseMean,
-        log2FoldChange, lfcSE, stat, pvalue, padj (null where DESeq2 gives NA).
+        log2FoldChange, lfcSE, stat, pvalue, padj (null where DESeq2 gives NA). The reason for a
+        missing value is kept in ``last_results_info["na"]``, a dict of boolean arrays over genes:
+        ``"all_zero"`` (no counts; p-value and adjusted p-value are NA), ``"cooks"`` (p-value removed
+        because of a Cook's distance above the cut-off; adjusted p-value is NA too) and ``"filtered"``
+        (p-value present, adjusted p-value NA because independent filtering removed the gene).
         With ``test="LRT"``, stat/pvalue are the likelihood-ratio test of the full
         against the reduced design (whatever the contrast); the contrast only picks
         the reported fold change, as in DESeq2.
@@ -477,6 +492,7 @@ class DESeq2:
         lfc, se, stat, pvalue = self._contrast(contrast)
         pvalue = pvalue.astype(np.float64).copy()
         info: dict = {"contrast": self.last_contrast}
+        cooks_na = np.zeros(len(pvalue), dtype=bool)
         # Cook's distance filtering
         if cooks_cutoff is not False and m > p:
             cutoff = float(cooks_cutoff) if isinstance(cooks_cutoff, (int, float)) and not isinstance(cooks_cutoff, bool) \
@@ -492,6 +508,7 @@ class DESeq2:
                     if np.sum(cts[i] > cts[i, jmax]) >= 3:
                         out[i] = False
             pvalue[out] = np.nan
+            cooks_na = out.copy()
             info["cooksCutoff"] = cutoff
         # rows whose counts became all zero after outlier replacement
         if f["replace"].any():
@@ -506,6 +523,9 @@ class DESeq2:
             info.update(filt_info)
         else:
             padj = _bh(pvalue)
+        # why a p-value / adjusted p-value is missing (they are null in the table in every case)
+        info["na"] = {"all_zero": np.asarray(f["allZero"], dtype=bool).copy(), "cooks": cooks_na,
+                      "filtered": np.isnan(padj) & ~np.isnan(pvalue)}
         self.last_results_info = info
         nan_to_null = lambda a: pl.Series(a, dtype=pl.Float64).fill_nan(None)  # noqa: E731
         return pl.DataFrame({
