@@ -32,6 +32,8 @@ A port of the harmony2 algorithm that R `harmony` ≥ 1.2 and `harmonypy` 2.x sh
 
 With several batch covariates (`key=["donor", "chemistry"]`), a cell's diversity penalties are multiplied across covariates, as in harmonypy 2.x. R `harmony` 2.0 adds them instead, so multi-covariate results follow harmonypy, not R. `tests/test_fix_harmony.py` checks two covariates against harmonypy.
 
+`sigma` (the width of the soft cluster assignment) is a positive scalar or an array with one positive value per cluster (`nclust` values), as in harmonypy 2.1.0. `max_iter_kmeans` defaults to 4 in both the Python function and the native binding.
+
 The two O(cells × clusters × PCs) steps run as GEMMs per batch level. Everything that works per cell runs in parallel.
 
 Harmony's k-means initialisation is random, so the comparison with harmonypy is on outcomes, over 3 seeds each. Kang 2018 (24,679 cells, 50 PCs, batch = ctrl/stim), `bench/harmony/`:
@@ -40,7 +42,7 @@ Harmony's k-means initialisation is random, so the comparison with harmonypy is 
 |---|---|---|---|---|
 | uncorrected | | 1.05 | 1.01 | 0.755 |
 | CREST | **2.1 s** | 1.81 | 1.01 | 0.820 |
-| harmonypy 2.0.2 | 7.4 s | 1.81 | 1.01 | 0.822 |
+| harmonypy 2.1.0 | 7.4 s | 1.81 | 1.01 | 0.822 |
 
 Neighbourhoods agree: a cell's 15 nearest neighbours in CREST's corrected space and in harmonypy's share 98.0% on average. That is the same as the agreement between two seeds of the same tool (CREST 98.4%, harmonypy 98.2%), so the differences are at the level of seed noise.
 
