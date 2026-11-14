@@ -17,9 +17,22 @@ pytest.importorskip("igraph")
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(REPO / "bench" / "agreement"), str(REPO / "bench" / "paper")]
-import run_agreement as ra  # noqa: E402
 
-THRESHOLDS = (REPO / "bench" / "agreement" / "THRESHOLDS.md").read_text()
+
+class _Script:
+    """``run_agreement`` imported on first use: the module does not exist in the source tree of an older reference
+    build, which these tests are collected against (their tests are deselected there)."""
+
+    def __getattr__(self, name):
+        import run_agreement
+        return getattr(run_agreement, name)
+
+
+ra = _Script()
+
+
+def _thresholds_text() -> str:
+    return (REPO / "bench" / "agreement" / "THRESHOLDS.md").read_text()
 
 # --------------------------------------------------------------------------- tolerances
 EXACT = 1e-12                # closed-form values
@@ -263,7 +276,7 @@ def test_threshold_difference_rule():
 
 # --------------------------------------------------------------------------- consistency with THRESHOLDS.md
 def test_thresholds_document_states_the_constants_of_the_script():
-    t = " ".join(THRESHOLDS.split())   # line breaks in the document do not matter
+    t = " ".join(_thresholds_text().split())   # line breaks in the document do not matter
     assert f"{ra.N_SEEDS} " in t or "ten per tool" in t
     for text in (f"{ra.MOD_TOL}", f"{ra.RECALL_MEAN_MIN}", "0.5 percent", "1.0 percent", f"{ra.TRUST_TOL}", f"{ra.GLOBAL_TOL}",
                  f"{ra.ARI_FLOOR_ANNOT}", f"{ra.ARI_FLOOR_SEEDS}", str(f"{ra.DE_MIN_JACCARD_PAIR}")):
@@ -278,10 +291,11 @@ def test_thresholds_document_states_the_constants_of_the_script():
 
 
 def test_thresholds_document_contains_no_internal_tracking_words():
-    low = THRESHOLDS.lower()
+    text = _thresholds_text()
+    low = text.lower()
     for word in ("review", "ledger", "audit", "fix brief", "claude"):
         assert word not in low, word
-    assert not re.search(r"\b[A-Z]{1,2}-\d{2}\b", THRESHOLDS)
+    assert not re.search(r"\b[A-Z]{1,2}-\d{2}\b", text)
 
 
 # --------------------------------------------------------------------------- the stages end to end
@@ -324,12 +338,13 @@ def small_run(tmp_path_factory):
     import crest  # noqa: F401
     d = tmp_path_factory.mktemp("agreement")
     n = _write_small_dataset(d)
+    import run_agreement as script
     mp = pytest.MonkeyPatch()
-    mp.setattr(ra, "N_SEEDS", SMALL_SEEDS)
-    mp.setattr(ra, "MOD_SEEDS_SMALL", SMALL_SEEDS)
-    mp.setattr(ra, "UMAP_SEEDS_SMALL", 1)
-    mp.setattr(ra, "DE_REF_SEEDS_SMALL", 1)
-    mp.setattr(ra, "_threads", lambda n: None)   # leave the thread variables of the test process alone
+    mp.setattr(script, "N_SEEDS", SMALL_SEEDS)
+    mp.setattr(script, "MOD_SEEDS_SMALL", SMALL_SEEDS)
+    mp.setattr(script, "UMAP_SEEDS_SMALL", 1)
+    mp.setattr(script, "DE_REF_SEEDS_SMALL", 1)
+    mp.setattr(script, "_threads", lambda n: None)   # leave the thread variables of the test process alone
     out = d / "out"
     for stage in ("scanpy", "crest", "compare"):
         ra.main([stage, "--dataset", "tiny", "--data-dir", str(d), "--out", str(out), "--threads", "2"])

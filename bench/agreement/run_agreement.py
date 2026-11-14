@@ -623,6 +623,17 @@ def stage_crest(a) -> None:
 
 
 # =========================================================================== stage: compare
+def _obs_lookup(obs, column: str, barcodes) -> np.ndarray:
+    """Values of an observation-table column for ``barcodes`` (object array; None where the barcode is absent or the value
+    is missing, i.e. null, NaN or the text "nan")."""
+    table = dict(zip(obs["barcode"].to_list(), obs[column].to_list()))
+    out = np.empty(len(barcodes), dtype=object)
+    for i, b in enumerate(barcodes):
+        v = table.get(str(b))
+        out[i] = None if v is None or (isinstance(v, float) and np.isnan(v)) or str(v) == "nan" else v
+    return out
+
+
 def _positions(ref_barcodes, query_barcodes) -> np.ndarray:
     pos = {x: i for i, x in enumerate(ref_barcodes)}
     return np.array([pos[x] for x in query_barcodes])
@@ -666,8 +677,7 @@ def stage_compare(a) -> None:
         batch = meta.get("batch")
         obs = _obs_table(a.dataset, data_dir)
         if batch and obs is not None and batch in obs.columns:
-            lv = obs.select(["barcode", batch]).to_pandas()
-            lab = lv.set_index("barcode")[batch].reindex(cr["barcodes"]).astype(str).to_numpy()
+            lab = np.array([str(v) for v in _obs_lookup(obs, batch, cr["barcodes"])])
             levels = sorted(set(lab))
             ref_levels = set(levels[: len(levels) // 2])
             is_ref = np.array([x in ref_levels for x in lab])
@@ -712,12 +722,11 @@ def stage_compare(a) -> None:
     obs = _obs_table(a.dataset, data_dir)
     ann_col = meta.get("celltype")
     if obs is not None and ann_col and ann_col in obs.columns:
-        lv = obs.select(["barcode", ann_col]).to_pandas().set_index("barcode")[ann_col]
         bc_common = np.intersect1d(cr["barcodes"], sc_["barcodes"])
-        ann = lv.reindex(bc_common)
-        ok = ann.notna().to_numpy() & (ann.astype(str).to_numpy() != "nan")
-        res["diagnostics"]["annotation"] = {"column": ann_col, "n_labelled": int(ok.sum()), "n_classes": int(ann[ok].nunique())}
-        y = ann[ok].astype(str).to_numpy()
+        ann = _obs_lookup(obs, ann_col, bc_common)
+        ok = np.array([v is not None for v in ann])
+        y = np.array([str(v) for v in ann[ok]])
+        res["diagnostics"]["annotation"] = {"column": ann_col, "n_labelled": int(ok.sum()), "n_classes": int(len(np.unique(y)))}
         for name, fn in (("ari", adjusted_rand_score), ("nmi", normalized_mutual_info_score)):
             vd = np.array([fn(y, x[ok]) for x in Dc])
             va = np.array([fn(y, x[ok]) for x in Ac])
