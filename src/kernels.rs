@@ -6,6 +6,11 @@
 //! cell at a time into a small per-thread buffer, so no filtered or normalised
 //! copy of the chunk is ever materialised. Feeding the chunks of a dataset in
 //! turn processes any size with memory = one raw chunk + small accumulators.
+//!
+//! `normalize_total` divides by each cell's total over the genes kept when it
+//! was called (as scanpy): Python computes those totals once and passes them as
+//! `cell_totals`, so filtering genes later never renormalises the cells.
+//! Without `cell_totals` the kernels use the total over the genes kept now.
 
 use faer::{Mat, Side};
 use rayon::prelude::*;
@@ -29,6 +34,9 @@ pub struct ChunkView<'a> {
     pub gene_map: &'a [i32],
     pub target_sum: f64,
     pub log1p: bool,
+    /// Per-cell totals for `normalize_total`, indexed by store cell id (as
+    /// `cell_map`). `None`: the total over the currently kept genes.
+    pub cell_totals: Option<&'a [f64]>,
 }
 
 impl<'a> ChunkView<'a> {
@@ -73,6 +81,9 @@ impl<'a> ChunkView<'a> {
                 buf.push((m as u32, self.values[e]));
                 total += self.values[e] as f64;
             }
+        }
+        if let Some(t) = self.cell_totals {
+            total = t[c as usize];
         }
         if self.target_sum > 0.0 || self.log1p {
             let scale = if self.target_sum > 0.0 && total > 0.0 { self.target_sum / total } else { 1.0 };
@@ -566,7 +577,7 @@ mod tests {
         // cell 0: genes 0,1 (2, 6); cell 1 dropped; cell 2: genes 1,2 (1, 3), gene 2 dropped
         let (cells, genes, vals) = ([0u32, 0, 1, 2, 2], [0u32, 1, 0, 1, 2], [2.0f32, 6.0, 5.0, 1.0, 3.0]);
         let (cm, gm) = ([0i64, -1, 1], [0i32, 1, -1]);
-        let v = ChunkView { cells: Cells::Ids(&cells), genes: &genes, values: &vals, cell_map: &cm, gene_map: &gm, target_sum: 100.0, log1p: false };
+        let v = ChunkView { cells: Cells::Ids(&cells), genes: &genes, values: &vals, cell_map: &cm, gene_map: &gm, target_sum: 100.0, log1p: false, cell_totals: None };
         let (r, g, x) = materialize(v);
         assert_eq!(r, vec![0, 0, 1]);
         assert_eq!(g, vec![0, 1, 1]);
@@ -575,6 +586,22 @@ mod tests {
         let indptr = [0i64, 2, 3, 5];
         let v2 = ChunkView { cells: Cells::Ptr { indptr: &indptr, first: 0 }, ..v };
         assert_eq!(materialize(v2), (r, g, x));
+    }
+
+    #[test]
+    fn test_stored_cell_totals_override_kept_gene_totals() {
+        // cell 0 had total 16 when normalised (gene 2, now dropped, held 8 counts)
+        let (cells, genes, vals) = ([0u32, 0, 0, 2, 2], [0u32, 1, 2, 1, 2], [2.0f32, 6.0, 8.0, 1.0, 3.0]);
+        let (cm, gm) = ([0i64, -1, 1], [0i32, 1, -1]);
+        let totals = [16.0f64, f64::NAN, 4.0];
+        let v = ChunkView { cells: Cells::Ids(&cells), genes: &genes, values: &vals, cell_map: &cm, gene_map: &gm,
+                            target_sum: 100.0, log1p: false, cell_totals: Some(&totals) };
+        let (r, g, x) = materialize(v);
+        assert_eq!((r, g), (vec![0, 0, 1], vec![0, 1, 1]));
+        assert!((x[0] - 12.5).abs() < 1e-5 && (x[1] - 37.5).abs() < 1e-5 && (x[2] - 25.0).abs() < 1e-5);
+        // without stored totals: renormalised over the kept genes
+        let (_, _, y) = materialize(ChunkView { cell_totals: None, ..v });
+        assert!((y[0] - 25.0).abs() < 1e-5 && (y[2] - 100.0).abs() < 1e-5);
     }
 
     /// Gram-based scaled PCA must equal PCA of the dense, scaled, clipped matrix.
@@ -611,7 +638,7 @@ mod tests {
         let cut = rows.iter().position(|&r| r >= 100).unwrap();
         for (lo, hi) in [(0, cut), (cut, rows.len())] {
             let v = ChunkView { cells: Cells::Ids(&rows[lo..hi]), genes: &genes[lo..hi], values: &vals[lo..hi],
-                                cell_map: &cmap, gene_map: &gmap, target_sum: 0.0, log1p: false };
+                                cell_map: &cmap, gene_map: &gmap, target_sum: 0.0, log1p: false, cell_totals: None };
             gram_accumulate(v, &gmap, t, &mut gram, &mut colsum);
         }
         let (ev, _, _) = pca_from_gram(&gram, &colsum, n, 5).unwrap();
