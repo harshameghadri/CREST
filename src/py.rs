@@ -566,6 +566,7 @@ fn deseq2_fit<'py>(
         out.set_item("replaceCounts", v(rc).reshape([g, m])?)?;
     }
     out.set_item("fitType", match fit.fit_type { FitType::Parametric => "parametric", FitType::Mean => "mean" })?;
+    out.set_item("fit_substituted", fit.fit_substituted)?;
     out.set_item("trend", v(fit.trend))?;
     out.set_item("dispPriorVar", fit.disp_prior_var)?;
     out.set_item("varLogDispEsts", fit.var_log_disp_ests)?;

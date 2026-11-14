@@ -9,11 +9,12 @@ independent filtering. The per-gene work runs in parallel in native code.
     res = crest.tl.pseudobulk_de(bf, sample_key="donor", design="~ condition",
                                  contrast=("condition", "stim", "ctrl"), groupby="cell_type")
 
-Differences from R, all small and documented in ``docs/deseq2.md``: when the
-parametric trend fails DESeq2 substitutes a local regression, here the mean is
-used (reported in ``messages``); rows IRLS cannot fit are refined by Newton's
-method rather than L-BFGS-B; for designs with <= 3 residual degrees of freedom
-the prior variance uses exact integration instead of R's 10⁴-draw simulation.
+Differences from R are documented in ``docs/deseq2.md``: when the parametric
+trend fails DESeq2 substitutes a local regression, here the mean is used, which
+can change the results noticeably (reported in ``messages`` and as
+``fit["fit_substituted"]``); rows IRLS cannot fit are refined by Newton's method
+rather than L-BFGS-B; for designs with <= 3 residual degrees of freedom the prior
+variance uses exact integration instead of R's 10⁴-draw simulation.
 """
 
 from __future__ import annotations
@@ -29,7 +30,20 @@ import polars as pl
 from . import crest as _native
 from .core import BioFrame
 
-__all__ = ["Pseudobulk", "pseudobulk", "DESeq2", "deseq2", "pseudobulk_de"]
+__all__ = ["Pseudobulk", "pseudobulk", "DESeq2", "deseq2", "pseudobulk_de", "NotEstimableError", "LevelOrderWarning"]
+
+
+class NotEstimableError(ValueError):
+    """The data of a group (or of the whole table) cannot support the requested model:
+    a factor with a single level, a rank-deficient design, no replicates, or no usable counts."""
+
+
+class DesignNotFullRank(NotEstimableError):
+    """The model matrix is rank deficient."""
+
+
+class LevelOrderWarning(UserWarning):
+    """Sorted factor levels differ between code-point order (used here) and case-insensitive order (R, en_US)."""
 
 
 # --------------------------------------------------------------------------- pseudobulk
@@ -102,11 +116,19 @@ def pseudobulk(bf: BioFrame, sample_key: Union[str, Sequence[str]], groupby: Opt
 _TERM = re.compile(r"^[A-Za-z_.][A-Za-z0-9_.]*$")
 
 
-def _levels(s: pl.Series, ref: Optional[str]) -> List[str]:
+def _levels(s: pl.Series, ref: Optional[str], name: Optional[str] = None) -> List[str]:
     if s.dtype == pl.Enum:
-        levels = [str(x) for x in s.cat.get_categories().to_list() if x in set(s.cast(pl.Utf8).to_list())]
+        levels = [str(x) for x in s.dtype.categories.to_list() if x in set(s.cast(pl.Utf8).to_list())]
     else:
         levels = sorted({str(x) for x in s.cast(pl.Utf8).to_list()})
+        folded = sorted(levels, key=lambda v: (v.casefold(), v))
+        if ref is None and folded != levels:
+            warnings.warn(
+                f"levels of {name!r} are sorted by code point: {levels} (reference {levels[0]!r}); R sorts factor "
+                f"levels case-insensitively in an en_US locale: {folded} (reference {folded[0]!r}). The reference "
+                f"level, the coefficient names and the sign of the default contrast follow the first order. Pass "
+                f"ref_levels={{{name!r}: ...}} or an ordered pl.Enum column to choose the order explicitly.",
+                LevelOrderWarning, stacklevel=4)
     if ref is not None:
         if ref not in levels:
             raise ValueError(f"reference level {ref!r} not found among {levels}")
@@ -120,9 +142,34 @@ def model_matrix(obs: pl.DataFrame, design: str, ref_levels: Optional[Dict[str, 
     Categorical (string / categorical / boolean) columns get one indicator per
     non-reference level, named like DESeq2's ``resultsNames``
     (``condition_treated_vs_control``); numeric columns enter as is. Levels are
-    sorted, the first is the reference unless ``ref_levels`` says otherwise.
-    Returns (X, coef_names, factors) with ``factors[name] = levels``.
+    sorted by code point (upper case before lower case) and the first is the
+    reference unless ``ref_levels`` says otherwise; an ordered ``pl.Enum`` column
+    keeps its declared order. R in an en_US locale sorts case-insensitively, so
+    when the two orders differ and no reference is given a
+    :class:`LevelOrderWarning` names both. Coefficient names must be unique, else
+    ``ValueError`` (e.g. factor ``a`` with level ``s_x`` and factor ``a_s`` with
+    level ``x``). Returns (X, coef_names, factors) with ``factors[name] = levels``.
     """
+    X, names, factors = _build_design(obs, design, ref_levels)
+    if np.linalg.matrix_rank(X) < X.shape[1]:
+        raise DesignNotFullRank("the model matrix is not full rank: some variables are linear combinations of others "
+                                "or some levels have no samples")
+    return X, names, factors
+
+
+def _check_unique_names(names: Sequence[str]) -> None:
+    seen, dup = set(), []
+    for n in names:
+        if n in seen and n not in dup:
+            dup.append(n)
+        seen.add(n)
+    if dup:
+        raise ValueError(f"duplicate coefficient names {dup}: two design terms produce the same name, so a contrast "
+                         "could not tell them apart; rename the factor levels or the columns")
+
+
+def _build_design(obs: pl.DataFrame, design: str, ref_levels: Optional[Dict[str, str]] = None):
+    """``model_matrix`` without the rank check (formula, column and name validation only)."""
     ref_levels = ref_levels or {}
     rhs = design.strip()
     if not rhs.startswith("~"):
@@ -144,17 +191,14 @@ def model_matrix(obs: pl.DataFrame, design: str, ref_levels: Optional[Dict[str, 
             cols.append(s.cast(pl.Float64).to_numpy())
             names.append(t)
             continue
-        lv = _levels(s, ref_levels.get(t))
+        lv = _levels(s, ref_levels.get(t), t)
         factors[t] = lv
         v = np.array(s.cast(pl.Utf8).to_list(), dtype=object)
         for level in lv[1:]:
             cols.append((v == level).astype(np.float64))
             names.append(f"{t}_{level}_vs_{lv[0]}")
-    X = np.ascontiguousarray(np.column_stack(cols))
-    if np.linalg.matrix_rank(X) < X.shape[1]:
-        raise ValueError("the model matrix is not full rank: some variables are linear combinations of others "
-                         "or some levels have no samples")
-    return X, names, factors
+    _check_unique_names(names)
+    return np.ascontiguousarray(np.column_stack(cols)), names, factors
 
 
 # --------------------------------------------------------------------------- results helpers
@@ -226,7 +270,10 @@ class DESeq2:
     coef_names : list of str, optional
         Names of the columns of ``design_matrix`` (default ``x0, x1, ...``).
     ref_levels : dict of str to str, optional
-        Reference level per factor. Default: the first level in sorted order.
+        Reference level per factor. Default: the first level in code-point sorted
+        order (upper case before lower case; R's en_US locale sorts case-insensitively,
+        which a :class:`LevelOrderWarning` points out when the two differ). An ordered
+        ``pl.Enum`` column keeps its declared order, as an R factor does.
     var_names : list of str, optional
         Gene names, used in the result tables. Default: the Pseudobulk's
         ``var_names``, or ``"0", "1", ...``.
@@ -237,7 +284,10 @@ class DESeq2:
         ``"ratio"`` (median of ratios, the DESeq2 default) or ``"poscounts"``
         (for data where every gene has a zero).
     fit_type : str
-        Dispersion trend: ``"parametric"`` (default) or ``"mean"``.
+        Dispersion trend: ``"parametric"`` (default) or ``"mean"``. When the parametric
+        fit does not converge R substitutes a local regression; here the mean trend is
+        used instead, ``fit["fit_substituted"]`` is ``True`` and a ``UserWarning`` says
+        the results will differ from R (``quiet=True`` suppresses the warning, not the flag).
     min_replicates_for_replace : float
         Replace Cook's outliers in sample groups with at least this many
         samples (default 7, as DESeq2's ``minReplicatesForReplace``).
@@ -263,7 +313,12 @@ class DESeq2:
         ``beta_cov``, ``cooks``, and with ``test="LRT"`` ``LRTStatistic`` and
         ``LRTPvalue``, ...), ``size_factors``, ``dispPriorVar`` and
         ``messages`` (a list of notes such as a fallback to the mean
-        dispersion trend).
+        dispersion trend), ``fitType`` (the trend used) and ``fit_substituted``
+        (``True`` when the parametric trend was requested but failed and the mean
+        was used instead).
+    last_contrast : str
+        Label of the contrast ``results()`` last computed (a coefficient name,
+        ``factor_num_vs_den`` for a tuple, or ``numeric: [...]``); ``None`` before.
     """
 
     def __init__(self, counts, obs: Optional[pl.DataFrame] = None, design: str = "~ condition", *,
@@ -283,6 +338,7 @@ class DESeq2:
         if design_matrix is not None:
             X = np.ascontiguousarray(design_matrix, dtype=np.float64)
             self.coef_names = list(coef_names) if coef_names is not None else [f"x{i}" for i in range(X.shape[1])]
+            _check_unique_names(self.coef_names)
             self.factors: Dict[str, List[str]] = {}
             self.design = None
         else:
@@ -293,6 +349,7 @@ class DESeq2:
         if X.shape[0] != m:
             raise ValueError(f"design has {X.shape[0]} rows but counts has {m} samples")
         self.obs = obs
+        self.last_contrast: Optional[str] = None
         self.var_names = list(var_names) if var_names is not None else [str(i) for i in range(g)]
         self.X = X
         self.counts = counts  # samples × genes, original
@@ -352,11 +409,13 @@ class DESeq2:
         if contrast is None:
             contrast = names[-1]
         if isinstance(contrast, str):
+            label = contrast
             if contrast not in names:
                 raise KeyError(f"{contrast!r} not in results_names(): {names}")
             lfc, se = coef(names.index(contrast))
         elif (isinstance(contrast, (tuple, list)) and len(contrast) == 3 and all(isinstance(c, str) for c in contrast)):
             fac, num, den = contrast
+            label = f"{fac}_{num}_vs_{den}"
             if fac not in self.factors:
                 raise KeyError(f"{fac!r} is not a factor in the design")
             lv = self.factors[fac]
@@ -378,6 +437,7 @@ class DESeq2:
             zero = np.all(self.counts.T[:, sel] == 0, axis=1)
         else:
             c = np.asarray(contrast, dtype=np.float64)
+            label = "numeric: " + np.array2string(c, separator=", ")
             if c.shape != (len(names),):
                 raise ValueError(f"numeric contrast must have length {len(names)}")
             lfc = beta @ c
@@ -386,6 +446,7 @@ class DESeq2:
                 which = (self.X @ (c != 0).astype(float)) != 0
                 zero = counts[:, which].sum(axis=1) == 0
         zero &= ~f["allZero"]
+        self.last_contrast = label
         if self.test == "LRT":  # LFC from the contrast, statistic and p-value from the LRT
             stat, p = f["LRTStatistic"].copy(), f["LRTPvalue"].copy()
             lfc = lfc.copy()
@@ -404,7 +465,8 @@ class DESeq2:
 
         ``contrast``: a coefficient name from :meth:`results_names`, a
         ``(factor, numerator, denominator)`` tuple, or a numeric vector over the
-        coefficients. Default: the last coefficient. Returns gene, baseMean,
+        coefficients. Default: the last coefficient (check ``last_contrast`` for
+        the one used; its sign depends on the reference level, see ``ref_levels``). Returns gene, baseMean,
         log2FoldChange, lfcSE, stat, pvalue, padj (null where DESeq2 gives NA).
         With ``test="LRT"``, stat/pvalue are the likelihood-ratio test of the full
         against the reduced design (whatever the contrast); the contrast only picks
@@ -414,7 +476,7 @@ class DESeq2:
         m, p = self.X.shape
         lfc, se, stat, pvalue = self._contrast(contrast)
         pvalue = pvalue.astype(np.float64).copy()
-        info: dict = {}
+        info: dict = {"contrast": self.last_contrast}
         # Cook's distance filtering
         if cooks_cutoff is not False and m > p:
             cutoff = float(cooks_cutoff) if isinstance(cooks_cutoff, (int, float)) and not isinstance(cooks_cutoff, bool) \
@@ -464,32 +526,108 @@ def deseq2(counts, obs: Optional[pl.DataFrame] = None, design: str = "~ conditio
     return DESeq2(counts, obs, design, **kwargs).results(contrast, alpha=alpha)
 
 
+def _group_not_estimable(sub: Pseudobulk, design: str, contrast, kwargs: dict) -> Optional[str]:
+    """Reason why ``sub`` cannot support the model, or None. Pre-checks only (no native call)."""
+    m = sub.counts.shape[0]
+    if not np.any(sub.counts):
+        return "all counts are zero"
+    if "design_matrix" not in kwargs:
+        X, names, factors = _build_design(sub.obs, design, kwargs.get("ref_levels"))
+        if np.linalg.matrix_rank(X) < X.shape[1]:
+            return "the design is not full rank in this group (a factor has a single level, or variables are collinear)"
+        if m <= X.shape[1]:
+            return f"{m} samples for {X.shape[1]} coefficients: no replicates to estimate the dispersion"
+        if isinstance(contrast, str):
+            if contrast not in names:
+                return f"coefficient {contrast!r} is not in this group's design (a level is absent)"
+        elif isinstance(contrast, (tuple, list)) and len(contrast) == 3 and all(isinstance(c, str) for c in contrast):
+            fac, num, den = contrast
+            missing = [x for x in (num, den) if x not in factors.get(fac, [])]
+            if missing:
+                return f"level(s) {missing} of {fac!r} are absent from this group"
+        elif contrast is not None and np.asarray(contrast).shape != (len(names),):
+            return "the numeric contrast does not match the design columns of this group"
+    if kwargs.get("size_factors") is None:
+        if kwargs.get("sf_type", "ratio") == "ratio":
+            if not np.any(np.all(sub.counts > 0, axis=0)):
+                return "every gene has a zero count, so ratio size factors are undefined (try sf_type=\"poscounts\")"
+        elif np.any(sub.counts.sum(axis=1) <= 0):
+            return "a sample has no counts"
+    return None
+
+
 def pseudobulk_de(bf: BioFrame, sample_key: Union[str, Sequence[str]], design: str = "~ condition", contrast=None, *,
                   groupby: Optional[str] = None, min_cells: int = 10, alpha: float = 0.1,
                   key_added: str = "pseudobulk_de", **kwargs) -> pl.DataFrame:
     """Pseudobulk DESeq2 per ``groupby`` group (e.g. per cell type), in one pass over the data.
 
     Counts are summed per (sample, group); each group is then tested with
-    ``design``/``contrast``. Groups whose design is not estimable (e.g. a
-    condition missing, or no replicates) are skipped with a warning. Returns a
-    long DataFrame with a ``group`` column; also stored in ``bf.uns[key_added]``.
+    ``design``/``contrast``. A group whose data cannot support the model (a factor
+    with a single level, a rank-deficient design, no replicates, no usable counts, a
+    contrast level that is absent from the group) is skipped; all skipped groups are
+    named in one warning and recorded, with the reason, in
+    ``bf.uns[key_added]["skipped"]``. Mistakes in the call are not skipped but raised:
+    non-integer or negative counts (e.g. normalised data), a malformed formula, a
+    design variable that is not a column, a contrast naming an unknown level or
+    coefficient, invalid options. If no group can be tested a
+    :class:`NotEstimableError` (a ``ValueError``) is raised.
+
+    Returns a long DataFrame with a ``group`` column; also stored in
+    ``bf.uns[key_added]["table"]`` next to ``params``, ``skipped`` and ``contrast``
+    (the contrast label each tested group used, see ``DESeq2.last_contrast``).
     """
     pb = pseudobulk(bf, sample_key, groupby, min_cells=min_cells)
-    frames, skipped = [], {}
+    contrast_arg = contrast
+    # errors in the call itself: raised before any group is touched
+    if np.any(pb.counts < 0) or np.any(pb.counts != np.floor(pb.counts)):
+        raise ValueError("counts must be non-negative integers: pseudobulk_de sums the raw counts of the cells, "
+                         "but this matrix has negative or fractional entries (normalised or imputed data?)")
+    if "design_matrix" not in kwargs:
+        _, names, factors = _build_design(pb.obs, design, kwargs.get("ref_levels"))   # formula / column / name errors
+        if isinstance(contrast, str):
+            if contrast not in names:
+                raise KeyError(f"{contrast!r} not in results_names(): {names}")
+        elif isinstance(contrast, (tuple, list)) and len(contrast) == 3 and all(isinstance(c, str) for c in contrast):
+            fac, num, den = contrast
+            if fac not in factors:
+                raise KeyError(f"{fac!r} is not a factor in the design")
+            if num not in factors[fac] or den not in factors[fac]:
+                raise ValueError(f"{num!r} and {den!r} must be levels of {fac}: {factors[fac]}")
+        elif contrast is not None and np.asarray(contrast).shape != (len(names),):
+            raise ValueError(f"numeric contrast must have length {len(names)}")
+        if contrast is None:
+            contrast = names[-1]   # the same coefficient in every group, not whichever happens to be last there
+    frames, skipped, labels = [], {}, {}
     groups = [None] if groupby is None else pb.obs[groupby].unique(maintain_order=True).to_list()
     for gname in groups:
         sub = pb if gname is None else pb.subset((pb.obs[groupby] == gname).to_numpy())
-        try:
-            res = DESeq2(sub, design=design, **kwargs).results(contrast, alpha=alpha)
-        except (ValueError, KeyError) as e:
-            skipped[str(gname)] = str(e)
-            continue
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", LevelOrderWarning)   # already reported once for the whole table
+            why = _group_not_estimable(sub, design, contrast, kwargs)
+            if why is not None:
+                skipped[str(gname)] = why
+                continue
+            try:
+                ds = DESeq2(sub, design=design, **kwargs)
+                res = ds.results(contrast, alpha=alpha)
+            except NotEstimableError as e:
+                skipped[str(gname)] = str(e)
+                continue
+            except (ValueError, KeyError) as e:
+                if hasattr(e, "add_note"):
+                    e.add_note(f"while testing group {gname!r}")
+                raise
+        labels[str(gname)] = ds.last_contrast
         if gname is not None:
             res = res.with_columns(pl.lit(str(gname)).alias("group")).select(["group"] + res.columns)
         frames.append(res)
-    for gname, why in skipped.items():
-        warnings.warn(f"pseudobulk_de: skipped group {gname!r}: {why}", stacklevel=2)
-    out = pl.concat(frames) if frames else pl.DataFrame()
-    bf.uns[key_added] = {"params": {"sample_key": sample_key, "design": design, "contrast": contrast,
-                                    "groupby": groupby, "min_cells": min_cells}, "skipped": skipped, "table": out}
+    if skipped:
+        listing = "; ".join(f"{g!r}: {why}" for g, why in skipped.items())
+        if not frames:
+            raise NotEstimableError(f"pseudobulk_de: no group could be tested (skipped {len(skipped)}): {listing}")
+        warnings.warn(f"pseudobulk_de: skipped {len(skipped)} group(s): {listing}", stacklevel=2)
+    out = pl.concat(frames)
+    bf.uns[key_added] = {"params": {"sample_key": sample_key, "design": design, "contrast": contrast_arg,
+                                    "groupby": groupby, "min_cells": min_cells},
+                         "skipped": skipped, "contrast": labels, "table": out}
     return out
