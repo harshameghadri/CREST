@@ -55,9 +55,27 @@ transformed) matrix is materialised only if you ask for it with `bf.to_scipy()` 
 `bf.to_anndata()`.
 
 **Subsetting shares the store.** `filter_cells`, `filter_genes` and `copy` return a new
-BioFrame with its own (smaller) `obs`/`var` tables and copies of the `obsm`/`varm` rows it
-keeps; the count matrix itself is shared, never copied. This is safe because nothing writes to
-the store.
+BioFrame whose count matrix is shared, never copied; this is safe because nothing writes to the
+store. What else is shared differs:
+
+| | `obs` / `var` | `obsm` / `varm` arrays | `uns` |
+|---|---|---|---|
+| `filter_cells`, `filter_genes` | new tables | new arrays (rows of the kept cells or genes, or a copy when that axis is unfiltered) | new dictionary, **same nested objects** (dicts, arrays and tables inside it belong to both frames) |
+| `copy` | new tables | new arrays | deep copy |
+
+Editing an `obsm`/`varm` array of a filtered frame in place therefore never changes the parent,
+but editing a nested `uns` entry (for example `bf2.uns["pca"]["params"]["max_value"] = 5`) does.
+Use `bf.copy()` when you need a frame that is independent of the original.
+
+**Gene identity.** Cell Ranger feature tables repeat some gene symbols (95 extra copies of 91
+symbols in PBMC 3k), so a symbol does not always name one gene. Steps that match genes between
+objects use the stable id in `var["gene_ids"]` when both sides have it:
+{func}`crest.tl.ingest` stores the ids of the reference PCA genes and maps each query gene by id;
+{func}`crest.tl.score_genes` accepts gene ids in `gene_list`. Without ids, genes are matched by
+symbol only when the symbol is unique, and `ingest` warns about the genes it leaves out;
+`score_genes` raises `ValueError` for a symbol that names several genes (scanpy refuses every
+AnnData with non-unique `var_names`). `to_anndata()` gives the repeats a `-1`, `-2`, ...
+suffix in the AnnData index, with a warning; the original symbols stay in `var["gene_name"]`.
 
 **What each function returns:**
 

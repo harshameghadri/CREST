@@ -16,10 +16,12 @@ them (``BioFrame.cell_totals``), so later gene or cell filters do not renormalis
 
 from __future__ import annotations
 
+import copy as _copy
 import hashlib
 import os
 import shutil
 import tempfile
+import warnings
 import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -190,6 +192,53 @@ class ParquetStore:
 Store = Union[CSRStore, FrameStore, ParquetStore]
 
 
+# --------------------------------------------------------------------------- counts check
+COUNTS_CHECK_ENTRIES = 1 << 22  # stored values inspected for non-integers (the first ~4 M)
+
+
+def counts_report(store: "Store", max_entries: int = COUNTS_CHECK_ENTRIES, full_scan: bool = True) -> dict:
+    """Cheap look at the raw values of ``store``: how many are negative and how many are not integers.
+
+    Negative values are counted over the whole store when it is in memory (``full_scan``);
+    non-integers are looked for in the first ``max_entries`` stored values only (for a
+    :class:`ParquetStore`, in the first part file). Returns ``{"checked", "n_negative",
+    "n_non_integer", "min", "example"}``.
+    """
+    if isinstance(store, CSRStore):
+        vals = store.data[:store.indptr[-1]]
+    elif isinstance(store, FrameStore):
+        vals = store._vals
+    else:
+        first = next(iter(store.chunks()), None)
+        vals = np.zeros(0, np.float32) if first is None else first[1]
+    head = vals[:max_entries]
+    with np.errstate(invalid="ignore"):
+        frac = head != np.floor(head)
+        frac &= np.isfinite(head)
+        n_non_int = int(np.count_nonzero(frac))
+        scan = vals if (full_scan and not isinstance(store, ParquetStore)) else head
+        vmin = float(scan.min()) if len(scan) else 0.0
+        n_neg = int(np.count_nonzero(scan < 0)) if vmin < 0 else 0
+    example = float(head[frac][0]) if n_non_int else None
+    return {"checked": int(len(head)), "n_negative": n_neg, "n_non_integer": n_non_int, "min": vmin, "example": example}
+
+
+def _warn_if_not_counts(store: "Store", where: str, stacklevel: int = 3, report: Optional[dict] = None) -> None:
+    """``UserWarning`` when the raw values look like something other than non-negative integer counts."""
+    r = counts_report(store) if report is None else report
+    msgs = []
+    if r["n_non_integer"]:
+        msgs.append(f"{r['n_non_integer']} of the first {r['checked']} stored values are not integers "
+                    f"(e.g. {r['example']:.6g}); is this normalised or log-transformed data?")
+    if r["n_negative"]:
+        msgs.append(f"{r['n_negative']} stored values are negative (minimum {r['min']:.6g})")
+    if msgs:
+        warnings.warn(f"{where}: the matrix does not look like raw counts: " + "; ".join(msgs) +
+                      ". CREST validates and expects raw UMI counts (normalize_total, highly variable genes "
+                      "and DESeq2 assume them), so results on other data are not comparable to scanpy's.",
+                      UserWarning, stacklevel=stacklevel)
+
+
 # --------------------------------------------------------------------------- BioFrame
 @dataclass
 class BioFrame:
@@ -280,6 +329,8 @@ class BioFrame:
         var = _with_store_ids(var, "gene_id", store.n_genes, keep_ids)
         if obs.height != store.n_cells or var.height != store.n_genes:
             raise ValueError(f"obs/var sizes {obs.height}/{var.height} do not match store {store.n_cells}/{store.n_genes}")
+        if not keep_ids and not isinstance(store, ParquetStore):  # parquet readers check while streaming
+            _warn_if_not_counts(store, "BioFrame", stacklevel=4)
         return cls(store=store, obs=obs, var=var)
 
     # ---- shape / names
@@ -304,12 +355,27 @@ class BioFrame:
 
         Taken from the first ``var`` column that exists of ``gene_name``,
         ``gene_symbols``, ``gene_ids`` and ``gene_id_orig`` (a ``gene_id`` column that came
-        with the input); otherwise the store's integer ``gene_id`` as strings.
+        with the input); otherwise the store's integer ``gene_id`` as strings. The names
+        need not be unique (see :attr:`gene_ids`).
         """
         for c in ("gene_name", "gene_symbols", "gene_ids", "gene_id_orig"):
             if c in self.var.columns:
                 return self.var[c].cast(pl.Utf8).to_list()
         return self.var["gene_id"].cast(pl.Utf8).to_list()
+
+    @property
+    def gene_ids(self) -> Optional[list]:
+        """Stable gene identifiers (e.g. Ensembl ids) of the kept genes, or ``None``.
+
+        Taken from the ``gene_ids`` ``var`` column (Cell Ranger's ``id``), else from
+        ``gene_id_orig``. Gene symbols are not unique in Cell Ranger feature tables; steps that
+        match genes between objects (:func:`crest.tl.ingest`, :func:`crest.tl.score_genes`) use these
+        ids when both sides have them.
+        """
+        for c in ("gene_ids", "gene_id_orig"):
+            if c in self.var.columns:
+                return self.var[c].cast(pl.Utf8).to_list()
+        return None
 
     def __repr__(self) -> str:
         kind = type(self.store).__name__
@@ -389,9 +455,11 @@ class BioFrame:
     def _subset(self, obs_mask=None, var_mask=None) -> "BioFrame":
         obs = self.obs if obs_mask is None else self.obs.filter(pl.Series(obs_mask))
         var = self.var if var_mask is None else self.var.filter(pl.Series(var_mask))
-        obsm = {k: v[obs_mask] for k, v in self.obsm.items()} if obs_mask is not None else dict(self.obsm)
-        varm = {k: v[var_mask] for k, v in self.varm.items()} if var_mask is not None else dict(self.varm)
-        uns = dict(self.uns)
+        # obsm/varm arrays are always new arrays (boolean indexing copies; an unfiltered axis is
+        # copied explicitly), so editing the child's arrays in place never changes the parent
+        obsm = {k: (v[obs_mask] if obs_mask is not None else np.array(v)) for k, v in self.obsm.items()}
+        varm = {k: (v[var_mask] if var_mask is not None else np.array(v)) for k, v in self.varm.items()}
+        uns = dict(self.uns)  # shallow: nested containers are shared with the parent (see filter_cells)
         if obs_mask is not None:
             # State derived from the old cell set. uns is a shallow copy, so replace these
             # entries, never mutate them (the parent keeps its own). The HVG scale cache
@@ -407,19 +475,35 @@ class BioFrame:
         return BioFrame(self.store, obs, var, obsm, varm, uns, list(self.ops), self.chunk_nnz, self.cell_totals)
 
     def filter_cells(self, condition: Union[pl.Expr, np.ndarray]) -> "BioFrame":
-        """Keep cells where ``condition`` (Polars expression on obs, or boolean mask) holds."""
+        """Keep cells where ``condition`` (Polars expression on obs, or boolean mask) holds.
+
+        Returns a new BioFrame over the same raw-count store. ``obs``/``var`` are new tables and
+        every ``obsm`` / ``varm`` array is a new array, so editing those in place leaves the
+        parent unchanged. ``uns`` is a shallow copy: the dictionary is new, but the nested
+        dictionaries, arrays and tables inside it are the parent's objects (the neighbour graph
+        and result tables are not duplicated). Do not edit them in place; use :meth:`copy`
+        for a fully independent frame.
+        """
         mask = condition if isinstance(condition, np.ndarray) else self.obs.select(condition).to_series().to_numpy()
         return self._subset(obs_mask=np.asarray(mask, dtype=bool))
 
     def filter_genes(self, condition: Union[pl.Expr, np.ndarray]) -> "BioFrame":
-        """Keep genes where ``condition`` (Polars expression on var, or boolean mask) holds."""
+        """Keep genes where ``condition`` (Polars expression on var, or boolean mask) holds.
+
+        Sharing as in :meth:`filter_cells`: new ``obs``/``var`` tables and new ``obsm`` / ``varm``
+        arrays, a shallow copy of ``uns``.
+        """
         mask = condition if isinstance(condition, np.ndarray) else self.var.select(condition).to_series().to_numpy()
         return self._subset(var_mask=np.asarray(mask, dtype=bool))
 
     def copy(self) -> "BioFrame":
-        """New BioFrame with copied metadata; the raw-count store is shared (it is never modified)."""
-        return BioFrame(self.store, self.obs.clone(), self.var.clone(), dict(self.obsm), dict(self.varm),
-                        dict(self.uns), list(self.ops), self.chunk_nnz, self.cell_totals)
+        """Independent copy: ``obs``/``var``, every ``obsm`` / ``varm`` array, ``uns`` (deep copy, nested
+        dictionaries and arrays included) and ``cell_totals`` are duplicated, so in-place edits of the
+        copy never change this frame. Only the raw-count store is shared (it is never modified)."""
+        return BioFrame(self.store, self.obs.clone(), self.var.clone(),
+                        {k: np.array(v) for k, v in self.obsm.items()}, {k: np.array(v) for k, v in self.varm.items()},
+                        _copy.deepcopy(self.uns), list(self.ops), self.chunk_nnz,
+                        None if self.cell_totals is None else self.cell_totals.copy())
 
     # ---- export
     def to_scipy(self, transform: bool = True):
@@ -448,7 +532,15 @@ class BioFrame:
         import anndata as ad
         obs, var = _to_pandas_safe(self.obs), _to_pandas_safe(self.var)
         obs.index = (obs["barcode"] if "barcode" in obs.columns else obs["cell_id"]).astype(str).values
-        var.index = np.array(self.var_names, dtype=str)
+        names = np.array(self.var_names, dtype=str)
+        if len(set(names.tolist())) < len(names):
+            n_dup = len(names) - len(set(names.tolist()))
+            warnings.warn(f"to_anndata: {n_dup} gene names are not unique (Cell Ranger feature tables repeat some "
+                          "symbols); the repeats get a '-1', '-2', ... suffix in the AnnData index so that it is "
+                          "unique. The original names stay in the var column they came from.", UserWarning, stacklevel=2)
+            import pandas as pd
+            names = np.array(ad.utils.make_index_unique(pd.Index(names)), dtype=str)
+        var.index = names
         obs = obs.drop(columns=["cell_id"])  # the store's ids; from_anndata/read_h5ad assign their own
         var = var.drop(columns=["gene_id"])
         a = ad.AnnData(X=self.to_scipy(transform), obs=obs, var=var)

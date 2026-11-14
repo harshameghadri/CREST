@@ -22,6 +22,45 @@ from . import crest as _native
 __all__ = ["ingest", "project_pca"]
 
 
+def _unique_positions(keys: Sequence[str]) -> dict:
+    """``key -> position`` for the keys that occur exactly once."""
+    seen: dict = {}
+    for i, g in enumerate(keys):
+        seen[g] = -1 if g in seen else i
+    return {g: i for g, i in seen.items() if i >= 0}
+
+
+def _match_genes(query: BioFrame, P: dict):
+    """For each query gene, its row in the reference PCA loadings (``-1`` if absent).
+
+    Genes are matched by their stable ids (``var['gene_ids']``) when the reference stored them and the
+    query has them. Otherwise they are matched by name, and only names that occur once on each side:
+    Cell Ranger feature tables repeat some symbols, and a repeated symbol cannot say which gene is
+    meant, so those genes are left out (counted as not found) with a ``UserWarning``.
+    Returns ``(rows, number of genes left out as ambiguous)``.
+    """
+    ref_ids, q_ids = P.get("gene_ids"), query.gene_ids
+    if ref_ids is not None and q_ids is not None:
+        ref_keys, q_keys, what = list(ref_ids), q_ids, "gene id"
+    else:
+        ref_keys, q_keys, what = list(P["genes"]), query.var_names, "gene name"
+    pos = _unique_positions(ref_keys)
+    q_unique = _unique_positions(q_keys)
+    rows = np.full(len(q_keys), -1, dtype=np.int32)
+    n_amb = 0
+    ref_all = set(ref_keys)
+    for i, g in enumerate(q_keys):
+        if g in pos and g in q_unique:
+            rows[i] = pos[g]
+        elif g in ref_all:  # present in the reference but repeated on one side
+            n_amb += 1
+    if n_amb:
+        warnings.warn(f"{n_amb} genes were left out of the projection because their {what} is not unique in the "
+                      "query or in the reference PCA genes; read the data with gene ids (var['gene_ids']) in both "
+                      "objects to match them exactly", UserWarning, stacklevel=4)
+    return rows, n_amb
+
+
 def project_pca(query: BioFrame, ref: BioFrame, center: str = "query") -> np.ndarray:
     """Coordinates of the query cells in the reference PCA space.
 
@@ -35,14 +74,13 @@ def project_pca(query: BioFrame, ref: BioFrame, center: str = "query") -> np.nda
     if [o[0] for o in query.ops] != [o[0] for o in P["ops"]]:
         raise ValueError(f"query transforms {query.ops} differ from the reference's {P['ops']}; "
                          "apply the same normalize_total / log1p")
-    pos = {g: i for i, g in enumerate(P["genes"])}
-    names = query.var_names
-    sub = np.array([pos.get(g, -1) for g in names], dtype=np.int32)
+    sub, n_ambiguous = _match_genes(query, P)
     found = int((sub >= 0).sum())
     if found == 0:
         raise ValueError("no reference PCA genes in the query")
-    if found < 0.8 * len(pos):
-        warnings.warn(f"only {found} of {len(pos)} reference PCA genes are in the query; missing genes count as zero",
+    n_ref = len(P["genes"])
+    if found < 0.8 * n_ref:
+        warnings.warn(f"only {found} of {n_ref} reference PCA genes are in the query; missing genes count as zero",
                       stacklevel=3)
     L = np.ascontiguousarray(P["loadings"], np.float64)
     k = L.shape[1]
