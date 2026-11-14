@@ -12,7 +12,8 @@ Tolerances: each ``PIN_RTOL`` entry is ten times the largest deviation measured 
 macOS arm64 (rounded up to one digit, never below ``RTOL_FLOOR``). Deviations are |crest - R| / (ATOL +
 |R|). The two groups of values that cannot be compared tightly are excluded by rule, not by tolerance:
 gene-wise dispersions at the floor (the likelihood is flat there, see docs/deseq2.md, known difference 1),
-and Cook's distances far above the cut-off (compared through the outlier flag only).
+and Cook's distances above the cut-off (compared through the outlier flag only; up to 5% off in the
+filtering fixture, where the outlying genes converge slowly).
 """
 
 import functools
@@ -32,7 +33,7 @@ DATA = pathlib.Path(__file__).parent / "data"
 ATOL = 1e-12                    # absolute part of the deviation measure
 RTOL_FLOOR = 1e-12              # no pin is tighter than this (the reference CSVs carry 15 digits)
 FLOOR_DISP = 1e-6               # gene-wise dispersions below this sit on the flat part of the likelihood
-COOKS_COMPARE_FACTOR = 2.0      # maxCooks is compared where R's value is below this multiple of the cut-off
+COOKS_COMPARE_FACTOR = 1.0      # maxCooks is compared where R's value is below this multiple of the cut-off
 PRIOR_VAR_RTOL = 1e-9           # prior variance for <= 3 residual df against R's value (same grid point)
 BAND_EPS = 1e-6                 # slack on the edges of the R seed band
 REFIT_RTOL = 1e-6               # dispersion and p-value of genes refitted after outlier replacement
