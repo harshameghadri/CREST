@@ -256,17 +256,3 @@ def load_script(source_root):
         return module
 
     return load
-
-
-# --------------------------------------------------------------------------- temporary: parity diagnostics only
-_DIAG = Path(__file__).parent / "_diag_only.flag"
-if _DIAG.exists():
-    _d = os.environ.get("CREST_TEST_DATA")
-    if _d and (Path(_d) / "pbmc10k.h5").exists():
-        os.environ.setdefault("CREST_TEST_PBMC10K", str(Path(_d) / "pbmc10k.h5"))
-
-
-def pytest_collection_modifyitems(config, items):
-    if _DIAG.exists():
-        keep = ("test_scanpy_parity_matrix", "test_zz_host_diag")
-        items[:] = [i for i in items if any(k in i.nodeid for k in keep)]

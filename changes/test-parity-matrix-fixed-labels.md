@@ -1,0 +1,1 @@
+- Fixed: the scanpy parity tests no longer fail on some CI hosts. The groups of the differential-expression and ingest comparisons are now stored labels instead of a clustering made during the run, and the tolerances are set from measurements on Linux with and without AVX-512 and on macOS arm64.
