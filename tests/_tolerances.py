@@ -1,14 +1,15 @@
 """Tolerances of the scanpy parity matrix (tests/test_scanpy_parity_matrix.py): one named constant per comparison.
 
 Each value is the largest deviation measured over PBMC 3k and PBMC 10k, x86-64 (Linux) and arm64 (macOS), scanpy 1.11.5,
-1.12.6 and 1.13.0, and the three kinds of host the CI uses (Linux with AVX-512, Linux with AVX2 only, macOS arm64), times MARGIN, rounded up to two significant digits (`tests/_parity_cases.py` defines every comparison and
+1.12.6 and 1.13.0, and the three kinds of CI host observed (Linux with AVX-512, Linux with AVX2 only, macOS arm64), times MARGIN, rounded up to two significant digits (`tests/_parity_cases.py` defines every comparison and
 how its deviation is measured; a deviation is non-negative, a shortfall is max(0, reference - CREST)). Two rules bound the margin:
 
 * a constant is never looser than a tolerance that an existing test already applies to the same comparison (EXISTING_TESTS);
   where the margin would exceed it, the existing value is kept for the data set that test uses (PBMC 3k) and a separate
   constant with the suffix _PBMC10K carries 10k;
-* a deviation that measured exactly 0 keeps tolerance 0 for counts of differing genes, cells or entries, and gets the floor
-  NOISE_FLOAT (two float32 ulp) or NOISE_FRACTION (one in a thousand) otherwise.
+* for counts of differing genes, cells or entries a deviation that measured exactly 0 keeps tolerance 0; every other
+  constant is at least the floor NOISE_FLOAT (two float32 ulp) or NOISE_FRACTION (one in a thousand), so a constant whose
+  measured deviation times MARGIN is below the floor sits at the floor (the measured values are in the comment beside it).
 
 Measured with CREST release/0.5 at 3ab288d. Changing a value needs the measurement that justifies it (see the parity matrix
 published with the release); never loosen a constant to make a test pass.

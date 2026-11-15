@@ -5,11 +5,10 @@
 and which platforms and scanpy versions it covers (1.11.5, 1.12.6 and 1.13.0 on x86-64 and arm64).
 
 Groups. The differential-expression, ingest and Leiden-agreement comparisons use the fixed labels of
-``tests/data/<dataset>_leiden.npz``; clustering scanpy's graph during the run gave different groups on different
-CPUs and made the deviations of the group statistics change with them. What still varies between hosts is the
-floating-point behaviour of the installed libraries (for example numpy's float32 ``log1p`` on a CPU with AVX-512),
-which moves the inputs of both tools by an ulp; ``_tolerances.py`` is set from measurements on every kind of host
-the CI uses.
+``tests/data/<dataset>_leiden.npz``, so the groups do not depend on a clustering made during the run. What still
+varies between hosts is the floating-point behaviour of the installed libraries (for example numpy's float32 ``log1p``
+on a CPU with AVX-512), which moves the inputs of both tools by an ulp; ``_tolerances.py`` is set from measurements on
+the three kinds of CI host observed (Linux with AVX-512, Linux with AVX2 only, macOS arm64).
 
 Data (environment variables):
 
