@@ -24,6 +24,7 @@
 //! parallel pass over genes.
 
 pub(crate) mod linalg;
+pub mod locfit;
 pub mod lowess;
 
 use linalg::{xb, xtwx, xtwz, Lu, ScaledLu};
@@ -203,6 +204,7 @@ impl Design {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FitType {
     Parametric,
+    Local,
     Mean,
 }
 
@@ -269,8 +271,8 @@ pub struct Fit {
     pub lrt_stat: Option<Vec<f64>>,
     pub lrt_pvalue: Option<Vec<f64>>,
     pub fit_type: FitType,
-    /// The parametric trend was requested but did not fit, and the mean trend was used instead
-    /// (DESeq2 would use a local regression, so results differ from R's).
+    /// The parametric trend was requested but did not fit, and the local regression trend was used instead
+    /// (as DESeq2 does; the mean trend only where the local fit failed as well).
     pub fit_substituted: bool,
     pub trend: Vec<f64>,
     pub disp_prior_var: f64,
@@ -709,7 +711,9 @@ fn gamma_identity_glm(means: &[f64], disps: &[f64], start: [f64; 2]) -> Option<(
 }
 
 /// DESeq2 `parametricDispersionFit`: disp = a + b / mean.
-fn parametric_fit(means: &[f64], disps: &[f64]) -> Option<[f64; 2]> {
+pub(crate) const PARAMETRIC_FALLBACK_MESSAGE: &str = "-- note: fitType='parametric', but the dispersion trend was not well captured by the\n   function: y = a/x + b, and a local regression fit was automatically substituted.\n   specify fitType='local' or 'mean' to avoid this message next time.";
+
+pub(crate) fn parametric_fit(means: &[f64], disps: &[f64]) -> Option<[f64; 2]> {
     let mut coefs = [0.1, 1.0];
     let mut iter = 0;
     loop {
@@ -1105,28 +1109,39 @@ pub fn deseq(counts: &[f64], g: usize, d: &Design, sf: Option<Vec<f64>>, poscoun
     }
 
     // trend + prior variance, decided on the first (full) pass and then frozen
-    let fitted: std::sync::Mutex<Option<(FitType, Vec<f64>, f64, f64)>> = std::sync::Mutex::new(None);
+    let fitted: std::sync::Mutex<Option<(FitType, Vec<f64>, f64, f64, Option<std::sync::Arc<locfit::LocalTrend>>)>> = std::sync::Mutex::new(None);
     let fit_type_req = pa.fit_type;
     let msgs = std::sync::Mutex::new(Vec::<String>::new());
     let substituted = std::sync::atomic::AtomicBool::new(false);
     let trend = |bm: &[f64], gest: &[f64]| -> (Vec<f64>, f64, f64) {
         let mut guard = fitted.lock().unwrap();
-        let (ft, coefs, prior_var, var_log) = match guard.as_ref() {
+        let (ft, coefs, prior_var, var_log, local) = match guard.as_ref() {
             Some(t) => t.clone(),
             None => {
                 let use_fit: Vec<usize> = (0..gest.len()).filter(|&i| gest[i] > 100.0 * pa.min_disp).collect();
                 let mut ft = fit_type_req;
                 let mut coefs = vec![];
+                let mut local: Option<std::sync::Arc<locfit::LocalTrend>> = None;
+                let mb: Vec<f64> = use_fit.iter().map(|&i| bm[i]).collect();
+                let dg: Vec<f64> = use_fit.iter().map(|&i| gest[i]).collect();
                 if use_fit.is_empty() {
                     msgs.lock().unwrap().push("all gene-wise dispersion estimates are within 2 orders of magnitude from the minimum value; using their mean as the trend".into());
                     ft = FitType::Mean;
                 } else if ft == FitType::Parametric {
-                    let mb: Vec<f64> = use_fit.iter().map(|&i| bm[i]).collect();
-                    let dg: Vec<f64> = use_fit.iter().map(|&i| gest[i]).collect();
                     match parametric_fit(&mb, &dg) {
                         Some(c) => coefs = c.to_vec(),
                         None => {
-                            msgs.lock().unwrap().push("the parametric dispersion trend (a + b/mean) did not fit; using fit_type=\"mean\" instead of the local regression DESeq2 substitutes, so dispersions, the prior variance, p-values and the number of significant genes can differ from R's (markedly so on small or low-count data)".into());
+                            msgs.lock().unwrap().push(PARAMETRIC_FALLBACK_MESSAGE.into());
+                            substituted.store(true, std::sync::atomic::Ordering::Relaxed);
+                            ft = FitType::Local;
+                        }
+                    }
+                }
+                if ft == FitType::Local {
+                    match locfit::local_dispersion_fit(&mb, &dg) {
+                        Ok(t) => local = Some(std::sync::Arc::new(t)),
+                        Err(e) => {
+                            msgs.lock().unwrap().push(format!("the local regression dispersion trend failed ({e}); using the mean of the gene-wise dispersions as the trend, so dispersions, the prior variance, p-values and the number of significant genes can differ from R's"));
                             substituted.store(true, std::sync::atomic::Ordering::Relaxed);
                             ft = FitType::Mean;
                         }
@@ -1136,7 +1151,11 @@ pub fn deseq(counts: &[f64], g: usize, d: &Design, sf: Option<Vec<f64>>, poscoun
                     let v: Vec<f64> = gest.iter().copied().filter(|&x| x > 10.0 * pa.min_disp).collect();
                     coefs = vec![if v.is_empty() { pa.min_disp * 10.0 } else { trimmed_mean(&v, 0.001) }];
                 }
-                let f = |mn: f64| if coefs.len() == 2 { coefs[0] + coefs[1] / mn } else { coefs[0] };
+                let f = |mn: f64| match (&local, coefs.len()) {
+                    (Some(t), _) => t.disp_at(mn),
+                    (None, 2) => coefs[0] + coefs[1] / mn,
+                    _ => coefs[0],
+                };
                 let above: Vec<usize> = (0..gest.len()).filter(|&i| gest[i] >= pa.min_disp * 100.0).collect();
                 let resid: Vec<f64> = above.iter().map(|&i| gest[i].ln() - f(bm[i]).ln()).collect();
                 let var_log = if resid.is_empty() { f64::NAN } else { mad(&resid).powi(2) };
@@ -1148,11 +1167,15 @@ pub fn deseq(counts: &[f64], g: usize, d: &Design, sf: Option<Vec<f64>>, poscoun
                 } else {
                     (var_log - trigamma(dfr / 2.0)).max(0.25)
                 };
-                *guard = Some((ft, coefs.clone(), prior_var, var_log));
-                (ft, coefs, prior_var, var_log)
+                *guard = Some((ft, coefs.clone(), prior_var, var_log, local.clone()));
+                (ft, coefs, prior_var, var_log, local)
             }
         };
-        let fv = bm.iter().map(|&mn| if coefs.len() == 2 && ft == FitType::Parametric { coefs[0] + coefs[1] / mn } else { coefs[0] }).collect();
+        let fv = bm.iter().map(|&mn| match (&local, ft) {
+            (Some(t), _) => t.disp_at(mn),
+            (None, FitType::Parametric) => coefs[0] + coefs[1] / mn,
+            _ => coefs[0],
+        }).collect();
         (fv, prior_var, var_log)
     };
 

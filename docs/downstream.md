@@ -82,9 +82,9 @@ Variance-stabilising HVG selection on raw counts, with an optional `batch_key`. 
 * degree-2 local fits at the vertices;
 * cubic Hermite interpolation between vertices.
 
-It matches `skmisc.loess` to about 1e-14. The clipped sums stream through the chunk kernels, so the count matrix is never copied.
+Its `variances_norm` agree with scanpy's (which fits with `skmisc.loess`) to 3e-13 relative on PBMC 3k and 3e-10 on PBMC 10k; the largest differences are at high-mean genes. The clipped sums stream through the chunk kernels, so the count matrix is never copied.
 
-Against scanpy (tests): `variances_norm` agrees to 1e-14, the HVG sets are identical and `highly_variable_rank` is identical, with and without batches.
+Against scanpy (tests): `variances_norm` agrees within the tolerances above, the HVG sets are identical and `highly_variable_rank` is identical, with and without batches.
 
 ## Resolution sweep (`crest.tl.leiden_sweep`)
 

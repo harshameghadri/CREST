@@ -90,6 +90,7 @@ jobs:
             os: ubuntu-22.04
             python: "3.13"
             numpy: ""
+            pbmc10k: true
           - name: macOS arm64, Python 3.11
             os: macos-latest
             python: "3.11"
@@ -126,6 +127,9 @@ jobs:
           python -c "import numpy; assert numpy.__version__ == '${{ matrix.numpy }}', numpy.__version__"
       - name: Test data (cached, sha256 verified) and the variables the data-dependent tests read
         uses: ./.github/actions/test-data
+      - name: Run the PBMC 10k variant of the scanpy parity tests on this row
+        if: matrix.pbmc10k
+        run: echo "CREST_TEST_PBMC10K=$CREST_TEST_DATA/pbmc10k.h5" >> "$GITHUB_ENV"
       - name: Change fragments are well-formed
         run: python scripts/assemble_changelog.py --check
       - name: Python tests (scanpy, harmonypy, leidenalg, skmisc and skimage parity included; unlisted skips fail)

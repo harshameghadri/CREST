@@ -1,0 +1,1 @@
+- Documentation states the measured agreement with scanpy for `seurat_v3` `variances_norm`, `score_genes` and identical-input Wilcoxon scores (PBMC 3k and 10k, scanpy 1.11.5 to 1.13.0).

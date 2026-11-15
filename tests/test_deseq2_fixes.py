@@ -119,15 +119,15 @@ def test_parametric_trend_is_invariant_to_rescaling_counts():
 
 
 # --------------------------------------------------------------------------- substituted trend
-@pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="differ from R")
+@pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="automatically substituted")
 def test_substituted_trend_warns_and_flags():
     cts, cond = _simulate(120, (3, 3), 62, mean_log2=(2, 1.5))
     with warnings.catch_warnings(record=True) as wl:
         warnings.simplefilter("always")
         ds = _fit(cts, cond)
     msgs = [str(w.message) for w in wl if issubclass(w.category, UserWarning)]
-    assert any("differ from R" in m for m in msgs), f"no warning saying the results differ from R: {msgs}"
-    assert ds.fit["fitType"] == "mean"
+    assert any("a local regression fit was automatically substituted" in m for m in msgs), f"no warning with R's note (automatically substituted): {msgs}"
+    assert ds.fit["fitType"] == "local"
     assert ds.fit["fit_substituted"] is True
 
 
