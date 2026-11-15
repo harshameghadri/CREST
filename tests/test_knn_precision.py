@@ -33,6 +33,7 @@ N_LARGE_SCORED = 800
 LARGE_MEAN_RECALL = 0.99         # tier 1 for the approximate search above 100k cells
 LARGE_FRACTION_BELOW_HALF = 0.005
 EXACT_LIMIT = 20_000
+MIN_NPROBE = 16                  # lists probed per cell below ~0.5 million cells
 
 
 # ---- helpers --------------------------------------------------------------------------
@@ -268,7 +269,7 @@ def test_implicit_approximate_search_warns_once_and_is_recorded():
     assert len(warned) == 1, f"expected one approximate-search warning, got {len(warned)}"
     p = bf.uns["neighbors"]["params"]
     assert p["knn_method"] == "approximate"
-    assert p["nprobe"] >= 20 and p["n_lists"] >= p["nprobe"]
+    assert p["nprobe"] >= MIN_NPROBE and p["n_lists"] >= p["nprobe"]
     assert p["n_neighbors"] == 15 and p["method"] == "umap"
 
 
@@ -286,24 +287,25 @@ def test_explicit_choices_do_not_warn_and_are_recorded():
 
 
 @baseline_fails(ref="v0.4.0", raises=AssertionError, match="nprobe")
-def test_nprobe_grows_with_the_number_of_lists():
-    small, _ = _run_neighbors(embedding(21_000, d=5, seed=16), exact=False)
-    large, _ = _run_neighbors(embedding(N_LARGE + 20_000, d=5, seed=17), exact=False)
-    p_small, p_large = (b.uns["neighbors"]["params"] for b in (small, large))
-    assert p_small.get("nprobe") == 20, f"nprobe {p_small.get('nprobe')} at {p_small.get('n_lists')} lists"
-    assert p_large.get("nprobe", 0) > 20, f"nprobe {p_large.get('nprobe')} at {p_large.get('n_lists')} lists"
+def test_approximate_search_records_nprobe_and_n_lists():
+    bf, _ = _run_neighbors(embedding(21_000, d=5, seed=16), exact=False)
+    p = bf.uns["neighbors"]["params"]
+    assert p.get("nprobe") == MIN_NPROBE, f"nprobe {p.get('nprobe')} at {p.get('n_lists')} lists"
+    assert p.get("n_lists") == 21_000 // 512
 
 
 def test_plan_matches_the_search_that_runs():
     """``knn_plan_info`` (new binding, no released-build counterpart) reports the search ``knn_graph`` runs."""
-    plans = {n: _native.knn_plan_info(n, None) for n in (30_000, 120_000, 300_000, 1_000_000)}
+    plans = {n: _native.knn_plan_info(n, None) for n in (30_000, 120_000, 300_000, 1_000_000, 9_700_000)}
     assert all(not exact for exact, _, _ in plans.values())
     probes = [v[1] for v in plans.values()]
-    assert probes == sorted(probes) and probes[-1] > probes[0] >= 20
+    assert probes == sorted(probes) and probes[0] == MIN_NPROBE and probes[-1] > probes[0]
     assert all(v[1] <= v[2] for v in plans.values())
     assert _native.knn_plan_info(EXACT_LIMIT, None)[0] is True
     assert _native.knn_plan_info(10 * EXACT_LIMIT, True)[0] is True
     assert _native.knn_plan_info(5, False)[0] is True
+    assert _native.knn_plan_info(30_000, None, 7)[1] == 7
+    assert _native.knn_plan_info(30_000, None, 10_000)[1] == _native.knn_plan_info(30_000, None)[2]
 
 
 def test_large_approximate_search_recall_and_determinism(large_embedding):

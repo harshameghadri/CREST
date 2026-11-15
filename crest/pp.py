@@ -396,7 +396,7 @@ def highly_variable_genes(bf: BioFrame, n_top_genes: Optional[int] = None, flavo
 
 # --------------------------------------------------------------------------- neighbours
 def neighbors(bf: BioFrame, n_neighbors: int = 15, n_pcs: Optional[int] = None, use_rep: str = "X_pca",
-              exact: Optional[bool] = None, random_state: int = 0) -> BioFrame:
+              exact: Optional[bool] = None, random_state: int = 0, nprobe: Optional[int] = None) -> BioFrame:
     """kNN graph + UMAP fuzzy connectivities (``sc.pp.neighbors`` with method="umap").
 
     ``n_neighbors`` counts the cell itself, as in scanpy. ``exact=None`` uses exact
@@ -407,10 +407,14 @@ def neighbors(bf: BioFrame, n_neighbors: int = 15, n_pcs: Optional[int] = None, 
     ``uns["neighbors"]["params"]``: ``knn_method`` (``"exact"`` or ``"approximate"``),
     ``nprobe`` and ``n_lists`` (the index settings; ``None`` for exact search). The
     exact search is exact up to float32 rounding of the returned distances, whatever the
-    offset of the embedding. The approximate search probes more inverted lists as the
-    data set grows (about ``2 sqrt(n_lists)``, at least 20) so that its recall does not
-    fall with the number of cells; it is deterministic for a fixed ``random_state`` and
-    thread count.
+    offset of the embedding. In the approximate search the cells are grouped into inverted
+    lists of about 512 cells (k-means), and every cell is searched against the ``nprobe``
+    lists whose centroids are nearest to the cell itself, then refined by NN-descent.
+    ``nprobe=None`` uses ``max(16, ceil(0.5 * sqrt(n_lists)))``, so the searched share of
+    the data falls slowly as the data set grows; pass a larger value for higher recall at a
+    cost that grows about linearly with ``nprobe`` (it has no effect on exact search). The
+    recall measured against exact search on real embeddings is given with the kNN notes of
+    the API reference; the search is deterministic for a fixed ``random_state`` and thread count.
 
     ``n_neighbors`` must be at least 2; a value above the number of cells is clamped,
     with a ``RuntimeWarning``. A NaN or infinite value in the embedding raises
@@ -427,19 +431,21 @@ def neighbors(bf: BioFrame, n_neighbors: int = 15, n_pcs: Optional[int] = None, 
         raise ValueError(
             f"obsm[{use_rep!r}] contains NaN or Inf in {bad.size} cell(s); first bad row: {int(bad[0])}. "
             "Remove or impute these cells before computing neighbours.")
-    ran_exact, nprobe, n_lists = _native.knn_plan_info(X.shape[0], exact)
+    if nprobe is not None and nprobe < 1:
+        raise ValueError("nprobe must be at least 1")
+    ran_exact, nprobe_used, n_lists = _native.knn_plan_info(X.shape[0], exact, nprobe)
     if exact is None and not ran_exact:
         warnings.warn(
             f"neighbors: {X.shape[0]:,} cells exceed the exact-search limit of 20,000; using the approximate "
-            f"IVF + NN-descent index (n_lists={n_lists}, nprobe={nprobe}), which can miss a small fraction of the "
+            f"IVF + NN-descent index (n_lists={n_lists}, nprobe={nprobe_used}), which can miss a small fraction of the "
             "true neighbours. Pass exact=True for exact search.", UserWarning, stacklevel=2)
-    idx, dist = _native.knn_graph(X, n_neighbors - 1, exact=exact, seed=random_state)
+    idx, dist = _native.knn_graph(X, n_neighbors - 1, exact=exact, seed=random_state, nprobe=nprobe)
     rows, cols, w = _native.connectivities(idx, dist, n_neighbors)
     bf.uns.pop("neighbors_params", None)  # the settings kept by a cell filter are superseded
     bf.uns["neighbors"] = {
         "params": {"n_neighbors": n_neighbors, "n_pcs": n_pcs, "use_rep": use_rep, "method": "umap",
                    "knn_method": "exact" if ran_exact else "approximate",
-                   "nprobe": None if ran_exact else int(nprobe), "n_lists": None if ran_exact else int(n_lists)},
+                   "nprobe": None if ran_exact else int(nprobe_used), "n_lists": None if ran_exact else int(n_lists)},
         "indices": idx, "distances": dist, "rows": rows, "cols": cols, "weights": w,
     }
     return bf
