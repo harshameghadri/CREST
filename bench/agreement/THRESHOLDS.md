@@ -210,3 +210,8 @@ No threshold, metric definition or action has been changed. One diagnostic was a
   copies it before centering. For datasets of this size the scanpy stage runs with `--pca-in-place`, which centres the scaled
   matrix in place (scikit-learn's `copy=False`). The result is the same floating-point numbers (the matrix is not used after
   the PCA; a test compares both paths bit for bit on a small matrix), and the setting is recorded in `scanpy_meta.json`.
+* 2026-11-15, reported-only item not computed at scale (no threshold affected). The modularity of leidenalg run to convergence
+  (`n_iterations=-1`, reported without a threshold in metric 3) was started on parse_pbmc_1m with two seeds and had not finished
+  after 60 minutes; it is computed up to 100,000 cells (five seeds) and not computed on larger datasets. The registered comparison
+  (`n_iterations=2`) is computed on every dataset.
+

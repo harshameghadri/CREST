@@ -460,9 +460,27 @@ def stage_scanpy(a) -> None:
         sc.tl.leiden(g, resolution=RESOLUTION, flavor="igraph", n_iterations=N_ITER, random_state=s, key_added=key)
         return g.obs[key].astype(int).to_numpy()
 
+    graph0 = d / "scanpy_graph0.npz"
+
+    def seed0_graph():
+        """The seed-0 graph, computed once and kept: a rerun uses the same graph (parallel neighbour search need not
+        reproduce itself)."""
+        if graph0.exists():
+            z = np.load(graph0)
+            g.obsp["distances"] = sp.csr_matrix((z["d_data"], z["d_indices"], z["d_indptr"]), shape=(n, n))
+            g.obsp["connectivities"] = sp.csr_matrix((z["c_data"], z["c_indices"], z["c_indptr"]), shape=(n, n))
+            g.uns["neighbors"] = {"connectivities_key": "connectivities", "distances_key": "distances",
+                                  "params": {"n_neighbors": N_NEIGHBORS, "method": "umap", "random_state": 0,
+                                             "metric": "euclidean", "n_pcs": run_one.N_PCS}}
+        else:
+            neighbors(0)
+            D_, C_ = g.obsp["distances"].tocsr(), g.obsp["connectivities"].tocsr()
+            _save(graph0, d_data=D_.data, d_indices=D_.indices, d_indptr=D_.indptr,
+                  c_data=C_.data, c_indices=C_.indices, c_indptr=C_.indptr)
+
     if not core.exists():
         t0 = time.time()
-        neighbors(0)
+        seed0_graph()
         from accuracy import scanpy_knn_indices
         knn0 = scanpy_knn_indices(g.obsp["distances"], N_NEIGHBORS)
         out = {"barcodes": barcodes, "pca": pca, "hvg": hvg, "genes": genes, "knn0": knn0}
@@ -472,13 +490,21 @@ def stage_scanpy(a) -> None:
             ig_g = igraph_from_connectivities(C)
             U = sp.triu(C, 1).tocoo()
             r, c, w = U.row.astype(np.uint32), U.col.astype(np.uint32), U.data.astype(np.float32)
-            a_leiden = np.stack([leiden(s) for s in range(nmod)])
-            _log("A_leiden done")
-            b = np.stack([np.asarray(native.leiden(n, r, c, w, RESOLUTION, N_ITER, s)).astype(np.int64) for s in range(nmod)])
-            _log("B (CREST Leiden on scanpy's graph) done")
-            lg = leidenalg_partitions(ig_g, range(nmod), N_ITER, _lg_workers(n))
-            lg_conv = leidenalg_partitions(ig_g, range(5 if n <= SMALL_MAX_CELLS else 2), -1, _lg_workers(n))
-            _log("leidenalg done")
+            parts = d / "scanpy_parts.npz"
+            if parts.exists():
+                z = np.load(parts)
+                a_leiden, b, lg = z["A_leiden"], z["B"], z["lg"]
+            else:
+                a_leiden = np.stack([leiden(s) for s in range(nmod)])
+                _log("A_leiden done")
+                b = np.stack([np.asarray(native.leiden(n, r, c, w, RESOLUTION, N_ITER, s)).astype(np.int64) for s in range(nmod)])
+                _log("B (CREST Leiden on scanpy's graph) done")
+                lg = leidenalg_partitions(ig_g, range(nmod), N_ITER, _lg_workers(n))
+                _save(parts, A_leiden=a_leiden, B=b, lg=lg)
+                _log("leidenalg done")
+            # leidenalg run to convergence (reported only): not computed above SMALL_MAX_CELLS, where a run takes hours
+            n_conv = 5 if n <= SMALL_MAX_CELLS else 0
+            lg_conv = leidenalg_partitions(ig_g, range(n_conv), -1, _lg_workers(n)) if n_conv else np.zeros((0, n), np.int64)
             out.update({
                 "A_leiden": a_leiden, "B": b,
                 "q_common_scanpy": np.array([modularity(ig_g, x) for x in a_leiden]),
@@ -506,7 +532,7 @@ def stage_scanpy(a) -> None:
     seed0 = runs[0]
 
     # UMAP and differential expression on the seed-0 graph
-    neighbors(0)
+    seed0_graph()
     for s in range(_n_umap_seeds(n)):
         f = d / f"scanpy_umap_s{s}.npy"
         if not f.exists():
@@ -837,7 +863,8 @@ def stage_compare(a) -> None:
     M["3_modularity_common_graph"] = {**eval_modularity(sc_["q_common_crest"], sc_["q_common_leidenalg"]),
                                       "gap_to_scanpy_igraph_flavour": float(sc_["q_common_crest"].mean() - sc_["q_common_scanpy"].mean()),
                                       "mean_q_scanpy_igraph": float(sc_["q_common_scanpy"].mean()),
-                                      "mean_q_leidenalg_converged": float(sc_["q_common_leidenalg_converged"].mean()),
+                                      "mean_q_leidenalg_converged": (float(sc_["q_common_leidenalg_converged"].mean())
+                                                                     if len(sc_["q_common_leidenalg_converged"]) else None),
                                       "n_seeds_leidenalg_converged": int(len(sc_["q_common_leidenalg_converged"]))}
     if "q_own_crest" in cr.files:
         M["3_modularity_crest_graph"] = eval_modularity(cr["q_own_crest"], cr["q_own_leidenalg"])
