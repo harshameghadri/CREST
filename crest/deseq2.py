@@ -10,8 +10,8 @@ independent filtering. The per-gene work runs in parallel in native code.
                                  contrast=("condition", "stim", "ctrl"), groupby="cell_type")
 
 Differences from R are documented in ``docs/deseq2.md``: when the parametric
-trend fails DESeq2 substitutes a local regression, here the mean is used, which
-can change the results noticeably (reported in ``messages`` and as
+trend fails DESeq2 substitutes a local regression (``locfit``), and so does
+this port (a port of ``locfit`` 1.5-9.12's evaluation, reported in ``messages`` and as
 ``fit["fit_substituted"]``); rows IRLS cannot fit are refined by Newton's method
 rather than L-BFGS-B. Under ``test="LRT"`` the Cook's distances use the full-model
 means, as DESeq2 >= 1.50 (1.42 differs). For designs with <= 3 residual degrees of freedom the
@@ -288,10 +288,13 @@ class DESeq2:
         ``"ratio"`` (median of ratios, the DESeq2 default) or ``"poscounts"``
         (for data where every gene has a zero). R's ``"iterate"`` is not available.
     fit_type : str
-        Dispersion trend: ``"parametric"`` (default) or ``"mean"``. When the parametric
-        fit does not converge R substitutes a local regression; here the mean trend is
-        used instead, ``fit["fit_substituted"]`` is ``True`` and a ``UserWarning`` says
-        the results will differ from R (``quiet=True`` suppresses the warning, not the flag).
+        Dispersion trend: ``"parametric"`` (default), ``"local"`` (DESeq2's ``locfit`` regression of
+        the log gene-wise dispersions on the log means, weighted by the means) or ``"mean"``.
+        When the parametric fit does not converge R substitutes the local regression, and so does
+        this port: ``fit["fitType"]`` is ``"local"``, ``fit["fit_substituted"]`` is ``True`` and a
+        ``UserWarning`` repeats R's note (``quiet=True`` suppresses the warning, not the flag).
+        Where R's local regression itself stops with an error, R stops; here the mean trend is used,
+        ``fit["fit_substituted"]`` is ``True`` and the warning says the results can differ from R.
     min_replicates_for_replace : float
         Replace Cook's outliers in sample groups with at least this many
         samples (default 7, as DESeq2's ``minReplicatesForReplace``). At least 3, as in R;
@@ -318,9 +321,9 @@ class DESeq2:
         ``beta_cov``, ``cooks``, and with ``test="LRT"`` ``LRTStatistic`` and
         ``LRTPvalue``, ...), ``size_factors``, ``dispPriorVar`` and
         ``messages`` (a list of notes such as a fallback to the mean
-        dispersion trend), ``fitType`` (the trend used) and ``fit_substituted``
-        (``True`` when the parametric trend was requested but failed and the mean
-        was used instead).
+        dispersion trend), ``fitType`` (the trend used: ``"parametric"``, ``"local"`` or ``"mean"``) and
+        ``fit_substituted`` (``True`` when the trend requested was replaced: parametric by local, as R
+        does, or local by the mean, where R stops with an error).
     last_results_info : dict
         Set by :meth:`results`: the contrast, the Cook's cut-off, the independent-filtering threshold
         and ``"na"``, the boolean masks that say why a p-value or adjusted p-value is missing.

@@ -1,0 +1,25 @@
+{
+  "R_gene_wise": {
+    "ok": true,
+    "n": 8754,
+    "coefficients": [
+      0.029988038481667,
+      0.91598936977859
+    ]
+  },
+  "CREST_gene_wise": {
+    "ok": false,
+    "n": 8756,
+    "error": "dispersion fit did not converge"
+  },
+  "versions": {
+    "R": "R version 4.5.2 (2025-10-31)",
+    "DESeq2": "1.50.2"
+  },
+  "stratum": "myeloid dendritic cell",
+  "samples": 56,
+  "genes": 24245,
+  "rows": 8756,
+  "generated_by": "bench/deseq2/covid_trend_inputs.py",
+  "crest_version": "0.4.0"
+}

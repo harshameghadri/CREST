@@ -14,8 +14,8 @@ What is compared and what is not:
 * gene-wise dispersions at the floor are compared by floor status only (the likelihood is flat there; docs/deseq2.md);
 * ``dispGeneIter`` is pinned as a set: the genes that exhaust ``maxit`` and the genes that stop after one iteration away
   from the floor. Its value on floor genes differs by one to a few iterations and is not pinned;
-* where R's parametric trend fails and R uses a local fit, CREST uses the mean and says so; only quantities that do not
-  depend on the trend are compared;
+* where R's parametric trend fails and R uses a local fit, so does CREST (``fitType`` "local", ``fit_substituted`` true);
+  the columns that follow the trend are compared in ``test_deseq2_local_fit.py``;
 * no gene fails the beta fit in R on these data (``betaConv`` is TRUE for every gene with counts); the pin is that CREST
   agrees and reports none either. A fixture with a non-converged beta fit could not be generated.
 """
@@ -260,10 +260,11 @@ def test_sparse_design_nonconverged_dispersions_match_r():
     check_columns("edge_sparse_param", "edge_sparse_param")
 
 
+@pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="fitType")
 def test_sparse_design_without_trend_keeps_genewise_estimates():
-    """R falls back to a local trend, CREST to the mean; the gene-wise estimates and their flags still agree."""
+    """R falls back to a local trend, and so does CREST; the gene-wise estimates and their flags agree."""
     ds, meta, ref = _geneset("edge_sparse_extreme")
-    assert meta["R"]["fitType"] == "local" and ds.fit["fitType"] == "mean"
+    assert meta["R"]["fitType"] == "local" and ds.fit["fitType"] == "local", f"fitType {ds.fit['fitType']!r}"
     got = check_genewise("edge_sparse_extreme")
     assert got["n_maxit"] >= 100 and got["n_floor"] >= 500, got
     ok = _arr(ref["baseMean"]) > 0
