@@ -111,6 +111,21 @@ inputs to R and CREST. Results are in `bench/deseq2/results/`.
   also lists every discordant gene with both adjusted p-values, both dispersions and its
   cause. For comparison, pydeseq2's number of calls differs from R's by 3–25% per cell
   type (e.g. 1630 vs 1365 in CD4 T cells).
+* COVID-19 atlas (Stephenson et al. 2021; donor-level pseudobulk, design `~ Status`, Covid vs Healthy, 109 donors, 30 cell
+  types; R 4.5.2 / DESeq2 1.50.2 / locfit 1.5-9.12; CREST at commit a38d065, Linux x86-64;
+  `bench/deseq2/covid_concordance.py`, tables in `bench/deseq2/results/covid_concordance_*.csv`): R's parametric trend
+  fails in 11 of the 30 strata and DESeq2 substitutes its local trend. CREST substitutes it in the same 11 and in one more
+  (myeloid dendritic cell, *Known differences* 4). In the 11 strata CREST and R call the same genes: 9,043 at padj < 0.1 and
+  6,494 at padj < 0.05 (before the local trend was ported CREST used the mean and called 6% to 22% fewer genes than R in each
+  of the 12 strata where it did so, 9,723 against 10,901 in total at padj < 0.1). Over all 30 strata the significant sets are
+  identical in 28 at padj < 0.1 and in 29 at padj < 0.05. The exceptions at 0.1: "dendritic cell, human" (CREST 1,502, R 1,499,
+  1,499 shared; the three CREST-only genes sit at the threshold) and "myeloid dendritic cell" (CREST 2,110, R 1,858, 1,856
+  shared at 0.1; 1,584, 1,436 and 1,432 at 0.05; independent filtering picks the `baseMean` threshold 0.344 in CREST and 0.438
+  in R because the two trends differ). The trend function itself is not the source: R's `localDispersionFit` given CREST's
+  gene-wise dispersions reproduces CREST's fitted dispersions to 5.8e-15 over every gene of eight of these strata
+  (`bench/deseq2/covid_local_trend_swap.py`). What remains between the tools' fitted dispersions (median of the largest
+  difference per stratum 3e-5, at most 0.22 in "IgA plasma cell") comes from 4 to 281 genes per stratum whose gene-wise
+  estimates differ (*Known differences* 1).
 * `tests/test_crest.py` and `tests/test_deseq2_r_parity.py` check against stored R output
   (`tests/data/`), so CI guards R-parity without needing R. The R-parity file pins eleven
   count tables made with R 1.50.2 (scripts `make_pin_inputs.py` and `make_pin_fixtures.R`
