@@ -850,6 +850,10 @@ def test_environment_record_without_r_says_so(tmp_path):
     env_dir.mkdir()
     empty = tmp_path / "nobin"
     empty.mkdir()
+    # a failing Rscript first on PATH hides an installed R, so the test means the same on hosts with R
+    stub = empty / "Rscript"
+    stub.write_text("#!/bin/sh\nexit 1\n")
+    stub.chmod(0o755)
     r = _bash(f'{func}\nrecord_r_versions "{env_dir}"', PATH=f"{empty}:/usr/bin:/bin")
     assert r.returncode == 0, r.stderr
     assert json.loads((env_dir / "R_versions.json").read_text())["DESeq2"] is None
