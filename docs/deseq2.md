@@ -137,8 +137,8 @@ comparison was made at every gene. Like for like, CREST's reported `dispFit` and
 gene-wise values agree to 5.6e-12 over all 16,637 genes whose reported base mean is above zero, and over the 16,623 of them with a
 p-value. Evaluating R's trend at the first-pass base means instead gives a maximum of 5.4e5: for 109 genes (98 with a p-value, all
 replaced in CREST) the base mean reported after outlier replacement is far below the first-pass one (ENSG00000253822: 0.66 and
-0.0065, where the smallest mean in the fit is 0.037), so the curve is evaluated in locfit's quadratic extrapolation, where it
-reaches 3e5; R reports the same post-replacement base means for all genes with a p-value but two. The reported `dispFit` of the two
+0.0065, where the smallest mean in the fit is 0.037), so the two evaluations are made at different points; for some of these
+genes the reported mean lies below the fitted range, in locfit's quadratic extrapolation, where the curve reaches 3e5; R reports the same post-replacement base means for all genes with a p-value but two. The reported `dispFit` of the two
 tools differs over the genes with a p-value in both with median 1.8e-3, 99th percentile 2.0e-2 and maximum 0.22. On the 16,621
 genes whose base means agree the maximum is 0.022, which is the effect of the trend's inputs: 15 first-pass gene-wise estimates
 differ between the tools, R's trend moves by a median 1.8e-3 and at most 2.2e-2 when CREST's values replace R's, and with R's
@@ -147,8 +147,8 @@ ENSG00000211942 (0.16), whose base means differ between the tools (60.0 against 
 are replaced in both tools, those of the second in R only): R's trend at CREST's base mean equals CREST's `dispFit` to 1.3e-4 and
 1.1e-4 and at R's base mean equals R's, so the gap there is the base mean, and why the replaced counts differ was not examined.
 The differences reach the results: `dispersion` differs by up to 0.093 over the genes with a p-value (0.030 where the base means
-agree; 0.093 is ENSG00000211946, whose gene-wise estimate is 6.22 in CREST and 5.69 in R), and the p-value by up to 0.98 relative
-(ENSG00000211974: 3.8e-11 in CREST, 1.5e-9 in R; median 1.8e-5). Among the eight genes with the largest p-value differences the log2
+agree; 0.093 is ENSG00000211946, whose gene-wise estimate is 6.22 in CREST and 5.69 in R), and the p-value by up to a factor of about 40
+(ENSG00000211974: 3.8e-11 in CREST, 1.5e-9 in R; median relative difference 1.8e-5). Among the eight genes with the largest p-value differences the log2
 fold changes are 6.1 to 24.4 and differ between the tools by 0.04 to 1.8, and in seven of them the dispersion and the gene-wise
 estimate agree to four digits (ENSG00000211946 is the eighth): equal dispersions with different fold changes at large fold changes is
 the pattern of the flat likelihood in the coefficients (*Known differences* 2), not of the trend.
