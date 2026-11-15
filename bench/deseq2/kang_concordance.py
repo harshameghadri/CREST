@@ -44,7 +44,8 @@ FLOOR_TOL = 1e-6           # relative slack when deciding that a gene-wise dispe
 THRESH_RTOL = 1e-9         # two filter thresholds are the same if they agree to this
 TAU_QUANTILE = 0.99        # "within the measured tolerance": this quantile of |p_CREST / p_R - 1| over genes with p < 0.1 in both
 MAXIT = 100
-DISP_REPORT_RTOL = 1e-3    # genes whose final dispersion differs by more than this are listed
+DISP_REPORT_RTOL = 1e-3    # genes whose final dispersion differs by more than this are counted ...
+DISP_REPORT_MAX = 200      # ... and the largest differences are listed, at most this many per stratum
 
 R_SCRIPT = r"""
 suppressMessages({library(DESeq2); library(jsonlite)})
@@ -255,11 +256,14 @@ def concordance_stratum(name, counts, obs, genes, design, contrast, ref_levels, 
                  "dispGeneIter_CREST": float(it_c[gi]), "dispGeneIter_R": float(it_r[gi]),
                  "dispFit_CREST": float(f["dispFit"][gi]), "dispFit_R": float(_arr(r["dispFit"])[gi]),
                  "dispOutlier_R": bool(r["dispOutlier"][int(gi)]) if r["dispOutlier"][int(gi)] is not None else None,
-                 "padj_CREST": pad_c[gi], "padj_R": pad_r[gi]} for gi in np.flatnonzero(dd > DISP_REPORT_RTOL)]
+                 "padj_CREST": pad_c[gi], "padj_R": pad_r[gi]}
+                for gi in np.flatnonzero(dd > DISP_REPORT_RTOL)[np.argsort(-dd[dd > DISP_REPORT_RTOL])[:DISP_REPORT_MAX]]]
+    n_disp_above = int((dd > DISP_REPORT_RTOL).sum())
     jb = {a: jitter_band(r, a, rng) for a in ALPHAS}
     nz_r = nz & np.isfinite(_arr(r["dispersion"]))
     fit = {"stratum": name, "R_fitType": diag["fitType"], "CREST_fitType": f["fitType"],
-           "CREST_fit_substituted": bool(f.get("fit_substituted", False)), "R_messages": " | ".join(diag["messages"]),
+           "CREST_fit_substituted": bool(f.get("fit_substituted", False)), "R_messages": " | ".join([diag["messages"]] if isinstance(diag["messages"], str) else diag["messages"]),
+           "CREST_messages": " | ".join(f["messages"]),
            "R_trend": json.dumps(diag.get("trend")), "CREST_trend": json.dumps([float(x) for x in f["trend"]]) if "trend" in f and f["trend"] is not None else None,
            "R_dispPriorVar": diag["dispPriorVar"], "CREST_dispPriorVar": float(f["dispPriorVar"]),
            "filterThreshold_R_a0.1": diag["filter_a10"]["threshold"], "filterThreshold_CREST_a0.1": info_c["filterThreshold"],
@@ -272,7 +276,7 @@ def concordance_stratum(name, counts, obs, genes, design, contrast, ref_levels, 
            "jitter_min_0.05": jb[0.05][0], "jitter_max_0.05": jb[0.05][1], "jitter_min_0.1": jb[0.1][0], "jitter_max_0.1": jb[0.1][1],
            "R_betaNonConv": int((nz & ~(r["betaConv"].fill_null(True).to_numpy().astype(bool))).sum()),
            "CREST_betaNonConv": int((nz & ~np.asarray(f["betaConv"], bool)).sum()),
-           "n_genes_dispersion_rel_diff_above_report_tol": len(disp_out),
+           "n_genes_dispersion_rel_diff_above_report_tol": n_disp_above,
            **filt_check, **numrej,
            "deseq2": diag["deseq2"], "r_version": diag["r_version"]}
     for a_ in ALPHAS:
