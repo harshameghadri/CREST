@@ -217,8 +217,8 @@ No threshold, metric definition or action has been changed. One diagnostic was a
 * 2026-11-15, datasets. (a) neurons_1m: the scanpy stage was attempted on the full file under the 40 GB memory limit of this run and was killed by the limit
   while reading it (exit 137, 1.7 minutes after the start; log in the results archive); the Datasets lane's untested read-back
   estimate for scanpy's reader is about 65 GB at 1,306,127 cells, which is consistent with that. Whether scanpy runs on the full file
-  with a higher limit is a decision for the benchmark protocol. so metrics 1 to 6 were computed on its 500,000-cell real subsample `neurons_1m_sub500k` (seed 0, nested subset of
-  neurons_1m), and metric 5.1 was also computed on the full neurons_1m for CREST alone (scanpy not run). The subsample is named
+  with a higher limit is a decision for the benchmark protocol. Metrics 1 to 6 were therefore computed on its 500,000-cell real subsample `neurons_1m_sub500k` (seed 0, nested subset of
+  neurons_1m), and metric 5.1 was also computed on the full neurons_1m for CREST alone (scanpy was killed by the limit). The subsample is named
   as such wherever it appears. neurons_1m has no curated annotation, so metric 1 does not apply to it. (b) parse_pbmc_1m is the
   rebuilt, nested seed-0 subset of the 9.7M-cell Parse set (file written 2026-11-15 00:08 +01:00, sha256 equal to the dataset
   manifest); every result of this run read that file. (c) covid_stephenson uses the annotation column `cell_type` named in its
