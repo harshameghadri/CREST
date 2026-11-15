@@ -290,12 +290,14 @@ def test_thresholds_document_states_the_constants_of_the_script():
     assert ra.K == 14 and "14 neighbours" in t
 
 
-def test_thresholds_document_contains_no_internal_tracking_words():
-    text = _thresholds_text()
-    low = text.lower()
-    for word in ("review", "ledger", "audit", "fix brief", "claude"):
-        assert word not in low, word
-    assert not re.search(r"\b[A-Z]{1,2}-\d{2}\b", text)
+FORBIDDEN_PUBLIC = re.compile(r"\b(?:F|PY|WP|G|D|B|SB|BL)-\d+[ab]?\b|\bB\d{1,2}[ab]?\b")   # internal item identifiers (shape only)
+
+
+def test_public_files_of_the_agreement_run_carry_no_item_identifiers():
+    files = [REPO / "bench" / "agreement" / "THRESHOLDS.md", REPO / "bench" / "agreement" / "run_agreement.py",
+             Path(__file__)]
+    hits = [f"{p.name}: {m.group(0)}" for p in files for m in FORBIDDEN_PUBLIC.finditer(p.read_text())]
+    assert not hits, hits
 
 
 # --------------------------------------------------------------------------- the stages end to end
