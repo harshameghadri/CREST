@@ -1,0 +1,47 @@
+{
+ "stratum": "IgA plasma cell",
+ "R_fitType": "local",
+ "CREST_fitType": "local",
+ "genes_compared": 16639,
+ "dispFit_rel_diff": {
+  "median": 0.0017782119137853547,
+  "p90": 0.009126504303630267,
+  "p99": 0.01964422899576246,
+  "max": 0.21581973413448763,
+  "n_above_0.0002": 14855,
+  "n_above_0.001": 10571,
+  "n_above_0.01": 1442,
+  "n_above_0.1": 2
+ },
+ "genes_above_0.1": [
+  {
+   "gene": "ENSG00000211942",
+   "rel_diff": 0.16220153490294065,
+   "baseMean_CREST": 64.75175382878402,
+   "baseMean_R": 49.8513921942348,
+   "dispFit_CREST": 0.07020228772107409,
+   "dispFit_R": 0.0604045732282886,
+   "replaced_CREST": false,
+   "replaced_R": true
+  },
+  {
+   "gene": "ENSG00000211946",
+   "rel_diff": 0.21581973413448763,
+   "baseMean_CREST": 60.0053358832748,
+   "baseMean_R": 42.6057859958947,
+   "dispFit_CREST": 0.06722858818668694,
+   "dispFit_R": 0.0552948651014826,
+   "replaced_CREST": true,
+   "replaced_R": true
+  }
+ ],
+ "first_pass_gene_wise": {
+  "n_differ_above_1e-6": 15,
+  "n_differ_entering_or_leaving_the_fit": 1,
+  "R_trend_on_CREST_values_vs_R_values": {
+   "median": 0.0017692102229620588,
+   "max": 0.021635893880840085
+  },
+  "R_trend_on_hybrid_values_vs_R_values_max": 3.460794117948751e-08
+ }
+}

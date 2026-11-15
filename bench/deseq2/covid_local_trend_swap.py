@@ -6,8 +6,8 @@
 CREST's gene-wise dispersions differ for a few genes (``docs/deseq2.md``, known difference 1) the trend differs, most where the
 fit is weighted by large means. This script separates that cause from the trend function itself. For each stratum where R
 substitutes its local trend it takes CREST's first-pass base means and gene-wise dispersions (outlier replacement switched off:
-the trend is fitted before any replacement), gives them to R's ``localDispersionFit`` and compares R's trend at every gene with
-the ``dispFit`` CREST returns; it also takes R's own first-pass values and counts the genes where the two tools' gene-wise
+the trend is fitted before any replacement), gives the genes that enter the trend fit (gene-wise dispersion above ``100 * minDisp``: 6,403 to 9,457 of
+24,245 genes per stratum) to R's ``localDispersionFit`` and compares R's trend at those genes with the ``dispFit`` CREST returns; it also takes R's own first-pass values and counts the genes where the two tools' gene-wise
 estimates differ by more than 1e-6 (relative). Writes ``covid_local_trend_swap.csv``.
 """
 import argparse
@@ -59,7 +59,7 @@ def main():
         if p.returncode:
             raise RuntimeError(p.stderr[-2000:])
         r_trend = pl.read_csv(d / "r_trend.csv")["trend"].to_numpy()
-        # R's trend is evaluated at the genes used for the fit; CREST's dispFit for the same genes
+        # R's trend is evaluated at the genes that enter the fit; CREST's dispFit at the same genes
         rel = np.abs(fit[use] / r_trend - 1)
         r, _ = ti.r_first_pass(genes, counts, obs)
         rg = r["dispGeneEst"].to_numpy()
