@@ -1,0 +1,20 @@
+{
+  "design": "~ batch + condition",
+  "contrast": ["condition", "y", "x"],
+  "levels": {
+    "batch": ["a", "b", "c"],
+    "condition": ["x", "y"]
+  },
+  "R": {
+    "deseq2_version": "1.50.2",
+    "r_version": "R version 4.5.2 (2025-10-31)",
+    "generated_by": "tests/data/make_edge_fixtures.R",
+    "fitType": "parametric",
+    "trend": [4.08782767220839, 3.20680004391315],
+    "priorVar": 0.25,
+    "sf": [0.81671451680136, 0.98056091781096, 1.41421356237309, 0.707106781186548, 1.08719802135612, 1.16740757433902],
+    "cooksCutoff": 99.2493718553309,
+    "min_replicates_for_replace": 7,
+    "messages": []
+  }
+}
