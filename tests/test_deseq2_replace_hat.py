@@ -19,6 +19,8 @@ What is compared:
 * ``maxCooks`` of the first pass (``minReplicatesForReplace = Inf``: no counts are replaced): rows whose fit converges agree to
   round-off; rows that are refit agree to the extent that the refit lands on the same point of a flat likelihood
   (docs/deseq2.md, known difference 2), a deviation that is far smaller than the hat convention makes,
+* not compared: ``maxCooks`` after replacement (the distance of the replaced counts, ~4e-6 on refit rows; relative deviation up to 29.7 on this fixture
+  because it follows the point at which the refit lands on a flat likelihood),
 * the result columns of genes whose fit converged in CREST and whose counts were not replaced in either tool.
 
 Tolerances are named constants: ten times the larger of the deviations measured on macOS arm64 and Linux x86-64
