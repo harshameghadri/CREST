@@ -37,6 +37,8 @@ def _cpu():
 
 @pytest.mark.skipif(not PBMC3K, reason="CREST_TEST_PBMC3K not set")
 def test_zz_host_diag():
+    import sys as _s  # the matrix module caches its measurements; importing it here reuses them
+    import test_scanpy_parity_matrix  # noqa: F401
     import scanpy as sc
     from scipy import stats
     rep = {"host": _cpu()}
@@ -78,4 +80,11 @@ def test_zz_host_diag():
                 worst = (float(d[j]), dict(group=grp, gene=sub["names"][j], crest=float(sub["scores"][j]), scanpy=float(sref[j]), dtype=str(np.asarray(rg["scores"][grp]).dtype), ulp=float(np.spacing(np.float32(abs(sref[j])))), n_ulp=float(d[j] / np.spacing(np.float32(abs(sref[j]))))))
         rep["wilcoxon_identical_worst"] = worst
         rep["wilcoxon_scores_hash_scanpy"] = _h(np.concatenate([np.asarray(rg["scores"][gr], np.float32) for gr in rg["names"].dtype.names]))
+    import sys
+    tm = sys.modules.get("test_scanpy_parity_matrix")
+    if tm is not None:
+        for ds in tm.AVAILABLE:
+            run = tm.measured(ds)
+            rep["metrics_" + ds] = run["metrics"]
+            rep["errors_" + ds] = list(run["errors"])
     warnings.warn("PARITY-DIAG " + json.dumps(rep, default=str))
