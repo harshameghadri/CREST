@@ -87,4 +87,9 @@ def test_zz_host_diag():
             run = tm.measured(ds)
             rep["metrics_" + ds] = run["metrics"]
             rep["errors_" + ds] = list(run["errors"])
-    warnings.warn("PARITY-DIAG " + json.dumps(rep, default=str))
+    line = "PARITY-DIAG " + json.dumps(rep, default=str)
+    ws = os.environ.get("GITHUB_WORKSPACE")
+    if ws:  # the CI uploads pip-freeze.txt as an artifact, which is easier to fetch than the job log
+        with open(os.path.join(ws, "pip-freeze.txt"), "a") as fh:
+            fh.write("\n# " + line + "\n")
+    warnings.warn(line)
