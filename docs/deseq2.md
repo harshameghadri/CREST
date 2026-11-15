@@ -81,8 +81,14 @@ trend (R 4.5.2, DESeq2 1.50.2, locfit 1.5-9.12): over 22 synthetic cases built t
 (ties in the means, 3 to 30 genes, extreme weights, a trend that needs many vertices and pseudo-vertices, a gap in the means,
 outliers, gene-wise values at the floor) and six COVID-19 atlas strata where R's parametric fit fails, the largest relative
 difference of the trend is 4.1e-14 on Linux x86-64 and on macOS arm64, at the means and at points up to 2.5 log units beyond
-their range (`tests/test_deseq2_local_fit.py`, `tests/data/deseq2_local_fit_measurements.json`). On a whole `DESeq()` fixture
-where R falls back (120 genes, 3 v 3) every column agrees to 1e-9 or better, adjusted p-values to 5e-10.
+their range (`tests/test_deseq2_local_fit.py`, `tests/data/deseq2_local_fit_measurements.json`). On two whole `DESeq()` fixtures where R falls back the agreement is as follows. In the first (120 genes, 3 v 3) every column
+agrees to 1e-9 or better, adjusted p-values to 5e-10, and the significant sets are identical. In the second (`edge_sparse_extreme`:
+6 samples, 1,500 genes, counts over six orders of magnitude) the trend agrees to 5e-10 on every gene, and every column agrees
+within 2e-4 on the 1,095 genes whose dispersion is below the cap (10). The other 392 genes sit at the cap, where the likelihood in
+the coefficients is flat: R's optimiser (L-BFGS-B) and CREST's (Newton) stop at different places, fold changes differ by up to 3.7
+log2 units with equal standard errors (*Known differences* 2), and the changed p-values move the `baseMean` threshold of
+independent filtering, so adjusted p-values are missing for 1,021 genes in CREST and 820 in R. The significant sets then differ:
+CREST 92, R 89, 85 shared at padj < 0.1, and 77, 78 and 77 at padj < 0.05.
 
 Not implemented: `lfcShrink` (apeglm/ashr/normal), `betaPrior=TRUE`, `glmGamPoi`, observation weights, `lfcThreshold`,
 interaction terms in formulas (pass `design_matrix=` instead).
@@ -121,11 +127,17 @@ inputs to R and CREST. Results are in `bench/deseq2/results/`.
   identical in 28 at padj < 0.1 and in 29 at padj < 0.05. The exceptions at 0.1: "dendritic cell, human" (CREST 1,502, R 1,499,
   1,499 shared; the three CREST-only genes sit at the threshold) and "myeloid dendritic cell" (CREST 2,110, R 1,858, 1,856
   shared at 0.1; 1,584, 1,436 and 1,432 at 0.05; independent filtering picks the `baseMean` threshold 0.344 in CREST and 0.438
-  in R because the two trends differ). The trend function itself is not the source: R's `localDispersionFit` given CREST's
-  gene-wise dispersions reproduces CREST's fitted dispersions to 5.8e-15 over every gene of eight of these strata
-  (`bench/deseq2/covid_local_trend_swap.py`). What remains between the tools' fitted dispersions (median of the largest
-  difference per stratum 3e-5, at most 0.22 in "IgA plasma cell") comes from 4 to 281 genes per stratum whose gene-wise
-  estimates differ (*Known differences* 1).
+  in R because the two trends differ). R's `localDispersionFit` given CREST's gene-wise dispersions reproduces CREST's fitted dispersions to 5.8e-15 at the genes
+that enter the trend fit (gene-wise dispersion above 100 * `minDisp`: 6,403 to 9,457 of the 24,245 genes per stratum) in eight of
+these strata (`bench/deseq2/covid_local_trend_swap.py`), so the trend function is not what differs. The fitted dispersions of
+the two tools do differ in some strata. Over the 11 strata where R uses its local trend, the largest relative difference of the
+fitted dispersion per stratum is at most 2e-9 in three, 3e-5 or less in three more, and between 0.011 and 0.22 in five. In
+"IgA plasma cell" (`bench/deseq2/covid_trend_gap.py`) the difference has median 1.8e-3, 99th percentile 2.0e-2 and maximum 0.22
+over 16,639 genes. It is above 0.1 at two genes only, ENSG00000211946 (0.22) and ENSG00000211942 (0.16), whose base means differ
+between the tools (60.0 against 42.6 and 64.8 against 49.9) and the second of which has its counts replaced in R and not in
+CREST; why those base means differ was not examined. The broad part of the difference comes from the gene-wise inputs: 15
+first-pass gene-wise estimates differ between the tools, R's trend moves by a median 1.8e-3 and at most 2.2e-2 when CREST's
+values replace R's, and with R's values put back at those 15 genes alone it is reproduced to 3.5e-8.
 * `tests/test_crest.py` and `tests/test_deseq2_r_parity.py` check against stored R output
   (`tests/data/`), so CI guards R-parity without needing R. The R-parity file pins eleven
   count tables made with R 1.50.2 (scripts `make_pin_inputs.py` and `make_pin_fixtures.R`
