@@ -279,9 +279,9 @@ def concordance_stratum(name, counts, obs, genes, design, contrast, ref_levels, 
            "R_betaNonConv": int((nz & ~(r["betaConv"].fill_null(True).to_numpy().astype(bool))).sum()),
            "CREST_betaNonConv": int((nz & ~np.asarray(f["betaConv"], bool)).sum()),
            # genes whose counts were replaced in each tool, and genes on which the two tools disagree about it
-           "R_replaced": int(r["replace"].fill_null(False).to_numpy().astype(bool).sum()),
+           "R_replaced": int(r["replace"].cast(pl.Boolean).fill_null(False).to_numpy().astype(bool).sum()),
            "CREST_replaced": int(np.asarray(f["replace"], bool).sum()),
-           "replaced_flag_mismatch": int((r["replace"].fill_null(False).to_numpy().astype(bool) != np.asarray(f["replace"], bool)).sum()),
+           "replaced_flag_mismatch": int((r["replace"].cast(pl.Boolean).fill_null(False).to_numpy().astype(bool) != np.asarray(f["replace"], bool)).sum()),
            "n_genes_dispersion_rel_diff_above_report_tol": n_disp_above,
            **filt_check, **numrej,
            "deseq2": diag["deseq2"], "r_version": diag["r_version"]}
