@@ -1,0 +1,180 @@
+{
+ "description": "Deviation of CREST from the stored R 1.50.2 output for the replace_hat fixture (|crest - R| / (1e-12 + |R|); [number of genes with a differing NA status, largest deviation]; see tests/test_deseq2_replace_hat.py). Tolerances in the test are 10 x the larger of the two platforms, rounded up to one digit. 'before_fix' is the build without the last-IRLS hat for refit rows (release/0.5 f6af6a3), measured on arm64.",
+ "platforms": {
+  "arm64": "macOS arm64 (Apple silicon), wheel built from fix/deseq2-replace-outliers",
+  "x86": "Linux x86-64 (AMD Threadripper 3975WX), wheel built from fix/deseq2-replace-outliers with maturin build"
+ },
+ "arm64": {
+  "n_genes": 750,
+  "n_replaced_R": 337,
+  "n_replaced_CREST": 337,
+  "replace_flag_mismatch": 0,
+  "n_nonconverged_irls": 154,
+  "baseMean": [
+   0,
+   5.370255352690798e-15
+  ],
+  "dispersion": [
+   0,
+   1.1302432087766508e-09
+  ],
+  "maxCooks_first_pass_converged": [
+   0,
+   5.881737064253519e-11
+  ],
+  "maxCooks_first_pass_refit": [
+   0,
+   0.0011560510816353022
+  ],
+  "n_refit_first_pass": 313,
+  "n_rest": 377,
+  "rest": {
+   "log2FoldChange": [
+    0,
+    4.470081701643743e-11
+   ],
+   "lfcSE": [
+    0,
+    3.1446162944131316e-10
+   ],
+   "stat": [
+    0,
+    3.591632024865801e-10
+   ],
+   "pvalue": [
+    0,
+    3.5891253647532954e-10
+   ],
+   "padj": [
+    0,
+    0.03212763335488643
+   ],
+   "dispMAP": [
+    0,
+    9.455788801214768e-10
+   ],
+   "dispersion": [
+    0,
+    9.455788801214768e-10
+   ],
+   "dispFit": [
+    0,
+    7.735915596581488e-09
+   ]
+  }
+ },
+ "x86": {
+  "n_genes": 750,
+  "n_replaced_R": 337,
+  "n_replaced_CREST": 337,
+  "replace_flag_mismatch": 0,
+  "n_nonconverged_irls": 154,
+  "baseMean": [
+   0,
+   5.370255352690798e-15
+  ],
+  "dispersion": [
+   0,
+   1.1303299118414808e-09
+  ],
+  "maxCooks_first_pass_converged": [
+   0,
+   5.882123825259587e-11
+  ],
+  "maxCooks_first_pass_refit": [
+   0,
+   0.0011560510816353022
+  ],
+  "n_refit_first_pass": 313,
+  "n_rest": 377,
+  "rest": {
+   "log2FoldChange": [
+    0,
+    4.47040381552501e-11
+   ],
+   "lfcSE": [
+    0,
+    3.1448700111377997e-10
+   ],
+   "stat": [
+    0,
+    3.591918814760555e-10
+   ],
+   "pvalue": [
+    0,
+    3.5893625903272104e-10
+   ],
+   "dispMAP": [
+    0,
+    9.45653078789063e-10
+   ],
+   "dispersion": [
+    0,
+    9.45653078789063e-10
+   ],
+   "dispFit": [
+    0,
+    7.73653371284102e-09
+   ]
+  }
+ },
+ "before_fix": {
+  "n_genes": 750,
+  "n_replaced_R": 337,
+  "n_replaced_CREST": 336,
+  "replace_flag_mismatch": 1,
+  "n_nonconverged_irls": 154,
+  "baseMean": [
+   0,
+   1.4224762516266427
+  ],
+  "dispersion": [
+   0,
+   0.1516004118045609
+  ],
+  "maxCooks_first_pass_converged": [
+   0,
+   5.881737064253519e-11
+  ],
+  "maxCooks_first_pass_refit": [
+   0,
+   0.04343367714114316
+  ],
+  "n_refit_first_pass": 313,
+  "n_rest": 377,
+  "rest": {
+   "log2FoldChange": [
+    0,
+    4.470081701643743e-11
+   ],
+   "lfcSE": [
+    0,
+    3.1446162944131316e-10
+   ],
+   "stat": [
+    0,
+    3.591632024865801e-10
+   ],
+   "pvalue": [
+    0,
+    3.5891253647532954e-10
+   ],
+   "padj": [
+    0,
+    0.03212763335488643
+   ],
+   "dispMAP": [
+    0,
+    9.455788801214768e-10
+   ],
+   "dispersion": [
+    0,
+    9.455788801214768e-10
+   ],
+   "dispFit": [
+    0,
+    7.735915596581488e-09
+   ]
+  }
+ }
+}

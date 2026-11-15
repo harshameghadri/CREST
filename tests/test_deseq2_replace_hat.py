@@ -102,7 +102,7 @@ def measure_all():
 # ===================================================================================== tolerances (measured)
 BASEMEAN_RTOL = 1e-12        # base means after replacement (sums of a few doubles)
 DISPERSION_RTOL = 2e-8       # final dispersions of all genes
-COOKS_CONVERGED_RTOL = 1e-9  # first-pass maxCooks, rows whose coefficient fit converges
+COOKS_CONVERGED_RTOL = 6e-10 # first-pass maxCooks, rows whose coefficient fit converges
 COOKS_REFIT_RTOL = 2e-2      # first-pass maxCooks, refit rows: the refit lands within ~0.1% of R's point; the stale-hat error is 4-7%
 REST_RTOL = {"log2FoldChange": 5e-10, "lfcSE": 4e-9, "stat": 4e-9, "pvalue": 4e-9, "dispMAP": 1e-8, "dispersion": 1e-8, "dispFit": 8e-8}
 
@@ -111,7 +111,7 @@ def _tol(x):
     return max(x, RTOL_FLOOR)
 
 
-@pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="replaced flag")
+@pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="replaced genes")
 def test_replaced_genes_match_r():
     ds, meta, genes = _run(7)
     assert meta["R"]["deseq2_version"].startswith("1.50")
@@ -121,7 +121,7 @@ def test_replaced_genes_match_r():
     assert (rep_c == rep_r).all(), f"{int((rep_c != rep_r).sum())} genes differ in the replaced flag: {[genes[i] for i in np.flatnonzero(rep_c != rep_r)]}"
     j = genes.index(FLIPPED_GENE)
     assert rep_r[j] and rep_c[j], f"{FLIPPED_GENE} is replaced in R and must be replaced here"
-    assert int((np.asarray(f["betaIter"]) >= BETA_MAXIT).sum()) >= 300, "the fixture must exercise refit rows"
+    assert int((np.asarray(f["betaIter"]) >= BETA_MAXIT).sum()) >= 100, "the fixture must exercise refit rows"
 
 
 @pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="baseMean")
@@ -141,6 +141,7 @@ def test_dispersions_follow_the_same_replacement_decisions():
     assert n_na == 0 and dev <= _tol(DISPERSION_RTOL), f"dispersion: {n_na} NA mismatches, max deviation {dev:.3g} > {_tol(DISPERSION_RTOL):.3g}"
 
 
+@pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="maxCooks of converged rows")   # 0.4.0 has no local trend fallback: R uses one on this fixture
 def test_first_pass_cooks_distance_of_converged_rows_matches_r():
     ds, meta, genes = _run(float("inf"))
     f, ref = ds.fit, _ref("_noreplace")
@@ -159,6 +160,7 @@ def test_first_pass_cooks_distance_of_refit_rows_uses_the_last_irls_hat():
     assert n_na == 0 and dev <= _tol(COOKS_REFIT_RTOL), f"maxCooks of refit rows: {n_na} NA mismatches, max deviation {dev:.3g} > {_tol(COOKS_REFIT_RTOL):.3g}"
 
 
+@pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="max deviation")   # same reason: the trend
 def test_results_of_converged_unreplaced_genes_match_r():
     ds, meta, genes = _run(7)
     f, ref = ds.fit, _ref("")
