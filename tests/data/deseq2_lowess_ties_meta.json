@@ -1,0 +1,5 @@
+{
+  "r_version": "R version 4.5.2 (2025-10-31)",
+  "generated_by": "tests/data/make_edge_fixtures.R",
+  "note": "lowess(x, y, f, iter, delta)$y and fitted(loess(y ~ x, span, degree = 2))"
+}

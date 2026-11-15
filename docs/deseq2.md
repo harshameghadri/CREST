@@ -74,10 +74,18 @@ inputs to R and CREST. Results are in `bench/deseq2/results/`.
   contrast, 2×8 and 2×12 with outlier replacement): size factors, dispersions,
   log2 fold changes, standard errors and p-values agree to ~1e-9 relative. The
   significant gene sets are identical.
-* Kang 2018: identical significant sets (padj < 0.1) in 6 of 8 cell types. In
-  FCGR3A+ monocytes 1468/1469 match, in CD4 T cells 1350/1365. Every difference
-  traces to a few genes at the dispersion floor (*Known differences* 1).
-  For comparison, pydeseq2's number of calls differs from R's by 3–25% per cell
+* Kang 2018 (R 4.5.2 / DESeq2 1.50.2, BiocParallel 1.44.0; CREST built from release/0.5 at
+  commit d6a1f16, Linux x86-64; `bench/deseq2/kang_concordance.py`): identical significant
+  sets in 6 of 8 cell types at padj < 0.1 and at padj < 0.05. In CD4 T cells CREST calls
+  1356 genes at padj < 0.1 and R 1365, with 1350 shared (15 R-only, 6 CREST-only); at
+  padj < 0.05 the numbers are 1107 and 1108 with 1104 shared. In FCGR3A+ monocytes CREST
+  calls 1468 and R 1469 at padj < 0.1 (1468 shared; the one gene only R calls has padj
+  0.1004 in CREST and 0.0999 in R) and both call 1213 at padj < 0.05. The 21 + 7
+  discordant CD4 T genes are all removed by independent filtering choosing a different
+  `baseMean` threshold in the two tools, which follows from a slightly different
+  dispersion trend (*Known differences* 1). The script re-measures these figures, and
+  also lists every discordant gene with both adjusted p-values, both dispersions and its
+  cause. For comparison, pydeseq2's number of calls differs from R's by 3–25% per cell
   type (e.g. 1630 vs 1365 in CD4 T cells).
 * `tests/test_crest.py` and `tests/test_deseq2_r_parity.py` check against stored R output
   (`tests/data/`), so CI guards R-parity without needing R. The R-parity file pins eleven
@@ -89,6 +97,13 @@ inputs to R and CREST. Results are in `bench/deseq2/results/`.
   Each tolerance is ten times the larger of the deviations measured on Linux x86-64 and macOS
   arm64; what is excluded from a comparison (gene-wise dispersions on the flat part of the
   likelihood, Cook's distances above the cut-off) is stated in the test module.
+* `tests/test_deseq2_edge_pins.py` adds four more R-pinned cases (scripts
+  `make_edge_inputs.py` and `make_edge_fixtures.R`): three groups of 8, 4 and 8 samples with
+  outliers inside and outside the groups that are replaced (at `minReplicatesForReplace` 7, 4
+  and 9), two sparse 6-sample designs in which hundreds of gene-wise dispersions stop at
+  `maxit` (one where R falls back to a local trend), and random vectors with tied x for
+  `lowess` and `loess`. No gene fails the beta fit in R in these data, so a non-converged
+  beta fit is not pinned.
 
 ## Speed
 
@@ -106,9 +121,21 @@ re-run; the results will be published in {doc}`benchmarks`.
    That is larger than the likelihood differences it compares, so R's line
    search ends in numerical noise. CREST evaluates the same quantities
    without cancellation (Stirling-remainder and `log1p` forms), so a few such
-   genes (4 of 15,720 in Kang CD4 T cells) can land elsewhere on the flat
-   region. When one of them crosses the `1e-6` threshold for inclusion in the
-   trend fit, the trend shifts by ~0.1% and a few borderline calls flip.
+   genes can land elsewhere on the flat region. `dispGeneIter` is not comparable
+   there: in Kang CD4 T cells it differs on 11,567 of 15,720 genes, and all of
+   them sit at the floor in both tools. A gene-wise estimate above `1e-6` enters
+   the trend fit, so when a gene crosses that threshold in one tool only, the
+   trend moves (coefficients by 1e-4 to 1e-3, fitted dispersions by ~0.1%, prior
+   variance by ~1%), the number of rejections at each filter quantile changes,
+   independent filtering picks another `baseMean` threshold (CD4 T cells: 1.81 in R,
+   1.56 in CREST) and borderline calls flip. In CD4 T cells two genes that exhaust
+   `maxit` are at 1e-8 in R and at 2.6e-5 and 7e-6 in CREST (adjusted
+   log-likelihood differing by 6e-5 and 4e-6). In FCGR3A+ monocytes one gene is not at the
+   floor: R stops at 2e-6 after 23 iterations, where the adjusted log-likelihood is 1.1
+   below its value at CREST's 0.25. Replacing, in R, the gene-wise estimates of the four
+   genes per cell type that differ by CREST's values reproduces CREST's trend to 1e-13
+   and removes every discordant call at padj < 0.05 and < 0.1 in both cell types
+   (`bench/deseq2/kang_trend_swap.py`).
 2. **Rows IRLS does not converge on.** R refits them with L-BFGS-B (`optim`),
    CREST with Newton's method on the same concave penalised likelihood and the
    same bounds. The optimum is the same, but R's optimizer tolerance leaves
@@ -153,7 +180,8 @@ re-run; the results will be published in {doc}`benchmarks`.
 
 ## Reference version
 
-New fixtures and the numbers in this page refer to R 4.5.2 / DESeq2 1.50.2. The older
+New fixtures and the numbers in this page refer to R 4.5.2 / DESeq2 1.50.2 (the Kang
+comparison above was run with BiocParallel 1.44.0). The older
 fixtures (`deseq2_{two_vs_two,three_level_batch,outlier_replacement}_*`, the LRT outputs from
 `make_lrt_fixtures.R`) were made with DESeq2 1.42 and stay in the tests. Known differences
 between the two R versions, so that they are not mistaken for CREST differences:

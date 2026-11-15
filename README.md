@@ -59,7 +59,7 @@ Building from source needs a Rust toolchain and [maturin](https://www.maturin.rs
 The test suite (`tests/test_crest.py`, run by CI on pull requests and on pushes to `main`)
 checks parity with the reference implementation for HVG selection (`seurat` and `seurat_v3`
 vs scanpy), `rank_genes_groups` (t-test and Wilcoxon vs scanpy), `score_genes` (vs scanpy),
-`scale` + PCA (vs dense NumPy), DESeq2 Wald and LRT (vs stored R DESeq2 1.42 output), the
+`scale` + PCA (vs dense NumPy), DESeq2 Wald and LRT (vs stored R DESeq2 output, R 4.5.2 / DESeq2 1.50.2; two LRT fixtures from 1.42 are kept), the
 loess port (vs `skmisc`) and `threshold_minimum` (vs `skimage`). Harmony, Scrublet, ingest,
 neighbours, Leiden and UMAP are tested for expected behaviour (batch mixing, recovery of
 planted clusters, doublets and labels, kNN recall, determinism) and validated against their
@@ -77,7 +77,7 @@ parameters:
 | `umap` | equal kNN preservation / silhouette (stochastic layout) |
 | `rank_genes_groups` t-test, Wilcoxon | t-test scores within 1e-4; Wilcoxon scores within 3e-4 on PBMC 3k when scanpy normalises the counts itself (the two float32 normalisations differ by one ulp for many entries, which changes exact ties) and within 1e-6 on identical input values; p-values within 4e-4 and the same log fold-changes |
 | `score_genes` | identical, including scanpy's control-gene sampling (within 3e-7) |
-| `DESeq2` (pseudobulk) | R DESeq2 1.42: size factors, dispersions, log2FC, p-values within ~1e-9 on simulated designs; identical significant sets in 6 of 8 Kang 2018 cell types; FCGR3A+ monocytes 1468/1469, CD4 T cells 1350 of R's 1365 shared (21 discordant genes) ([docs/deseq2.md](https://github.com/harshameghadri/CREST/blob/main/docs/deseq2.md)); LRT statistics within 1e-6 |
+| `DESeq2` (pseudobulk) | R 4.5.2 / DESeq2 1.50.2: size factors, dispersions, log2FC, p-values within ~1e-9 on simulated designs; identical significant sets (padj < 0.1) in 6 of 8 Kang 2018 cell types, CD4 T cells 1356 (CREST) vs 1365 (R) with 1350 shared, FCGR3A+ monocytes 1468 vs 1469 with 1468 shared ([docs/deseq2.md](https://github.com/harshameghadri/CREST/blob/main/docs/deseq2.md)); LRT statistics within 1e-6 |
 | `highly_variable_genes(flavor="seurat_v3")` | identical gene sets and ranks, `variances_norm` within 1e-14 (loess port matches `skmisc` to 1e-14) |
 | `harmony` | same integration quality as harmonypy (iLISI 1.81 vs 1.81, cLISI 1.01, ARI 0.82; measured with harmonypy 2.0.2, the compared release is now harmonypy 2.1.0) at 3.5× the speed; neighbourhoods as close to harmonypy's as two harmonypy seeds are to each other |
 | `scrublet` | AUROC 0.863 vs 0.863 (scanpy 1.11) on Kang 2018 demuxlet doublets, 49× faster (measured with `include_self_neighbor=False`) |
@@ -121,8 +121,8 @@ selection (about 2× slower above 10k cells) or for PCA and UMAP on very small d
 (PBMC 3k). Full tables, including every step
 where CREST loses: [docs/benchmarks.md](https://github.com/harshameghadri/CREST/blob/main/docs/benchmarks.md). The
 paper benchmark (six real datasets plus a synthetic scaling series, 5 repeats,
-thread scaling, per-core CPU/clock/memory timelines, accuracy against scanpy,
-bootstrap confidence intervals) runs on your own machine with one command:
+thread scaling, per-core CPU/clock/memory timelines, accuracy against scanpy; medians
+and min-max ranges over the repeats, no bootstrap) runs on your own machine with one command:
 
 ```bash
 cd /path/with/space                            # everything goes under ./crest-bench, nothing in $HOME
