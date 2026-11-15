@@ -41,7 +41,7 @@ sphinx-build -n -b html docs docs/_build/html     # optional: also report broken
 | `crest/ingest.py` | projection onto a reference PCA, label and UMAP transfer |
 | `crest/_loess.py` | port of netlib `dloess` (the loess behind R and skmisc), for `seurat_v3` |
 | `src/kernels.rs` | fused chunk kernels over a `ChunkView` (QC, gene stats, Gram / projection, group sums, Wilcoxon) |
-| `src/knn.rs` | kNN: exact tiled GEMM screen with exact re-comparison on mean-centred coordinates; IVF + NN-descent above 20k cells (`nprobe` grows with the number of lists); `knn_query` (reference → query, every query probes the lists nearest to itself) |
+| `src/knn.rs` | kNN: exact tiled GEMM screen with exact re-comparison on mean-centred coordinates; IVF + NN-descent above 20k cells (every cell probes the `nprobe` lists nearest to itself; `nprobe` grows slowly with the number of lists); `knn_query` (reference → query, every query probes the lists nearest to itself) |
 | `src/leiden.rs` | Leiden (Traag 2019) + parallel resolution sweep |
 | `src/umap/` | fuzzy simplicial set, spectral init, parallel SGD |
 | `src/harmony.rs` | Harmony (harmony2 algorithm) |

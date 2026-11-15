@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 use rayon::prelude::*;
 
 use crate::kernels::{self, Cells, ChunkView, Transform};
-use crate::knn::{first_non_finite_row, knn, knn_plan, KnnGraph, Points};
+use crate::knn::{first_non_finite_row, knn_plan_with, knn_with, KnnGraph, Points};
 use numpy::{PyReadwriteArrayDyn, PyReadonlyArrayDyn};
 
 fn not_c_contiguous(name: &str) -> PyErr {
@@ -105,20 +105,25 @@ fn undirected(n: usize, rows: &[u32], cols: &[u32], w: &[f32]) -> PyResult<Vec<(
 }
 
 /// k nearest neighbours of each row of a float32 (n, d) array, self excluded.
-/// Returns (indices uint32 (n, k), distances float32 (n, k)).
+/// Returns (indices uint32 (n, k), distances float32 (n, k)). `nprobe` sets the number of inverted lists
+/// each cell probes in the approximate search (default: a rule of the number of lists).
 #[pyfunction]
-#[pyo3(signature = (data, k, exact=None, seed=0))]
+#[pyo3(signature = (data, k, exact=None, seed=0, nprobe=None))]
 fn knn_graph<'py>(
     py: Python<'py>,
     data: PyReadonlyArray2<'py, f32>,
     k: usize,
     exact: Option<bool>,
     seed: u64,
+    nprobe: Option<usize>,
 ) -> PyResult<(Bound<'py, PyArray2<u32>>, Bound<'py, PyArray2<f32>>)> {
     let (n, d) = (data.shape()[0], data.shape()[1]);
     let slice = c_slice(&data, "data")?;
     if k == 0 {
         return Err(pyo3::exceptions::PyValueError::new_err("k must be at least 1 (neighbours excluding the point itself)"));
+    }
+    if nprobe == Some(0) {
+        return Err(pyo3::exceptions::PyValueError::new_err("nprobe must be at least 1"));
     }
     if n == 0 {
         return Ok((PyArray1::from_vec_bound(py, Vec::new()).reshape([0, 0])?, PyArray1::from_vec_bound(py, Vec::new()).reshape([0, 0])?));
@@ -132,7 +137,7 @@ fn knn_graph<'py>(
     if let Some(r) = first_non_finite_row(slice, d) {
         return Err(pyo3::exceptions::PyValueError::new_err(format!("data contains NaN or Inf (first bad row: {})", r)));
     }
-    let g = guarded(py, || knn(Points::new(slice, n, d), k, exact, seed))?;
+    let g = guarded(py, || knn_with(Points::new(slice, n, d), k, exact, seed, nprobe))?;
     let kk = g.k;
     let idx = PyArray1::from_vec_bound(py, g.indices).reshape([n, kk])?;
     let dist = PyArray1::from_vec_bound(py, g.distances).reshape([n, kk])?;
@@ -142,9 +147,9 @@ fn knn_graph<'py>(
 /// The search `knn_graph` runs for `n` points: `(exact, nprobe, n_lists)`;
 /// `nprobe` and `n_lists` are 0 for the exact search.
 #[pyfunction]
-#[pyo3(signature = (n, exact=None))]
-fn knn_plan_info(n: usize, exact: Option<bool>) -> (bool, usize, usize) {
-    let plan = knn_plan(n, exact);
+#[pyo3(signature = (n, exact=None, nprobe=None))]
+fn knn_plan_info(n: usize, exact: Option<bool>, nprobe: Option<usize>) -> (bool, usize, usize) {
+    let plan = knn_plan_with(n, exact, nprobe);
     (plan.exact, plan.nprobe, plan.n_lists)
 }
 
