@@ -154,11 +154,13 @@ PDF/PNG figures and a `.tar.gz`. The pieces live in `bench/paper/`
   screens candidates on mean-centred coordinates, and candidates that could enter a
   neighbour list are compared by their exact distance, so the neighbours do not depend on
   the offset of the embedding. Above 20k cells an inverted-file index — cells bucketed by
-  k-means, each bucket searched against its nearest buckets (about 1.5 √(number of
-  buckets), at least 20, like cell lists in molecular dynamics) — polished by NN-descent.
-  `pp.neighbors` warns when it switches to the index and records `knn_method` and `nprobe`
-  in `uns["neighbors"]["params"]`; `exact=True` forces the exact search. Recall against exact
-  search is reported with the benchmark results, which are being regenerated.
+  k-means, every cell searched against the `nprobe` buckets nearest to the cell itself
+  (like cell lists in molecular dynamics) — polished by NN-descent. Against exact search the
+  mean recall of the 14 neighbours was at least 0.998 on eight data sets from 28,871 to 9.7
+  million cells, with at most 0.1% of cells below 0.8 (table in the API reference).
+  `pp.neighbors` warns when it switches to the index, takes `nprobe` for a higher recall and
+  records `knn_method`, `nprobe` and `n_lists` in `uns["neighbors"]["params"]`; `exact=True`
+  forces the exact search.
 * **UMAP.** umap-learn's objective and default parameters, with CREST's own spectral
   initialisation (restarted Lanczos to a residual tolerance, per connected component). With more than one thread (and ≥ 1,000 cells) it is optimised in
   parallel by domain decomposition: each thread owns a range of cells, writes only those, and reads the rest

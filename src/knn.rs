@@ -5,8 +5,9 @@
 //!
 //! * small n: exact brute force, tiled so memory stays O(tile^2).
 //! * large n: an inverted-file index (IVF) in the spirit of cell lists in
-//!   molecular dynamics: points are bucketed by k-means, and each bucket is
-//!   searched only against its `nprobe` spatially nearest buckets. The
+//!   molecular dynamics: points are bucketed by k-means, and every point is
+//!   searched against the `nprobe` buckets whose centroids are nearest to the
+//!   point itself (a point near the edge of its bucket has most neighbours in other buckets). The
 //!   approximate graph is then polished with one round of NN-descent
 //!   ("a neighbour of a neighbour is likely a neighbour", Dong et al. 2011).
 //!
@@ -127,28 +128,40 @@ pub struct KnnPlan {
 
 /// Number of inverted lists used for `n` points.
 fn ivf_lists(n: usize) -> usize {
-    (n / 512).clamp(IVF_MIN_LISTS, 8192)
+    (n / IVF_LIST_SIZE).clamp(IVF_MIN_LISTS, 8192)
 }
 
-/// Smallest number of lists probed by the IVF search.
-const IVF_MIN_NPROBE: usize = 20;
+/// Target number of points per inverted list of the IVF search.
+const IVF_LIST_SIZE: usize = 512;
 
-/// Lists probed per list of the index. The number of lists grows with n, so a
-/// fixed probe count would search a shrinking fraction of the data and recall
-/// would fall with n; `max(20, ceil(1.5 sqrt(nc)))` keeps it above 0.999 (mean,
-/// with at most 0.1% of cells below 0.8) from 200k to 1M cells on scale-ups of a
-/// PBMC embedding.
+/// Smallest number of lists a cell probes in the IVF search.
+const IVF_MIN_NPROBE: usize = 16;
+
+/// Cells of one list are searched together against the union of the lists they probe; a group is closed
+/// when that union would exceed this many times `nprobe` lists (larger groups make larger GEMMs).
+const IVF_JOB_LISTS_PER_PROBE: usize = 6;
+
+/// Lists probed per cell: the `nprobe` lists whose centroids are nearest to the cell. The number of lists
+/// grows with n, so a fixed count would search a shrinking fraction of the data; the rule is
+/// `max(16, ceil(0.5 sqrt(n_lists)))`.
 fn ivf_nprobe(nc: usize) -> usize {
-    ((1.5 * (nc as f64).sqrt()).ceil() as usize).max(IVF_MIN_NPROBE)
+    ((0.5 * (nc as f64).sqrt()).ceil() as usize).max(IVF_MIN_NPROBE)
 }
 
 /// The search `knn(.., n points, exact, ..)` will run.
+#[cfg(test)]
 pub fn knn_plan(n: usize, exact: Option<bool>) -> KnnPlan {
+    knn_plan_with(n, exact, None)
+}
+
+/// [`knn_plan`] with the number of lists probed per cell set by the caller (clamped to the number of lists;
+/// `None` uses the rule of [`ivf_nprobe`]).
+pub fn knn_plan_with(n: usize, exact: Option<bool>, nprobe: Option<usize>) -> KnnPlan {
     if exact.unwrap_or(n <= EXACT_MAX_POINTS) || n < IVF_MIN_LISTS {
         KnnPlan { exact: true, nprobe: 0, n_lists: 0 }
     } else {
         let nc = ivf_lists(n);
-        KnnPlan { exact: false, nprobe: ivf_nprobe(nc).min(nc), n_lists: nc }
+        KnnPlan { exact: false, nprobe: nprobe.unwrap_or_else(|| ivf_nprobe(nc)).clamp(1, nc), n_lists: nc }
     }
 }
 
@@ -245,6 +258,83 @@ fn search_block(
                     }
                 }
             }
+        }
+    }
+}
+
+/// Points reordered list by list, so a list is a contiguous block of rows for the GEMM (no gather per job).
+struct IvfLayout {
+    off: Vec<usize>,
+    ids: Vec<u32>,
+    data: Vec<f32>,
+    norms: Vec<f32>,
+}
+
+impl IvfLayout {
+    fn new(cpts: Points, cnorms: &[f32], lists: &[Vec<u32>]) -> Self {
+        let d = cpts.d;
+        let mut off = vec![0usize; lists.len() + 1];
+        for (c, l) in lists.iter().enumerate() {
+            off[c + 1] = off[c] + l.len();
+        }
+        let ids: Vec<u32> = lists.iter().flat_map(|l| l.iter().copied()).collect();
+        let mut data = vec![0.0f32; ids.len() * d];
+        data.par_chunks_mut(d).zip(ids.par_iter()).for_each(|(o, &i)| o.copy_from_slice(cpts.row(i as usize)));
+        let norms: Vec<f32> = ids.par_iter().map(|&i| cnorms[i as usize]).collect();
+        IvfLayout { off, ids, data, norms }
+    }
+}
+
+/// [`search_block`] against whole inverted lists of an [`IvfLayout`].
+#[allow(clippy::too_many_arguments)]
+fn search_lists(
+    pts: Points,
+    cpts: Points,
+    cnorms: &[f32],
+    lay: &IvfLayout,
+    queries: &[u32],
+    lists: &[u32],
+    k: usize,
+    topd: &mut [f32],
+    topi: &mut [u32],
+) {
+    let d = pts.d;
+    let coef = gemm_slack_coef(d);
+    let mut qbuf = vec![0.0f32; queries.len() * d];
+    for (r, &q) in queries.iter().enumerate() {
+        qbuf[r * d..(r + 1) * d].copy_from_slice(cpts.row(q as usize));
+    }
+    let mut prod = vec![0.0f32; queries.len() * TILE];
+    for &o in lists {
+        let (lo, hi) = (lay.off[o as usize], lay.off[o as usize + 1]);
+        let mut a = lo;
+        while a < hi {
+            let b = (a + TILE).min(hi);
+            let m = b - a;
+            let lhs = MatRef::from_row_major_slice(&qbuf, queries.len(), d);
+            let rhs = MatRef::from_row_major_slice(&lay.data[a * d..b * d], m, d);
+            let dst = MatMut::from_row_major_slice_mut(&mut prod[..queries.len() * m], queries.len(), m);
+            matmul(dst, Accum::Replace, lhs, rhs.transpose(), 1.0f32, Par::Seq);
+            for (r, &q) in queries.iter().enumerate() {
+                let qn = cnorms[q as usize];
+                let row = &prod[r * m..(r + 1) * m];
+                let (td, ti) = (&mut topd[r * k..(r + 1) * k], &mut topi[r * k..(r + 1) * k]);
+                for t in 0..m {
+                    let c = lay.ids[a + t];
+                    if c == q {
+                        continue;
+                    }
+                    let cn = lay.norms[a + t];
+                    let screened = qn + cn - 2.0 * row[t];
+                    if screened - coef * (qn + cn) < td[k - 1] {
+                        let dist = sq_dist(pts.row(q as usize), pts.row(c as usize));
+                        if dist < td[k - 1] {
+                            push_topk(td, ti, dist, c);
+                        }
+                    }
+                }
+            }
+            a = b;
         }
     }
 }
@@ -352,33 +442,41 @@ fn knn_ivf(pts: Points, cpts: Points, cnorms: &[f32], k: usize, nprobe: usize, s
         lists[c as usize].push(i as u32);
     }
 
-    // For each bucket, its nprobe nearest buckets by centroid distance.
-    let cp = Points::new(&cent, nc, d);
-    let probes: Vec<Vec<u32>> = (0..nc)
-        .into_par_iter()
-        .map(|c| {
-            let mut ds: Vec<(f32, u32)> = (0..nc).map(|o| (sq_dist(cp.row(c), cp.row(o)), o as u32)).collect();
-            let p = nprobe.min(nc);
-            ds.select_nth_unstable_by(p - 1, |a, b| a.0.total_cmp(&b.0));
-            ds[..p].iter().map(|x| x.1).collect()
-        })
-        .collect();
-
+    // Every cell probes the lists nearest to the cell itself, not the lists around the centroid of its own
+    // list: a cell near the boundary of its list has most of its neighbours elsewhere. Cells of one list
+    // are searched together against the union of their lists (closed at `cap` lists or 256 cells).
+    let cnorm: Vec<f32> = cent.chunks_exact(d).map(|c| c.iter().map(|x| x * x).sum()).collect();
+    let lay = IvfLayout::new(cpts, cnorms, &lists);
+    let p = nprobe.clamp(1, nc);
+    let cap = IVF_JOB_LISTS_PER_PROBE * p;
     let per_list: Vec<(Vec<f32>, Vec<u32>)> = (0..nc)
         .into_par_iter()
-        .map(|c| {
-            let queries = &lists[c];
-            let mut td = vec![f32::INFINITY; queries.len() * k];
-            let mut ti = vec![u32::MAX; queries.len() * k];
-            if !queries.is_empty() {
-                let cands: Vec<u32> = probes[c].iter().flat_map(|&o| lists[o as usize].iter().copied()).collect();
-                // large buckets: split queries so the product tile stays cache-sized
-                for (qs, (dd, ii)) in queries.chunks(256).zip(td.chunks_mut(256 * k).zip(ti.chunks_mut(256 * k))) {
-                    search_block(pts, cpts, cnorms, qs, &cands, k, dd, ii);
+        .map_init(
+            || vec![false; nc],
+            |member, c| {
+                let queries = &lists[c];
+                let m = queries.len();
+                let mut td = vec![f32::INFINITY; m * k];
+                let mut ti = vec![u32::MAX; m * k];
+                if m > 0 {
+                    let mut near = vec![0u32; m * p];
+                    nearest_lists_of_rows(cpts, queries, &cent, &cnorm, nc, p, &mut near);
+                    let local: Vec<u32> = (0..m as u32).collect();
+                    for job in split_into_jobs(&local, &near, p, cap, member) {
+                        let gq: Vec<u32> = job.queries.iter().map(|&l| queries[l as usize]).collect();
+                        let mut jd = vec![f32::INFINITY; gq.len() * k];
+                        let mut ji = vec![u32::MAX; gq.len() * k];
+                        search_lists(pts, cpts, cnorms, &lay, &gq, &job.lists, k, &mut jd, &mut ji);
+                        for (r, &l) in job.queries.iter().enumerate() {
+                            let l = l as usize;
+                            td[l * k..(l + 1) * k].copy_from_slice(&jd[r * k..(r + 1) * k]);
+                            ti[l * k..(l + 1) * k].copy_from_slice(&ji[r * k..(r + 1) * k]);
+                        }
+                    }
                 }
-            }
-            (td, ti)
-        })
+                (td, ti)
+            },
+        )
         .collect();
 
     let mut topd = vec![f32::INFINITY; n * k];
@@ -456,7 +554,13 @@ fn knn_ivf(pts: Points, cpts: Points, cnorms: &[f32], k: usize, nprobe: usize, s
 /// k nearest neighbours (self excluded). `exact=None` picks brute force for
 /// n <= 20_000 and IVF + NN-descent above. IVF needs at least IVF_MIN_LISTS
 /// points (one per inverted list); tinier inputs use the exact search.
+#[cfg(test)]
 pub fn knn(pts: Points, k: usize, exact: Option<bool>, seed: u64) -> KnnGraph {
+    knn_with(pts, k, exact, seed, None)
+}
+
+/// [`knn`] with the number of lists probed per cell set by the caller (see [`knn_plan_with`]).
+pub fn knn_with(pts: Points, k: usize, exact: Option<bool>, seed: u64, nprobe: Option<usize>) -> KnnGraph {
     let n = pts.n;
     if n == 0 {
         return KnnGraph { n, k: 0, indices: vec![], distances: vec![] };
@@ -470,7 +574,7 @@ pub fn knn(pts: Points, k: usize, exact: Option<bool>, seed: u64) -> KnnGraph {
     let cdata = centred(pts, &shift);
     let cpts = Points::new(&cdata, n, pts.d);
     let cnorms = row_norms(cpts);
-    let plan = knn_plan(n, exact);
+    let plan = knn_plan_with(n, exact, nprobe);
     let (_, mut topi) = if plan.exact {
         knn_brute(pts, cpts, &cnorms, k)
     } else {
@@ -618,33 +722,48 @@ struct QueryJob {
     lists: Vec<u32>,
 }
 
-/// The `p` inverted lists nearest to every query row (nearest first), `nq × p`.
-fn nearest_lists(cq: Points, cent: &[f32], nc: usize, p: usize) -> Vec<u32> {
+/// For the rows `rows` of `cq`: the `p` inverted lists nearest to each row (nearest first), written to `out`
+/// (`rows.len() × p`).
+fn nearest_lists_of_rows(cq: Points, rows: &[u32], cent: &[f32], cnorm: &[f32], nc: usize, p: usize, out: &mut [u32]) {
     let d = cq.d;
-    let cnorm: Vec<f32> = cent.chunks_exact(d).map(|c| c.iter().map(|x| x * x).sum()).collect();
     let block = 512;
-    let mut out = vec![0u32; cq.n * p];
-    out.par_chunks_mut(block * p).enumerate().for_each(|(b, o)| {
+    let mut buf = vec![0.0f32; block.min(rows.len()) * d];
+    let mut prod = vec![0.0f32; block.min(rows.len()) * nc];
+    let mut ds: Vec<(f32, u32)> = Vec::with_capacity(nc);
+    let cmp = |a: &(f32, u32), b: &(f32, u32)| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1));
+    for (b, o) in out.chunks_mut(block * p).enumerate() {
         let lo = b * block;
-        let rows = o.len() / p;
-        let lhs = MatRef::from_row_major_slice(&cq.data[lo * d..(lo + rows) * d], rows, d);
+        let r = o.len() / p;
+        for (i, &q) in rows[lo..lo + r].iter().enumerate() {
+            buf[i * d..(i + 1) * d].copy_from_slice(cq.row(q as usize));
+        }
+        let lhs = MatRef::from_row_major_slice(&buf[..r * d], r, d);
         let rhs = MatRef::from_row_major_slice(cent, nc, d);
-        let mut prod = vec![0.0f32; rows * nc];
-        matmul(MatMut::from_row_major_slice_mut(&mut prod, rows, nc), Accum::Replace, lhs, rhs.transpose(), 1.0f32, Par::Seq);
-        let mut ds: Vec<(f32, u32)> = Vec::with_capacity(nc);
-        for r in 0..rows {
+        matmul(MatMut::from_row_major_slice_mut(&mut prod[..r * nc], r, nc), Accum::Replace, lhs, rhs.transpose(), 1.0f32, Par::Seq);
+        for i in 0..r {
             ds.clear();
             // ||q||^2 is the same for every list, so it does not change the order
-            ds.extend((0..nc).map(|c| (cnorm[c] - 2.0 * prod[r * nc + c], c as u32)));
-            let cmp = |a: &(f32, u32), b: &(f32, u32)| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1));
+            ds.extend((0..nc).map(|c| (cnorm[c] - 2.0 * prod[i * nc + c], c as u32)));
             if p < nc {
                 ds.select_nth_unstable_by(p - 1, cmp);
             }
             ds[..p].sort_by(cmp);
-            for (slot, e) in o[r * p..(r + 1) * p].iter_mut().zip(&ds[..p]) {
+            for (slot, e) in o[i * p..(i + 1) * p].iter_mut().zip(&ds[..p]) {
                 *slot = e.1;
             }
         }
+    }
+}
+
+/// The `p` inverted lists nearest to every query row (nearest first), `nq × p`.
+fn nearest_lists(cq: Points, cent: &[f32], nc: usize, p: usize) -> Vec<u32> {
+    let d = cq.d;
+    let cnorm: Vec<f32> = cent.chunks_exact(d).map(|c| c.iter().map(|x| x * x).sum()).collect();
+    let rows: Vec<u32> = (0..cq.n as u32).collect();
+    let mut out = vec![0u32; cq.n * p];
+    out.par_chunks_mut(512 * p).enumerate().for_each(|(b, o)| {
+        let lo = b * 512;
+        nearest_lists_of_rows(cq, &rows[lo..lo + o.len() / p], cent, &cnorm, nc, p, o);
     });
     out
 }
@@ -887,9 +1006,12 @@ mod precision_tests {
         assert!(knn_plan(300_000, Some(true)).exact);
         let small = knn_plan(30_000, None);
         let large = knn_plan(1_000_000, None);
-        assert_eq!((small.n_lists, small.nprobe), (58, 20));
+        assert_eq!((small.n_lists, small.nprobe), (58, IVF_MIN_NPROBE));
         assert!(large.nprobe > small.nprobe, "nprobe must grow with the number of lists");
         assert!(large.nprobe <= large.n_lists);
+        assert_eq!(knn_plan_with(30_000, None, Some(7)).nprobe, 7);
+        assert_eq!(knn_plan_with(30_000, None, Some(1_000)).nprobe, 58, "clamped to the number of lists");
+        assert!(knn_plan_with(30_000, Some(true), Some(7)).exact);
     }
 
     #[test]
@@ -906,5 +1028,53 @@ mod precision_tests {
         assert!(hit as f64 / (nq * k) as f64 > 0.98);
         let again = knn_query(rp, qp, k, Some(false), 0);
         assert_eq!(ap.indices, again.indices, "IVF query search must be deterministic");
+    }
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+    use rand::Rng;
+
+    /// A continuum (no clusters) with PCA-like column scales: most points sit near the edge of their list.
+    fn continuum(n: usize, d: usize, seed: u64) -> Vec<f32> {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        (0..n * d)
+            .map(|i| {
+                let g: f32 = (0..6).map(|_| rng.gen_range(-1.0f32..1.0)).sum::<f32>();
+                g / (1.0 + (i % d) as f32).sqrt()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ivf_finds_neighbours_that_lie_in_other_lists() {
+        let (n, d, k) = (30_000usize, 30usize, 14usize);
+        let data = continuum(n, d, 5);
+        let pts = Points::new(&data, n, d);
+        let ap = knn(pts, k, Some(false), 1);
+        let mut hit = 0usize;
+        let mut total = 0usize;
+        for i in (0..n).step_by(30) {
+            let mut all: Vec<(f32, u32)> = (0..n as u32).filter(|&j| j as usize != i).map(|j| (sq_dist(pts.row(i), pts.row(j as usize)), j)).collect();
+            all.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let t: Vec<u32> = all[..k].iter().map(|x| x.1).collect();
+            hit += ap.indices[i * k..(i + 1) * k].iter().filter(|j| t.contains(j)).count();
+            total += k;
+        }
+        let recall = hit as f64 / total as f64;
+        assert!(recall > 0.99, "recall {}", recall);
+    }
+
+    #[test]
+    fn explicit_nprobe_changes_the_search_and_is_deterministic() {
+        let (n, d, k) = (20_500usize, 12usize, 10usize);
+        let data = continuum(n, d, 8);
+        let pts = Points::new(&data, n, d);
+        let a = knn_with(pts, k, None, 3, Some(4));
+        let b = knn_with(pts, k, None, 3, Some(4));
+        assert_eq!(a.indices, b.indices);
+        let wide = knn_with(pts, k, None, 3, Some(30));
+        assert_ne!(a.indices, wide.indices);
     }
 }

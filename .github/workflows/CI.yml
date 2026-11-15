@@ -135,7 +135,10 @@ jobs:
           # not the source tree, is imported while tests can still read docs/, bench/ and scripts/
           python .github/scripts/make_test_dir.py "$RUNNER_TEMP/run"
           cd "$RUNNER_TEMP/run"
-          pytest -ra -p no:cacheprovider --skip-allowlist=tests/skip_allowlist.txt
+          pytest -ra -p no:cacheprovider --skip-allowlist=tests/skip_allowlist.txt --junitxml="$RUNNER_TEMP/junit.xml"
+      - name: Report failed tests as annotations
+        if: failure()
+        run: python .github/scripts/annotate_failures.py "$RUNNER_TEMP/junit.xml"
       - name: Upload the resolved environment
         if: always()
         uses: actions/upload-artifact@v5
@@ -221,8 +224,11 @@ jobs:
           python .github/scripts/make_test_dir.py "$RUNNER_TEMP/run" --tree baseline-src --overlay-from . tests pyproject.toml
           cd "$RUNNER_TEMP/run"
           python -c "import crest; print(crest.__version__, crest.__file__)"
-          pytest -ra -p no:cacheprovider --baseline-ref="$CREST_BASELINE_REF"
+          pytest -ra -p no:cacheprovider --baseline-ref="$CREST_BASELINE_REF" --junitxml="$RUNNER_TEMP/junit.xml"
 
+      - name: Report failed tests as annotations
+        if: failure()
+        run: python .github/scripts/annotate_failures.py "$RUNNER_TEMP/junit.xml"
   docs:
     # same build as Read the Docs (.readthedocs.yaml): no Rust, native module mocked
     runs-on: ubuntu-22.04
