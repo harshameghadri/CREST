@@ -1,0 +1,20 @@
+{
+  "design": "~ condition",
+  "contrast": [
+    "condition",
+    "b",
+    "a"
+  ],
+  "levels": {
+    "condition": [
+      "a",
+      "b"
+    ]
+  },
+  "min_replicates_for_replace": [
+    7
+  ],
+  "seed": 3,
+  "n_normal": 400,
+  "n_separated": 800
+}
