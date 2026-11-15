@@ -1,0 +1,12 @@
+{
+ "dataset": "Kang 2018 GSE96583 batch 2",
+ "cells": 24679,
+ "design": "~ ind + stim",
+ "contrast": "stim vs ctrl",
+ "crest_version": "0.4.0",
+ "jitter": {
+  "sd": 0.003,
+  "draws": 200,
+  "seed": 1
+ }
+}

@@ -1,0 +1,21 @@
+{
+ "dataset": "Stephenson 2021 COVID-19 PBMC atlas (CELLxGENE), raw.X",
+ "design": "~ Status",
+ "contrast": "Covid vs Healthy",
+ "one sample per donor": "earliest Collection_Day",
+ "excluded Status": [
+  "LPS",
+  "Non_covid"
+ ],
+ "min_cells": 10,
+ "min_donors_per_group": 3,
+ "crest_version": "0.4.0",
+ "cells_used": 552691,
+ "donors": 109,
+ "donors_with_two_libraries_on_earliest_day": 2,
+ "donors_by_status": {
+  "Healthy": 23,
+  "Covid": 86
+ },
+ "strata": 30
+}
