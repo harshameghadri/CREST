@@ -355,6 +355,36 @@ def _de_tables_crest(table, genes: np.ndarray):
     return np.array(groups, dtype=str), S, L, P
 
 
+_LG_GRAPH = {}
+
+
+def _leidenalg_one(job):
+    import leidenalg
+    g = _LG_GRAPH["g"]
+    s, n_iter = job
+    p = leidenalg.find_partition(g, leidenalg.RBConfigurationVertexPartition, weights=g.es["weight"],
+                                 resolution_parameter=RESOLUTION, n_iterations=n_iter, seed=s)
+    return np.asarray(p.membership)
+
+
+def leidenalg_partitions(graph, seeds, n_iterations: int, workers: int = 1) -> np.ndarray:
+    """leidenalg ``RBConfigurationVertexPartition`` partitions of ``graph`` (resolution 1), one per seed, as an array
+    (seeds, n). Each seed is an independent single-threaded run; with ``workers > 1`` they run in forked processes that
+    share the graph, and the partitions are the same as one by one."""
+    jobs = [(int(s), n_iterations) for s in seeds]
+    if workers <= 1 or len(jobs) == 1:
+        _LG_GRAPH["g"] = graph
+        return np.stack([_leidenalg_one(j) for j in jobs])
+    import multiprocessing as mp
+    _LG_GRAPH["g"] = graph
+    with mp.get_context("fork").Pool(min(workers, len(jobs))) as pool:
+        return np.stack(pool.map(_leidenalg_one, jobs))
+
+
+def _lg_workers(n_cells: int) -> int:
+    return 8 if n_cells > SMALL_MAX_CELLS else 1
+
+
 from contextlib import contextmanager
 
 
@@ -446,15 +476,8 @@ def stage_scanpy(a) -> None:
             _log("A_leiden done")
             b = np.stack([np.asarray(native.leiden(n, r, c, w, RESOLUTION, N_ITER, s)).astype(np.int64) for s in range(nmod)])
             _log("B (CREST Leiden on scanpy's graph) done")
-            lg = []
-            for s in range(nmod):
-                p = leidenalg.find_partition(ig_g, leidenalg.RBConfigurationVertexPartition, weights=ig_g.es["weight"],
-                                             resolution_parameter=RESOLUTION, n_iterations=N_ITER, seed=s)
-                lg.append(np.asarray(p.membership))
-            lg = np.stack(lg)
-            lg_conv = np.stack([np.asarray(leidenalg.find_partition(
-                ig_g, leidenalg.RBConfigurationVertexPartition, weights=ig_g.es["weight"], resolution_parameter=RESOLUTION,
-                n_iterations=-1, seed=s).membership) for s in range(5 if n <= SMALL_MAX_CELLS else 2)])
+            lg = leidenalg_partitions(ig_g, range(nmod), N_ITER, _lg_workers(n))
+            lg_conv = leidenalg_partitions(ig_g, range(5 if n <= SMALL_MAX_CELLS else 2), -1, _lg_workers(n))
             _log("leidenalg done")
             out.update({
                 "A_leiden": a_leiden, "B": b,
@@ -518,7 +541,6 @@ def _crest_graph_from_embedding(X, seed: int):
 
 
 def stage_crest(a) -> None:
-    import leidenalg
     import polars as pl
     import crest
     from crest import crest as native
@@ -575,12 +597,11 @@ def stage_crest(a) -> None:
                 d_leiden.append(b.obs["leiden"].cast(int).to_numpy())
             seed0 = d_leiden[0]
             q_leidenalg, q_crest = [], []
+            lg = leidenalg_partitions(ig_g, range(nmod), N_ITER, _lg_workers(n))
+            q_leidenalg = [modularity(ig_g, x) for x in lg]
             for s in range(nmod):
                 crest.tl.leiden(b, resolution=RESOLUTION, n_iterations=N_ITER, random_state=s)
                 q_crest.append(modularity(ig_g, b.obs["leiden"].cast(int).to_numpy()))
-                p = leidenalg.find_partition(ig_g, leidenalg.RBConfigurationVertexPartition, weights=ig_g.es["weight"],
-                                             resolution_parameter=RESOLUTION, n_iterations=N_ITER, seed=s)
-                q_leidenalg.append(modularity(ig_g, p.membership))
             crest.tl.leiden(b, resolution=RESOLUTION, n_iterations=N_ITER, random_state=0)
             out.update({"D_leiden_graph0": np.stack(d_leiden), "q_own_crest": np.array(q_crest),
                         "q_own_leidenalg": np.array(q_leidenalg)})

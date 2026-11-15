@@ -352,6 +352,21 @@ def small_run(tmp_path_factory):
     mp.undo()
 
 
+def test_leidenalg_partitions_are_the_same_with_forked_workers():
+    pytest.importorskip("leidenalg")
+    import scipy.sparse as sp
+    rng = np.random.default_rng(8)
+    n = 300
+    block = np.repeat(np.arange(3), n // 3)
+    P = np.where(block[:, None] == block[None, :], 0.12, 0.01)
+    A = np.triu((rng.random((n, n)) < P).astype(float), 1)
+    g = ra.igraph_from_connectivities(sp.csr_matrix(A + A.T))
+    one = ra.leidenalg_partitions(g, range(4), 2, workers=1)
+    many = ra.leidenalg_partitions(g, range(4), 2, workers=2)
+    assert one.shape == (4, n) and np.array_equal(one, many)
+    assert ra.modularity(g, one[0]) > 0.3
+
+
 def test_in_place_pca_gives_the_same_numbers_as_scanpy_default():
     sc = pytest.importorskip("scanpy")
     import anndata as ad
