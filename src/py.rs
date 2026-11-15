@@ -636,8 +636,9 @@ fn deseq2_fit<'py>(
     };
     let ft = match fit_type {
         "parametric" => FitType::Parametric,
+        "local" => FitType::Local,
         "mean" => FitType::Mean,
-        _ => return Err(err("fit_type must be \"parametric\" or \"mean\"")),
+        _ => return Err(err("fit_type must be \"parametric\", \"local\" or \"mean\"")),
     };
     let pa = Params { min_replicates_for_replace, min_mu, fit_type: ft, ..Params::default() };
     let d = Design::new(x, m, p).map_err(pyo3::exceptions::PyValueError::new_err)?;
@@ -677,7 +678,7 @@ fn deseq2_fit<'py>(
     if let Some(rc) = fit.replace_counts {
         out.set_item("replaceCounts", v(rc).reshape([g, m])?)?;
     }
-    out.set_item("fitType", match fit.fit_type { FitType::Parametric => "parametric", FitType::Mean => "mean" })?;
+    out.set_item("fitType", match fit.fit_type { FitType::Parametric => "parametric", FitType::Local => "local", FitType::Mean => "mean" })?;
     out.set_item("fit_substituted", fit.fit_substituted)?;
     out.set_item("trend", v(fit.trend))?;
     out.set_item("dispPriorVar", fit.disp_prior_var)?;
@@ -696,6 +697,33 @@ fn deseq2_fit<'py>(
     };
     out.set_item("cooksCutoff", cutoff)?;
     Ok(out)
+}
+
+/// DESeq2 `localDispersionFit` followed by its prediction: the locfit trend of `log(disps) ~ log(means)`
+/// (weights `means`) evaluated at `at`. For tests against R; not part of the public API.
+#[pyfunction]
+fn local_dispersion_fit<'py>(py: Python<'py>, means: PyReadonlyArrayDyn<'py, f64>, disps: PyReadonlyArrayDyn<'py, f64>,
+                             at: PyReadonlyArrayDyn<'py, f64>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let (means, disps, at) = (sl(&means, "means")?, sl(&disps, "disps")?, sl(&at, "at")?);
+    check_len("means, disps", &[means.len(), disps.len()])?;
+    if means.iter().chain(disps).any(|&v| !(v > 0.0) || !v.is_finite()) {
+        return Err(pyo3::exceptions::PyValueError::new_err("means and disps must be positive and finite"));
+    }
+    let trend = crate::deseq::locfit::local_dispersion_fit(means, disps).map_err(pyo3::exceptions::PyValueError::new_err)?;
+    Ok(PyArray1::from_vec_bound(py, at.iter().map(|&m| trend.disp_at(m)).collect()))
+}
+
+/// DESeq2 `parametricDispersionFit`: coefficients (a, b) of `a + b / mean`, or None where R stops with an error.
+/// For tests against R; not part of the public API.
+#[pyfunction]
+fn parametric_dispersion_fit<'py>(py: Python<'py>, means: PyReadonlyArrayDyn<'py, f64>,
+                                  disps: PyReadonlyArrayDyn<'py, f64>) -> PyResult<Option<Bound<'py, PyArray1<f64>>>> {
+    let (means, disps) = (sl(&means, "means")?, sl(&disps, "disps")?);
+    check_len("means, disps", &[means.len(), disps.len()])?;
+    if means.iter().chain(disps).any(|&v| !(v > 0.0) || !v.is_finite()) {
+        return Err(pyo3::exceptions::PyValueError::new_err("means and disps must be positive and finite"));
+    }
+    Ok(crate::deseq::parametric_fit(means, disps).map(|c| PyArray1::from_vec_bound(py, c.to_vec())))
 }
 
 /// R's `lowess(x, y, f, iter, delta)`; `x` sorted ascending.
@@ -878,6 +906,8 @@ fn crest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(group_gene_totals, m)?)?;
     m.add_function(wrap_pyfunction!(deseq2_fit, m)?)?;
     m.add_function(wrap_pyfunction!(lowess, m)?)?;
+    m.add_function(wrap_pyfunction!(local_dispersion_fit, m)?)?;
+    m.add_function(wrap_pyfunction!(parametric_dispersion_fit, m)?)?;
     m.add_function(wrap_pyfunction!(harmony, m)?)?;
     m.add_function(wrap_pyfunction!(leiden_sweep, m)?)?;
     m.add_function(wrap_pyfunction!(knn_query, m)?)?;
