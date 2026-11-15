@@ -185,6 +185,7 @@ not available; they are controlled by environment variables:
 | variable | content | how to set it |
 |---|---|---|
 | `CREST_TEST_PBMC3K` | the extracted PBMC 3k 10x directory (`matrix.mtx`, `genes.tsv`, `barcodes.tsv`) | `python scripts/fetch_test_data.py --print-env` |
+| `CREST_TEST_PBMC10K` | the PBMC 10k v3 file `pbmc10k.h5`; enables the larger variant of the scanpy parity matrix | `export CREST_TEST_PBMC10K=$CREST_TEST_DATA/pbmc10k.h5` (`fetch_test_data.py` downloads the file but does not export this variable) |
 | `CREST_TEST_PBMC_CONNECTIVITIES` | `.npz` of the scanpy connectivities matrix of PBMC 3k | `python scripts/fetch_test_data.py --derive --print-env` (needs the `test` extra) |
 
 `--print-env` prints `export` lines for your shell; `--github-env FILE` appends them to a
@@ -192,6 +193,16 @@ GitHub Actions env file. CI does this in the composite action `.github/actions/t
 (cached, keyed on the script and `pyproject.toml`) in both the `tests` and the `baseline` jobs,
 so these tests run there. A test that needs data must not be listed in
 `tests/skip_allowlist.txt`.
+
+**Scanpy parity matrix.** `tests/test_scanpy_parity_matrix.py` compares CREST with the installed
+scanpy on PBMC 3k (and on PBMC 10k when `CREST_TEST_PBMC10K` is set): quality control,
+normalisation, highly variable genes, scale and PCA, the neighbour graph, Leiden, UMAP,
+`rank_genes_groups`, `score_genes`, Scrublet and ingest. `tests/_parity_cases.py` defines each
+comparison and how its deviation is measured, and `tests/_tolerances.py` holds one named constant
+per comparison, set from the largest deviation measured on x86-64 and arm64 with scanpy 1.11.5,
+1.12.6 and 1.13.0 times a stated margin. A constant is never looser than a tolerance that another
+test already applies to the same comparison, and a constant is changed only together with a new
+measurement. To measure again, run `python tests/_parity_cases.py pbmc3k=<directory> --out result.json`.
 
 ### Tests that document a defect: `baseline_fails`
 
