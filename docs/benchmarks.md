@@ -15,12 +15,12 @@ CREST is held to two claims, and both are measured:
 |---|---|---|
 | QC, filters | scanpy 1.11 (tested with 1.11.5) | identical |
 | HVG `seurat`, `cell_ranger` | scanpy | identical gene set; `dispersions_norm` within 2e-6 |
-| HVG `seurat_v3` | scanpy + skmisc loess | identical sets and ranks; `variances_norm` within 1e-14 |
+| HVG `seurat_v3` | scanpy + skmisc loess | identical sets and ranks; `variances_norm` within 3e-13 (PBMC 3k) and 3e-10 (PBMC 10k), relative |
 | scale + PCA | scanpy (dense) | identical subspace (0.000° principal angles) |
 | neighbours (connectivities) | scanpy / umap-learn | identical given the same kNN (1e-5) |
 | Leiden | scanpy 1.11 `sc.tl.leiden(flavor="igraph", n_iterations=2)` (ARI, in the paper benchmark); leidenalg (modularity sweep) | similar number of clusters; modularity typically equal or higher than leidenalg's (mean +0.0015 over 20 seeds at resolution 1 on PBMC 68k), occasionally ~0.002 lower on a given seed — both tools' own seed-to-seed variation is of the same order, so this is not a per-seed guarantee. The modularity-sweep script is not yet in the repository |
-| t-test, Wilcoxon | scanpy | t-test scores within 1e-4; Wilcoxon scores within 3e-4 on PBMC 3k (ties differ at the float32 ulp level of the normalisation; 1e-6 on identical input values); p-values within 4e-4 |
-| `score_genes` | scanpy | identical incl. control-gene sampling (3e-7) |
+| t-test, Wilcoxon | scanpy | t-test scores within 1e-4; Wilcoxon scores within 3e-4 on PBMC 3k (ties differ at the float32 ulp level of the normalisation; 4e-6 on identical input values); p-values within 4e-4 |
+| `score_genes` | scanpy | identical control-gene sampling; scores within 4e-7 (scanpy 1.11.5), 2e-7 (1.12.6 and later) |
 | DESeq2 Wald / LRT | R DESeq2 (1.42 for the stored unit-test fixtures; the version of every benchmark run is in that run's environment record) | ~1e-9 (Wald, simulated), 1e-6 (LRT) |
 | Harmony | harmonypy 2.1.0 (current figures measured with 2.0.2) | same iLISI / cLISI / ARI; neighbourhood overlap at seed-noise level |
 | Scrublet | scanpy 1.11 | same AUROC on demuxlet doublets; Spearman 0.98 (measured with `include_self_neighbor=False`, see {doc}`downstream`) |
