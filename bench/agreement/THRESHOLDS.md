@@ -214,9 +214,10 @@ No threshold, metric definition or action has been changed. One diagnostic was a
   (`n_iterations=-1`, reported without a threshold in metric 3) was started on parse_pbmc_1m with two seeds and had not finished
   after 60 minutes; it is computed up to 100,000 cells (five seeds) and not computed on larger datasets. The registered comparison
   (`n_iterations=2`) is computed on every dataset.
-* 2026-11-15, datasets. (a) neurons_1m: the scanpy workflow was not run on the full file, because the memory limit of this run is 40 GB and
-  scanpy's reader alone is estimated at about 65 GB at 1,306,127 cells (an untested read-back estimate, not a measured
-  peak; whether scanpy runs on the full file is a decision for the benchmark protocol), so metrics 1 to 6 were computed on its 500,000-cell real subsample `neurons_1m_sub500k` (seed 0, nested subset of
+* 2026-11-15, datasets. (a) neurons_1m: the scanpy stage was attempted on the full file under the 40 GB memory limit of this run and was killed by the limit
+  while reading it (exit 137, 1.7 minutes after the start; log in the results archive); the Datasets lane's untested read-back
+  estimate for scanpy's reader is about 65 GB at 1,306,127 cells, which is consistent with that. Whether scanpy runs on the full file
+  with a higher limit is a decision for the benchmark protocol. so metrics 1 to 6 were computed on its 500,000-cell real subsample `neurons_1m_sub500k` (seed 0, nested subset of
   neurons_1m), and metric 5.1 was also computed on the full neurons_1m for CREST alone (scanpy not run). The subsample is named
   as such wherever it appears. neurons_1m has no curated annotation, so metric 1 does not apply to it. (b) parse_pbmc_1m is the
   rebuilt, nested seed-0 subset of the 9.7M-cell Parse set (file written 2026-11-15 00:08 +01:00, sha256 equal to the dataset
