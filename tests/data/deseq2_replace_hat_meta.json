@@ -14,7 +14,7 @@
   "min_replicates_for_replace": [
     7
   ],
-  "seed": 3,
-  "n_normal": 400,
-  "n_separated": 800
+  "seed": 11,
+  "n_normal": 300,
+  "n_separated": 450
 }

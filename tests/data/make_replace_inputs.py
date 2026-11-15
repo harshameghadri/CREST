@@ -20,14 +20,14 @@ import sys
 import numpy as np
 
 OUT = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else pathlib.Path(__file__).parent
-N_A, N_B, N_NORMAL, N_SEP = 4, 12, 400, 800
+N_A, N_B, N_NORMAL, N_SEP = 4, 12, 300, 450
 
 
 def nb(rng, mu, disp):
     return rng.poisson(rng.gamma(1.0 / disp, mu * disp))
 
 
-def build(seed=3):
+def build(seed=11):
     rng = np.random.default_rng(seed)
     n = N_A + N_B
     sf = np.exp(rng.normal(0, 0.2, n))
@@ -59,4 +59,4 @@ def write(X, seed):
 
 
 if __name__ == "__main__":
-    write(build(), 3)
+    write(build(), 11)
