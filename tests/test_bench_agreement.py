@@ -413,6 +413,11 @@ def test_end_to_end_agrees_on_well_separated_clusters(small_run):
     assert de["pass"] is True and de["median"]["spearman_scores"] > 0.999
 
 
+def test_stages_leave_the_scanpy_settings_of_the_process_alone(small_run):
+    import scanpy as sc
+    assert sc.settings.n_jobs == 1
+
+
 def test_end_to_end_stages_resume_without_recomputing(small_run):
     _, d = small_run
     before = {f.name: f.stat().st_mtime_ns for f in d.glob("*.np*")}

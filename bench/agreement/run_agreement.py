@@ -1025,8 +1025,16 @@ def main(argv=None) -> None:
     ap.add_argument("--ooc", action="store_true", help="CREST reads the matrix out of core (datasets that do not fit in memory)")
     a = ap.parse_args(argv)
     _threads(a.threads)
-    warnings.filterwarnings("ignore")
-    {"scanpy": stage_scanpy, "crest": stage_crest, "compare": stage_compare, "exact": stage_exact}[a.stage](a)
+    stage = {"scanpy": stage_scanpy, "crest": stage_crest, "compare": stage_compare, "exact": stage_exact}[a.stage]
+    scanpy_mod = sys.modules.get("scanpy")
+    n_jobs_before = scanpy_mod.settings.n_jobs if scanpy_mod is not None else 1   # scanpy's default
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            stage(a)
+    finally:  # a caller that runs stages in its own process (the tests) gets scanpy's settings back
+        if "scanpy" in sys.modules:
+            sys.modules["scanpy"].settings.n_jobs = n_jobs_before
 
 
 if __name__ == "__main__":
