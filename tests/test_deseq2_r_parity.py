@@ -41,7 +41,7 @@ TREND_A_RTOL, TREND_B_RTOL = 1e-4, 1e-3   # parametric trend coefficients on cou
 DISPFIT_RTOL = 1e-4             # dispersion trend on counts up to 1e8
 MAXCOOKS_LRT_RTOL = 1e-9        # LRT Cook's distances against R 1.50.2
 CUTOFF_RTOL = 1e-12             # Cook's cut-off qf(0.99, p, m - p) against R (the reference carries 15 digits)
-TREND_FALLBACK_INDEPENDENT_RTOL = 1e-6   # quantities that do not depend on the dispersion trend, when R falls back to a local fit
+TREND_FALLBACK_INDEPENDENT_RTOL = 1e-6   # gene-wise dispersion and the local trend, when R falls back to a local fit
 CONTRAST_ZERO_MASK_RTOL = 1e-9  # rows whose c1 / c2 counts were all replaced, tuple and numeric contrast
 PIN_RTOL = {   # 10 x the larger of the arm64 and x86-64 measurements, rounded up to one digit
     "prior_2v2_sd10": {
@@ -275,19 +275,19 @@ def test_filtering_fixture_exercises_independent_filtering_and_cooks_filtering()
 
 
 # ===================================================================================== trend fallback
-@pytest.mark.baseline_fails(ref="v0.4.0", raises=KeyError, match="fit_substituted")
-def test_trend_fallback_is_a_flagged_known_difference():
-    """R substitutes a local fit when the parametric trend fails, CREST the mean: flagged, not equal."""
+@pytest.mark.baseline_fails(ref="v0.4.0", raises=AssertionError, match="fitType")
+def test_trend_fallback_is_a_flagged_substitution_as_in_r():
+    """R substitutes a local fit when the parametric trend fails, and so does CREST: flagged, and equal to R
+    (the whole table is compared in test_deseq2_local_fit.py)."""
     ds, res, ref, meta = _case("trend_fallback")
-    assert meta["R"]["fitType"] == "local" and ds.fit["fitType"] == "mean" and ds.fit["fit_substituted"] is True
+    assert meta["R"]["fitType"] == "local" and ds.fit["fitType"] == "local", f"fitType {ds.fit['fitType']!r}, R {meta['R']['fitType']!r}"
+    assert ds.fit["fit_substituted"] is True
     f = ds.fit
-    # what does not depend on the trend still agrees with R
     assert np.allclose(ds.size_factors, meta["R"]["sf"], rtol=1e-10, atol=0)
     assert np.allclose(f["baseMean"], ref["baseMean"].to_numpy(), rtol=1e-10, atol=0)
     n_na, dev = measure("trend_fallback")["dispGeneEst"]
     assert n_na == 0 and dev <= TREND_FALLBACK_INDEPENDENT_RTOL, f"gene-wise dispersion: {n_na} floor mismatches, deviation {dev:.3g}"
-    # and what does is different, by a lot (the reason for the flag)
-    assert not np.allclose(f["dispFit"], ref["dispFit"].to_numpy(), rtol=0.1)
+    assert np.allclose(f["dispFit"], ref["dispFit"].to_numpy(), rtol=TREND_FALLBACK_INDEPENDENT_RTOL, atol=0, equal_nan=True)
 
 
 # ===================================================================================== covariates
