@@ -214,4 +214,11 @@ No threshold, metric definition or action has been changed. One diagnostic was a
   (`n_iterations=-1`, reported without a threshold in metric 3) was started on parse_pbmc_1m with two seeds and had not finished
   after 60 minutes; it is computed up to 100,000 cells (five seeds) and not computed on larger datasets. The registered comparison
   (`n_iterations=2`) is computed on every dataset.
+* 2026-11-15, datasets. (a) neurons_1m: the scanpy workflow does not fit the 40 GB memory limit at 1,306,127 cells (about 125 GB
+  estimated), so metrics 1 to 6 were computed on its 500,000-cell real subsample `neurons_1m_sub500k` (seed 0, nested subset of
+  neurons_1m), and metric 5.1 was also computed on the full neurons_1m for CREST alone (scanpy not run). The subsample is named
+  as such wherever it appears. neurons_1m has no curated annotation, so metric 1 does not apply to it. (b) parse_pbmc_1m is the
+  rebuilt, nested seed-0 subset of the 9.7M-cell Parse set (file written 2026-11-15 00:08 +01:00, sha256 equal to the dataset
+  manifest); every result of this run read that file. (c) covid_stephenson uses the annotation column `cell_type` named in its
+  metadata.
 
