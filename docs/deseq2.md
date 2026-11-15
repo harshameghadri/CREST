@@ -51,7 +51,7 @@ that `results()` computed. Two terms that produce the same coefficient name rais
 |---|---|
 | `estimateSizeFactors` (`ratio`, `poscounts`) | same |
 | `estimateDispersionsGeneEst` (rough/moments init, `linearMu`, `fitDisp` line search on the Cox-Reid profile likelihood, grid refit, `noIncrease` rule) | same |
-| `estimateDispersionsFit` `parametric` (Gamma-identity GLM, residual trimming, 10 outer iterations) and `mean` | same |
+| `estimateDispersionsFit` `parametric` (Gamma-identity GLM, residual trimming, 10 outer iterations), `local` (`locfit`, see below) and `mean`, with R's fallback from `parametric` to `local` | same (the local trend to 5e-13 relative on the test cases) |
 | `estimateDispersionsPriorVar` (`mad²` − `trigamma((m−p)/2)`, floor 0.25) | same |
 | `estimateDispersionsMAP` (+ `dispOutlier`) | same |
 | `nbinomWaldTest` (IRLS with ridge 1e-6, `betaConv`, Wald p-values) | same (refit of non-converged rows: see below) |
@@ -59,8 +59,32 @@ that `results()` computed. Two terms that produce the same coefficient name rais
 | Cook's distances, `maxCooks`, `refitWithoutOutliers` (≥ 7 replicates) | same; under the LRT the distances use the full-model means, as DESeq2 ≥ 1.50 does |
 | `results()`: coefficient / `c(factor, a, b)` / numeric contrasts, `contrastAllZero`, Cook's cutoff incl. the 2-group heuristic, independent filtering (lowess port of R's `clowess`), BH | same |
 
-Not implemented: `lfcShrink` (apeglm/ashr/normal), `betaPrior=TRUE`,
-`fitType="local"`/`glmGamPoi`, observation weights, `lfcThreshold`,
+### The local dispersion trend
+
+`fit_type="local"` is DESeq2's `localDispersionFit`: `locfit(log(disp) ~ log(mean), weights = mean)` on the genes whose
+gene-wise dispersion is at least `10 * minDisp`, evaluated as `exp(predict(fit, log(mean)))`. It is a port of the
+evaluation of locfit 1.5-9.12 for this one call (`src/deseq/locfit.rs`), not an approximation of it: the defaults
+(`alpha = 0.7`, degree 2, tricube kernel, family `qgaussian`) with locfit's adaptive tree on the bounding box of the data
+(`ev = rbox()`: a cell is split while its width exceeds 0.8 of the smaller bandwidth at its ends, at most 19 vertices), a
+local quadratic at each vertex solved as locfit solves it (one Newton step through an eigen-decomposition of the scaled
+normal equations, sums in the order of the C code), cubic Hermite interpolation between vertices, and locfit's parametric
+component, a global weighted quadratic that is subtracted at the vertices and added back at every evaluation (it makes the
+curve beyond the range of the means quadratic, as R's is). Where R's `locfit` stops with an error (for example two
+gene-wise dispersions: "newsplit: out of vertex space") R's `DESeq()` stops; CREST then continues with the mean trend, sets
+`fit["fit_substituted"]` and warns that the results can differ from R.
+
+When the parametric fit does not converge (or one of its coefficients is not positive) R prints a note and substitutes the
+local trend; CREST does the same, with R's note as the message: `fit["fitType"]` is `"local"`, `fit["fit_substituted"]` is
+`True` and `fit["trend"]` is empty (there are no coefficients). The mean trend is used where R uses it: when every gene-wise
+dispersion is within two orders of magnitude of `minDisp`, and where the local fit fails as above. Agreement with R's local
+trend (R 4.5.2, DESeq2 1.50.2, locfit 1.5-9.12): over 22 synthetic cases built to hit the cases of the evaluation structure
+(ties in the means, 3 to 30 genes, extreme weights, a trend that needs many vertices and pseudo-vertices, a gap in the means,
+outliers, gene-wise values at the floor) and six COVID-19 atlas strata where R's parametric fit fails, the largest relative
+difference of the trend is 4.1e-14 on Linux x86-64 and on macOS arm64, at the means and at points up to 2.5 log units beyond
+their range (`tests/test_deseq2_local_fit.py`, `tests/data/deseq2_local_fit_measurements.json`). On a whole `DESeq()` fixture
+where R falls back (120 genes, 3 v 3) every column agrees to 1e-9 or better, adjusted p-values to 5e-10.
+
+Not implemented: `lfcShrink` (apeglm/ashr/normal), `betaPrior=TRUE`, `glmGamPoi`, observation weights, `lfcThreshold`,
 interaction terms in formulas (pass `design_matrix=` instead).
 
 ## Validation against R
@@ -101,7 +125,7 @@ inputs to R and CREST. Results are in `bench/deseq2/results/`.
   `make_edge_inputs.py` and `make_edge_fixtures.R`): three groups of 8, 4 and 8 samples with
   outliers inside and outside the groups that are replaced (at `minReplicatesForReplace` 7, 4
   and 9), two sparse 6-sample designs in which hundreds of gene-wise dispersions stop at
-  `maxit` (one where R falls back to a local trend), and random vectors with tied x for
+  `maxit` (one where R falls back to a local trend, which CREST now does too), and random vectors with tied x for
   `lowess` and `loess`. No gene fails the beta fit in R in these data, so a non-converged
   beta fit is not pinned.
 
@@ -154,16 +178,20 @@ re-run; the results will be published in {doc}`benchmarks`.
    Before this was done CREST integrated the reference distribution exactly, which moved
    the estimate outside R's seed range for two of the four designs (0.41 against 0.27 at
    2 vs 2, 0.67 against 0.73 at 3 vs 2).
-4. **Parametric trend failure.** R substitutes a local regression (`locfit`).
-   CREST uses the mean dispersion, which is not equivalent: on small or low-count
-   inputs the dispersion trend, the prior variance and the significant genes can
-   differ markedly from R's. When it happens `DESeq2.fit["fit_substituted"]` is `True`,
-   `fit["fitType"]` is `"mean"`, `fit["messages"]` says so, and a `UserWarning` states
-   that the results will differ from R (`quiet=True` silences the warning, not the
-   flag). Check the flag before comparing with R. A parametric fit that fails for
-   numerical reasons only (for example at counts in the hundreds of millions) is no
-   longer a cause: the normal equations of the trend fit are equilibrated before the
-   pivot test.
+4. **Parametric trend failure.** R substitutes a local regression (`locfit`) and so does CREST
+   (*The local dispersion trend* above); `DESeq2.fit["fit_substituted"]` is `True`,
+   `fit["fitType"]` is `"local"`, and `fit["messages"]` and a `UserWarning` carry R's note
+   (`quiet=True` silences the warning, not the flag). Whether the parametric fit fails depends on
+   the gene-wise dispersions, so a gene that differs between the tools in the way *Known differences* 1
+   describes can make the fit fail in one tool and not in the other: in the COVID-19 atlas stratum
+   "myeloid dendritic cell" (56 donors) two genes with a flat likelihood sit at 1e-8 in R and at 3.7e-5 and
+   4.7e-5 in CREST; with CREST's values R's own `parametricDispersionFit` stops with "dispersion fit did not
+   converge" (the fit keeps changing its coefficients in the fourth digit), with R's values it converges, and CREST's
+   Gamma-GLM loop returns R's coefficients to 2e-13 on R's values and fails on CREST's as R does
+   (`tests/test_deseq2_local_fit.py`). CREST then uses the local trend where R uses its parametric one. Where the
+   mean was substituted before (versions up to 0.4.0), results differed markedly from R's; the local trend removes
+   that difference. A parametric fit that fails for numerical reasons only (for example at counts in the hundreds
+   of millions) is no longer a cause: the normal equations of the trend fit are equilibrated before the pivot test.
 5. **Cook's cut-off and missing values.** `qf(0.99, p, m - p)` is evaluated to double precision,
    as R does. A p-value or adjusted p-value that is missing is `null` in the table; the reason
    (no counts, Cook's outlier, removed by independent filtering) is in
