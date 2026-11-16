@@ -1,0 +1,21 @@
+{
+  "design": "~ condition",
+  "contrast": ["condition", "b", "a"],
+  "levels": {
+    "condition": ["a", "b"]
+  },
+  "min_replicates_for_replace": 7,
+  "seed": 11,
+  "n_normal": 300,
+  "n_separated": 450,
+  "R": {
+    "deseq2_version": "1.50.2",
+    "r_version": "R version 4.5.2 (2025-10-31)",
+    "generated_by": "tests/data/make_replace_fixtures.R",
+    "fitType": "local",
+    "sf": [1.04729772534355, 1.34949620277684, 1.234592752004, 0.882001139626022, 0.937237457564317, 0.871169681421295, 1.10034438288355, 0.974369478500229, 1.19396777078968, 0.670597216413836, 1.37334609452951, 0.994430687113855, 1.13451921241695, 0.9682859810679, 0.89871295974867, 1.0440218449764],
+    "cooksCutoff": 6.51488410218275,
+    "n_beta_not_converged": 0,
+    "n_beta_not_converged_noreplace": 0
+  }
+}

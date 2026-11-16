@@ -4,7 +4,7 @@
  "CREST_fitType": "local",
  "genes_with_counts": 16639,
  "genes_with_a_p_value_in_both": 16625,
- "replaced_CREST": 120,
+ "replaced_CREST": 121,
  "replaced_R": 121,
  "trend_function": {
   "at_reported_baseMean": {
@@ -31,11 +31,11 @@
     "median": 3.3306690738754696e-15
    }
   },
-  "genes_whose_baseMean_changed_with_replacement": 109,
-  "of_which_replaced_in_CREST": 109,
-  "of_which_with_a_p_value": 98,
+  "genes_whose_baseMean_changed_with_replacement": 110,
+  "of_which_replaced_in_CREST": 110,
+  "of_which_with_a_p_value": 99,
   "reported_baseMean_CREST_vs_R_over_genes_with_a_p_value": {
-   "n_differing_above_1e-9": 2
+   "n_differing_above_1e-9": 0
   },
   "smallest_fitted_baseMean": 0.0367662962997935,
   "R_reported_dispFit_vs_R_localDispersionFit_on_R_values_at_R_baseMean": {
@@ -153,45 +153,20 @@
  "reported_dispFit_vs_R": {
   "genes_with_a_p_value": {
    "n": 16625,
-   "max": 0.21581973413448763,
-   "median": 0.0017804380048209723
+   "max": 0.021635887589309455,
+   "median": 0.0017790343445026613
   },
   "p99_over_genes_with_a_p_value": 0.01964422899576246,
-  "n_above_0.0002": 14847,
-  "n_above_0.001": 10568,
-  "n_above_0.01": 1442,
-  "n_above_0.1": 2,
+  "n_above_0.0002": 14846,
+  "n_above_0.001": 10566,
+  "n_above_0.01": 1440,
+  "n_above_0.1": 0,
   "over_genes_with_equal_baseMean": {
-   "n": 16621,
+   "n": 16623,
    "max": 0.021635887589309455,
-   "median": 0.0017804380048209723
+   "median": 0.0017790851338077562
   },
-  "genes_above_0.1": [
-   {
-    "gene": "ENSG00000211942",
-    "rel_diff": 0.16220153490294065,
-    "baseMean_CREST": 64.75175382878402,
-    "baseMean_R": 49.8513921942348,
-    "dispFit_CREST": 0.07020228772107409,
-    "dispFit_R": 0.0604045732282886,
-    "R_trend_on_R_values_at_CREST_baseMean": 0.0701943925348588,
-    "R_trend_on_R_values_at_R_baseMean": 0.0604045732282886,
-    "replaced_CREST": false,
-    "replaced_R": true
-   },
-   {
-    "gene": "ENSG00000211946",
-    "rel_diff": 0.21581973413448763,
-    "baseMean_CREST": 60.0053358832748,
-    "baseMean_R": 42.6057859958947,
-    "dispFit_CREST": 0.06722858818668694,
-    "dispFit_R": 0.0552948651014826,
-    "R_trend_on_R_values_at_CREST_baseMean": 0.0672198142473918,
-    "R_trend_on_R_values_at_R_baseMean": 0.0552948651014826,
-    "replaced_CREST": true,
-    "replaced_R": true
-   }
-  ]
+  "genes_above_0.1": []
  },
  "first_pass_gene_wise": {
   "n_differ_above_1e-6": 15,
@@ -205,21 +180,21 @@
  "downstream": {
   "dispersion_over_genes_with_a_p_value": {
    "n": 16625,
-   "max": 0.09279850966638747,
-   "median": 0.00017856647183267516
+   "max": 0.030034208242785687,
+   "median": 0.00017849293431382307
   },
   "dispersion_over_genes_with_equal_baseMean": {
-   "n": 16621,
+   "n": 16623,
    "max": 0.030034208242785687,
-   "median": 0.00017856647183267516
+   "median": 0.00017854120961591224
   },
   "p_value_over_genes_with_a_p_value": {
    "n": 16625,
    "max": 0.9752817119528786,
-   "median": 1.7735122790907276e-05
+   "median": 1.7734260054247386e-05
   },
   "p_value_over_genes_with_equal_baseMean": {
-   "n": 16621,
+   "n": 16623,
    "max": 0.9752817119528786,
    "median": 1.7735122790907276e-05
   },
@@ -300,21 +275,6 @@
     "replaced_R": false
    },
    {
-    "gene": "ENSG00000211946",
-    "rel_diff": 0.3571243936218391,
-    "p_CREST": 0.0018818166285846276,
-    "p_R": 0.00292718623931996,
-    "baseMean": 60.0053358832748,
-    "dispersion_CREST": 6.219264671387931,
-    "dispersion_R": 5.69113575501358,
-    "dispGeneEst_CREST": 6.219264671387931,
-    "dispGeneEst_R": 5.69113575501358,
-    "lfc_CREST": 6.609564120037974,
-    "lfc_R": 6.11673189488215,
-    "replaced_CREST": true,
-    "replaced_R": true
-   },
-   {
     "gene": "ENSG00000282639",
     "rel_diff": 0.20246573212352936,
     "p_CREST": 3.5036378239276865e-12,
@@ -343,6 +303,21 @@
     "lfc_R": 22.1528950962456,
     "replaced_CREST": false,
     "replaced_R": false
+   },
+   {
+    "gene": "ENSG00000211669",
+    "rel_diff": 0.15642974918367547,
+    "p_CREST": 7.242539101199447e-25,
+    "p_R": 8.58557908388878e-25,
+    "baseMean": 1585.4612626589867,
+    "dispersion_CREST": 8.844901466778902,
+    "dispersion_R": 8.8449014667789,
+    "dispGeneEst_CREST": 8.844901466778902,
+    "dispGeneEst_R": 8.8449014667789,
+    "lfc_CREST": 25.20287398726772,
+    "lfc_R": 25.1627808676071,
+    "replaced_CREST": true,
+    "replaced_R": true
    }
   ]
  }

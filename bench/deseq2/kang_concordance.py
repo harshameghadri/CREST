@@ -278,6 +278,10 @@ def concordance_stratum(name, counts, obs, genes, design, contrast, ref_levels, 
            "jitter_min_0.05": jb[0.05][0], "jitter_max_0.05": jb[0.05][1], "jitter_min_0.1": jb[0.1][0], "jitter_max_0.1": jb[0.1][1],
            "R_betaNonConv": int((nz & ~(r["betaConv"].fill_null(True).to_numpy().astype(bool))).sum()),
            "CREST_betaNonConv": int((nz & ~np.asarray(f["betaConv"], bool)).sum()),
+           # genes whose counts were replaced in each tool, and genes on which the two tools disagree about it
+           "R_replaced": int(r["replace"].cast(pl.Boolean).fill_null(False).to_numpy().astype(bool).sum()),
+           "CREST_replaced": int(np.asarray(f["replace"], bool).sum()),
+           "replaced_flag_mismatch": int((r["replace"].cast(pl.Boolean).fill_null(False).to_numpy().astype(bool) != np.asarray(f["replace"], bool)).sum()),
            "n_genes_dispersion_rel_diff_above_report_tol": n_disp_above,
            **filt_check, **numrej,
            "deseq2": diag["deseq2"], "r_version": diag["r_version"]}

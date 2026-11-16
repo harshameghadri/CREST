@@ -464,6 +464,9 @@ fn fit_beta(y: &[f64], sf: &[f64], d: &Design, alpha: f64, pa: &Params) -> BetaF
     let mut iter = 0;
     let mut w = vec![0.0; m];
     let mut z = vec![0.0; m];
+    // weights and ridged X'WX of the last IRLS iteration: R keeps the hat diagonals of that iteration for rows that its
+    // L-BFGS-B refit then replaces (the coefficients and means come from the refit, the hat values do not)
+    let mut last_irls: Option<(Vec<f64>, Vec<f64>)> = None;
     for t in 0..pa.beta_maxit {
         iter += 1;
         for j in 0..m {
@@ -475,6 +478,7 @@ fn fit_beta(y: &[f64], sf: &[f64], d: &Design, alpha: f64, pa: &Params) -> BetaF
             a[k * p + k] += lambda;
         }
         let b = xtwz(&d.x, m, p, &w, &z);
+        last_irls = Some((w.clone(), a.clone()));
         match Lu::new(a, p) {
             Some(lu) => beta = lu.solve(&b),
             None => {
@@ -499,6 +503,7 @@ fn fit_beta(y: &[f64], sf: &[f64], d: &Design, alpha: f64, pa: &Params) -> BetaF
         dev_old = dev;
     }
     let mut conv = iter < pa.beta_maxit;
+    let irls_conv = conv;
     let unstable = beta.iter().any(|v| !v.is_finite());
     let mut out = finish_beta(&beta, y, sf, d, alpha, lambda, pa.min_mu, r);
     out.iter = iter;
@@ -508,11 +513,33 @@ fn fit_beta(y: &[f64], sf: &[f64], d: &Design, alpha: f64, pa: &Params) -> BetaF
         let (b2, ok) = newton_beta(start, y, sf, d, alpha, lambda);
         let mut o2 = finish_beta(&b2, y, sf, d, alpha, lambda, pa.min_mu, r);
         o2.iter = iter;
+        if !irls_conv {
+            if let Some(h) = last_irls.as_ref().and_then(|(w, a)| irls_hat(&d.x, m, p, w, a)) {
+                o2.hat = h;
+            }
+        }
         conv = ok;
         out = o2;
     }
     out.conv = conv;
     out
+}
+
+/// Hat diagonals `w_j x_j' (X'WX + ridge)^-1 x_j` of one IRLS iteration, from its weights and its ridged `X'WX`.
+fn irls_hat(x: &[f64], m: usize, p: usize, w: &[f64], a: &[f64]) -> Option<Vec<f64>> {
+    let inv = Lu::new(a.to_vec(), p)?.inverse();
+    Some((0..m)
+        .map(|j| {
+            let xr = &x[j * p..(j + 1) * p];
+            let mut h = 0.0;
+            for a in 0..p {
+                for b in 0..p {
+                    h += xr[a] * inv[b * p + a] * xr[b];
+                }
+            }
+            h * w[j]
+        })
+        .collect())
 }
 
 #[allow(clippy::too_many_arguments)]
