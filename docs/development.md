@@ -202,7 +202,12 @@ comparison and how its deviation is measured, and `tests/_tolerances.py` holds o
 per comparison, set from the largest deviation measured on x86-64 and arm64 with scanpy 1.11.5,
 1.12.6 and 1.13.0 times a stated margin. A constant is never looser than a tolerance that another
 test already applies to the same comparison, and a constant is changed only together with a new
-measurement. To measure again, run `python tests/_parity_cases.py pbmc3k=<directory> --out result.json`.
+measurement. The groups of the differential-expression, ingest and Leiden-agreement comparisons are the
+fixed labels in `tests/data/<dataset>_leiden.npz` (`python tests/_parity_cases.py pbmc10k=<file> --make-labels
+tests/data/pbmc10k_leiden.npz` writes one), not a clustering made during the run. The deviations still depend on the
+host: numpy uses different float32 `log1p` code on a CPU with AVX-512, which moves the inputs of both tools by an
+ulp, so the tolerances are set from measurements on Linux with and without AVX-512 and on macOS arm64. To measure
+again, run `python tests/_parity_cases.py pbmc3k=<directory> --out result.json`.
 
 ### Tests that document a defect: `baseline_fails`
 

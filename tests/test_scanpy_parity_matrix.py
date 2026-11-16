@@ -4,6 +4,12 @@
 ``deviation <= tolerance``. Both tools start from the same raw counts; see ``_tolerances.py`` for how each tolerance was set
 and which platforms and scanpy versions it covers (1.11.5, 1.12.6 and 1.13.0 on x86-64 and arm64).
 
+Groups. The differential-expression, ingest and Leiden-agreement comparisons use the fixed labels of
+``tests/data/<dataset>_leiden.npz``, so the groups do not depend on a clustering made during the run. What still
+varies between hosts is the floating-point behaviour of the installed libraries (for example numpy's float32 ``log1p``
+on a CPU with AVX-512), which moves the inputs of both tools by an ulp; ``_tolerances.py`` is set from measurements on
+the three kinds of CI host observed (Linux with AVX-512, Linux with AVX2 only, macOS arm64).
+
 Data (environment variables):
 
 * ``CREST_TEST_PBMC3K``   directory with ``matrix.mtx``, ``genes.tsv`` and ``barcodes.tsv`` of PBMC 3k (always run when set)
@@ -68,6 +74,15 @@ def test_no_tolerance_is_looser_than_an_existing_test_on_pbmc3k():
     loose = [(k, getattr(tol, tol.TOLERANCES[k]["pbmc3k"]), cap) for k, (cap, _) in tol.EXISTING_TESTS.items()
              if getattr(tol, tol.TOLERANCES[k]["pbmc3k"]) > cap]
     assert not loose, f"tolerance above the value an existing test applies to the same comparison: {loose}"
+
+
+@pytest.mark.parametrize("dataset", AVAILABLE)
+def test_label_fixture_is_well_formed(dataset):
+    import numpy as np
+    fx = np.load(cases.DATA_DIR / f"{dataset}_leiden.npz")
+    keep, lab = fx["kept_cell_index"], fx["leiden"]
+    assert keep.shape == lab.shape and len(set(keep.tolist())) == len(keep) and 0 <= keep.min() and keep.max() < int(fx["n_cells_total"])
+    assert 5 <= len(set(lab.tolist())) <= 40
 
 
 def test_tolerances_are_finite_and_not_negative():
