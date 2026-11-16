@@ -1,0 +1,1 @@
+- Benchmark driver: `crest_paper_bench.sh --grid-mode best` (with `--pilot`) runs 1 thread, each tool's best thread count from the tuning pilot and all cores on every dataset instead of the full grid, and `--stamp NAME` continues an existing results directory so that finished runs are skipped after an interruption.
