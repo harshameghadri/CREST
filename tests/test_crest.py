@@ -315,13 +315,17 @@ def test_deseq2_matches_r(name):
         np.testing.assert_allclose(a, b, rtol=tol, atol=1e-12, equal_nan=True, err_msg=col)
 
 
+SMALL_DF_PRIOR_VAR_RTOL = 1e-9   # 2 vs 2 prior variance against R (R's value is the floor 0.25 on this table)
+SMALL_DF_SIG_DIFF = 0            # genes called differently at padj < 0.1
+
+
 def test_deseq2_small_df_close_to_r():
-    """2 vs 2: the prior variance is estimated by simulation in R, exactly here."""
+    """2 vs 2: the prior variance reproduces R's simulated reference distribution (R's own value)."""
     ds, res, r, meta = _deseq_case("two_vs_two")
-    assert abs(ds.fit["dispPriorVar"] - meta["priorVar"]) < 0.05 * meta["priorVar"]
+    assert abs(ds.fit["dispPriorVar"] - meta["priorVar"]) <= SMALL_DF_PRIOR_VAR_RTOL * meta["priorVar"]
     sig_c = res["padj"].fill_null(1).to_numpy() < 0.1
     sig_r = r["padj"].fill_null(1).to_numpy() < 0.1
-    assert (sig_c != sig_r).sum() <= 2
+    assert (sig_c != sig_r).sum() <= SMALL_DF_SIG_DIFF
 
 
 def test_pseudobulk_sums_and_de(tmp_path):
@@ -336,7 +340,7 @@ def test_pseudobulk_sums_and_de(tmp_path):
     import scipy.sparse as sp
     obs = pl.DataFrame({"donor": (sample // 2).astype(str), "condition": cond, "ctype": ctype})
     bf = crest.BioFrame.from_scipy(sp.csr_matrix(X.astype(np.float32)), obs=obs)
-    crest.pp.normalize_total(bf)  # recorded transforms must not affect pseudobulk sums
+    crest.pp.normalize_total(bf, 1e4)  # recorded transforms must not affect pseudobulk sums
     crest.pp.log1p(bf)
     pb = crest.tl.pseudobulk(bf, ["donor", "condition"], groupby="ctype", min_cells=1)
     for row, (d, c, t) in enumerate(pb.obs.select("donor", "condition", "ctype").iter_rows()):
@@ -419,7 +423,7 @@ def _pipeline(n=3000, g=600, seed=5):
     crest.pp.normalize_total(bf, 1e4)
     crest.pp.log1p(bf)
     crest.pp.highly_variable_genes(bf, n_top_genes=300)
-    crest.pp.scale(bf)
+    crest.pp.scale(bf, max_value=10)
     crest.tl.pca(bf, n_comps=20)
     return bf, lab
 

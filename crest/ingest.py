@@ -2,10 +2,16 @@
 
 The query is projected onto the reference PCA (same genes, same scaling
 parameters as the reference; genes the query lacks count as unexpressed) and,
-as in scanpy, centred on its own mean,
-each query cell gets its k nearest reference cells, labels are transferred by
-majority vote, and reference UMAP coordinates by the umap-learn
-``transform`` initialisation (membership-weighted mean of the neighbours).
+by default, centred on its own mean; each query cell gets its k nearest reference
+cells, labels are transferred by majority vote, and reference UMAP coordinates by the
+umap-learn ``transform`` initialisation (membership-weighted mean of the neighbours).
+
+Relation to scanpy: in scanpy 1.11.5 (and up to 1.12.2) ``sc.tl.ingest`` projects the query ``X``
+exactly as supplied, centred on the query's own mean, and leaves any scaling to the user. CREST
+applies the reference's mean / std scaling and clipping to the query itself, so the two projections
+coincide (1.5e-5 on PBMC 3k, scanpy 1.11.5) when the query was scaled with the reference's statistics
+beforehand. scanpy 1.12.3 changed the centring to the reference mean; ``center="reference"`` is that
+convention and ``center="query"`` (the default) is the one of scanpy 1.11.5.
 """
 
 from __future__ import annotations
@@ -22,12 +28,52 @@ from . import crest as _native
 __all__ = ["ingest", "project_pca"]
 
 
+def _unique_positions(keys: Sequence[str]) -> dict:
+    """``key -> position`` for the keys that occur exactly once."""
+    seen: dict = {}
+    for i, g in enumerate(keys):
+        seen[g] = -1 if g in seen else i
+    return {g: i for g, i in seen.items() if i >= 0}
+
+
+def _match_genes(query: BioFrame, P: dict):
+    """For each query gene, its row in the reference PCA loadings (``-1`` if absent).
+
+    Genes are matched by their stable ids (``var['gene_ids']``) when the reference stored them and the
+    query has them. Otherwise they are matched by name, and only names that occur once on each side:
+    Cell Ranger feature tables repeat some symbols, and a repeated symbol cannot say which gene is
+    meant, so those genes are left out (counted as not found) with a ``UserWarning``.
+    Returns ``(rows, number of genes left out as ambiguous)``.
+    """
+    ref_ids, q_ids = P.get("gene_ids"), query.gene_ids
+    if ref_ids is not None and q_ids is not None:
+        ref_keys, q_keys, what = list(ref_ids), q_ids, "gene id"
+    else:
+        ref_keys, q_keys, what = list(P["genes"]), query.var_names, "gene name"
+    pos = _unique_positions(ref_keys)
+    q_unique = _unique_positions(q_keys)
+    rows = np.full(len(q_keys), -1, dtype=np.int32)
+    n_amb = 0
+    ref_all = set(ref_keys)
+    for i, g in enumerate(q_keys):
+        if g in pos and g in q_unique:
+            rows[i] = pos[g]
+        elif g in ref_all:  # present in the reference but repeated on one side
+            n_amb += 1
+    if n_amb:
+        warnings.warn(f"{n_amb} genes were left out of the projection because their {what} is not unique in the "
+                      "query or in the reference PCA genes; read the data with gene ids (var['gene_ids']) in both "
+                      "objects to match them exactly", UserWarning, stacklevel=4)
+    return rows, n_amb
+
+
 def project_pca(query: BioFrame, ref: BioFrame, center: str = "query") -> np.ndarray:
     """Coordinates of the query cells in the reference PCA space.
 
-    ``center="query"`` (scanpy ``ingest``) centres the query on its own mean,
-    which also removes a global shift between query and reference;
-    ``center="reference"`` uses the reference mean (the plain projection).
+    ``center="query"`` centres the query on its own mean, which also removes a global shift between
+    query and reference (scanpy 1.11.5 to 1.12.2 ``ingest``); ``center="reference"`` uses the
+    reference mean, the plain projection (scanpy >= 1.12.3 ``ingest``). The query is scaled with the
+    reference's statistics here, whereas scanpy projects ``X`` as supplied.
     """
     if "pca" not in ref.uns or "projection" not in ref.uns["pca"]:
         raise KeyError("reference has no PCA projection; run crest.tl.pca on it (CREST >= 0.3)")
@@ -35,14 +81,13 @@ def project_pca(query: BioFrame, ref: BioFrame, center: str = "query") -> np.nda
     if [o[0] for o in query.ops] != [o[0] for o in P["ops"]]:
         raise ValueError(f"query transforms {query.ops} differ from the reference's {P['ops']}; "
                          "apply the same normalize_total / log1p")
-    pos = {g: i for i, g in enumerate(P["genes"])}
-    names = query.var_names
-    sub = np.array([pos.get(g, -1) for g in names], dtype=np.int32)
+    sub, n_ambiguous = _match_genes(query, P)
     found = int((sub >= 0).sum())
     if found == 0:
         raise ValueError("no reference PCA genes in the query")
-    if found < 0.8 * len(pos):
-        warnings.warn(f"only {found} of {len(pos)} reference PCA genes are in the query; missing genes count as zero",
+    n_ref = len(P["genes"])
+    if found < 0.8 * n_ref:
+        warnings.warn(f"only {found} of {n_ref} reference PCA genes are in the query; missing genes count as zero",
                       stacklevel=3)
     L = np.ascontiguousarray(P["loadings"], np.float64)
     k = L.shape[1]
@@ -83,12 +128,18 @@ def ingest(query: BioFrame, ref: BioFrame, obs: Union[str, Sequence[str], None] 
     Adds ``query.obsm['X_pca']`` (reference PC space), ``query.obsm['X_umap']``
     (if the reference has one) and, per transferred column, ``obs[col]`` plus
     ``obs[col + '_confidence']`` (fraction of neighbours voting for the label).
-    ``n_neighbors`` defaults to the reference's ``pp.neighbors`` setting;
-    ``center`` see :func:`project_pca` (default as scanpy).
+    ``n_neighbors`` and the number of PCs searched default to the reference's ``pp.neighbors``
+    settings, which a cell filter of the reference keeps (``uns["neighbors_params"]``); without
+    them, ``n_neighbors`` must be given (``ValueError`` otherwise) and all PCs are used.
+    ``center`` see :func:`project_pca` (the default is scanpy 1.11.5's centring on the query mean;
+    scanpy >= 1.12.3 centres on the reference mean, which is ``center="reference"``).
     """
     Xq = project_pca(query, ref, center)
-    params = ref.uns.get("neighbors", {}).get("params", {})
-    k = int(n_neighbors or params.get("n_neighbors", 15))
+    params = ref.uns.get("neighbors", {}).get("params") or ref.uns.get("neighbors_params", {}).get("params") or {}
+    if n_neighbors is None and "n_neighbors" not in params:
+        raise ValueError("the reference has no neighbour settings (crest.pp.neighbors has not been run on it); "
+                         "run it, or pass n_neighbors (all principal components are then used)")
+    k = int(n_neighbors or params["n_neighbors"])
     n_pcs = params.get("n_pcs")
     Xr = ref.obsm["X_pca"] if n_pcs is None else ref.obsm["X_pca"][:, :n_pcs]
     Xq_n = Xq if n_pcs is None else Xq[:, :n_pcs]

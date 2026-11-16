@@ -1,8 +1,11 @@
 # Pseudobulk DESeq2 in CREST
 
-`crest.tl.DESeq2` is a Rust port of Bioconductor **DESeq2 1.42** (`DESeq()` +
-`results()`), written against the R and C++ sources, not re-derived from the
-paper. Use it for pseudobulk DE on single-cell data (and for bulk RNA-seq).
+`crest.tl.DESeq2` is a Rust port of Bioconductor **DESeq2** (`DESeq()` +
+`results()`, with the Wald test or the likelihood-ratio test), written against the R and
+C++ sources, not re-derived from the paper. The reference version is **R 4.5.2 with
+DESeq2 1.50.2**: new R fixtures are generated with it and record `packageVersion` in their
+`.json` file. Fixtures made earlier with DESeq2 1.42 are kept; see *Reference version* below. Use it for pseudobulk DE on single-cell data
+(and for bulk RNA-seq).
 
 ```python
 import crest
@@ -24,21 +27,70 @@ ds.dispersions()                                     # dispGeneEst, dispFit, dis
 Parquet). It ignores any recorded `normalize_total`/`log1p`, so it always sums
 raw integer counts.
 
+`pseudobulk_de` tests every group in turn. A group that cannot support the model
+(a factor with a single level, a rank-deficient design, no replicates, no usable
+counts, a contrast level that is absent from it) is skipped; the skipped groups and the
+reason for each are named in one warning and stored in
+`bf.uns["pseudobulk_de"]["skipped"]`, next to the contrast label each tested group used
+(`["contrast"]`). A mistake in the call is raised instead of skipped: negative or
+fractional counts, a malformed formula, a design variable that is not a column of `obs`,
+a contrast with an unknown level or coefficient. If no group can be tested,
+`crest.deseq2.NotEstimableError` (a `ValueError`) is raised.
+
+Factor levels are sorted by code point (upper case before lower case) and the first is
+the reference, so `["ctrl", "Stim"]` gives the reference `Stim` and the default contrast
+`condition_ctrl_vs_Stim`. R in an en_US locale sorts case-insensitively and would pick
+`ctrl`; when the two orders differ and no `ref_levels` is given, a
+`crest.deseq2.LevelOrderWarning` names both. `DESeq2.last_contrast` records the contrast
+that `results()` computed. Two terms that produce the same coefficient name raise a
+`ValueError`, since a contrast could not tell them apart.
+
 ## What is implemented (and matches R)
 
 | DESeq2 step | CREST |
 |---|---|
 | `estimateSizeFactors` (`ratio`, `poscounts`) | same |
 | `estimateDispersionsGeneEst` (rough/moments init, `linearMu`, `fitDisp` line search on the Cox-Reid profile likelihood, grid refit, `noIncrease` rule) | same |
-| `estimateDispersionsFit` `parametric` (Gamma-identity GLM, residual trimming, 10 outer iterations) and `mean` | same |
+| `estimateDispersionsFit` `parametric` (Gamma-identity GLM, residual trimming, 10 outer iterations), `local` (`locfit`, see below) and `mean`, with R's fallback from `parametric` to `local` | same (the local trend to 5e-13 relative on the test cases) |
 | `estimateDispersionsPriorVar` (`mad²` − `trigamma((m−p)/2)`, floor 0.25) | same |
 | `estimateDispersionsMAP` (+ `dispOutlier`) | same |
 | `nbinomWaldTest` (IRLS with ridge 1e-6, `betaConv`, Wald p-values) | same (refit of non-converged rows: see below) |
-| Cook's distances, `maxCooks`, `refitWithoutOutliers` (≥ 7 replicates) | same |
+| `nbinomLRT` (`DESeq2(test="LRT", reduced="~ ...")`: deviance of the full vs the reduced design, χ² p-values) | same (LRT statistics within 1e-6 of R) |
+| Cook's distances, `maxCooks`, `refitWithoutOutliers` (≥ 7 replicates) | same; under the LRT the distances use the full-model means, as DESeq2 ≥ 1.50 does |
 | `results()`: coefficient / `c(factor, a, b)` / numeric contrasts, `contrastAllZero`, Cook's cutoff incl. the 2-group heuristic, independent filtering (lowess port of R's `clowess`), BH | same |
 
-Not implemented: LRT, `lfcShrink` (apeglm/ashr/normal), `betaPrior=TRUE`,
-`fitType="local"`/`glmGamPoi`, observation weights, `lfcThreshold`,
+### The local dispersion trend
+
+`fit_type="local"` is DESeq2's `localDispersionFit`: `locfit(log(disp) ~ log(mean), weights = mean)` on the genes whose
+gene-wise dispersion is at least `10 * minDisp`, evaluated as `exp(predict(fit, log(mean)))`. It is a port of the
+evaluation of locfit 1.5-9.12 for this one call (`src/deseq/locfit.rs`), not an approximation of it: the defaults
+(`alpha = 0.7`, degree 2, tricube kernel, family `qgaussian`) with locfit's adaptive tree on the bounding box of the data
+(`ev = rbox()`: a cell is split while its width exceeds 0.8 of the smaller bandwidth at its ends, at most 19 vertices), a
+local quadratic at each vertex solved as locfit solves it (one Newton step through an eigen-decomposition of the scaled
+normal equations, sums in the order of the C code), cubic Hermite interpolation between vertices, and locfit's parametric
+component, a global weighted quadratic that is subtracted at the vertices and added back at every evaluation (it makes the
+curve beyond the range of the means quadratic, as R's is). Where R's `locfit` stops with an error (for example two
+gene-wise dispersions: "newsplit: out of vertex space") R's `DESeq()` stops; CREST then continues with the mean trend, sets
+`fit["fit_substituted"]` and warns that the results can differ from R.
+
+When the parametric fit does not converge (or one of its coefficients is not positive) R prints a note and substitutes the
+local trend; CREST does the same, with R's note as the message: `fit["fitType"]` is `"local"`, `fit["fit_substituted"]` is
+`True` and `fit["trend"]` is empty (there are no coefficients). The mean trend is used where R uses it: when every gene-wise
+dispersion is within two orders of magnitude of `minDisp`, and where the local fit fails as above. Agreement with R's local
+trend (R 4.5.2, DESeq2 1.50.2, locfit 1.5-9.12): over 22 synthetic cases built to hit the cases of the evaluation structure
+(ties in the means, 3 to 30 genes, extreme weights, a trend that needs many vertices and pseudo-vertices, a gap in the means,
+outliers, gene-wise values at the floor) and six COVID-19 atlas strata where R's parametric fit fails, the largest relative
+difference of the trend is 4.1e-14 on Linux x86-64 and on macOS arm64, at the means and at points up to 2.5 log units beyond
+their range (`tests/test_deseq2_local_fit.py`, `tests/data/deseq2_local_fit_measurements.json`). On two whole `DESeq()` fixtures where R falls back the agreement is as follows. In the first (120 genes, 3 v 3) every column
+agrees to 1e-9 or better, adjusted p-values to 5e-10, and the significant sets are identical. In the second (`edge_sparse_extreme`:
+6 samples, 1,500 genes, counts over six orders of magnitude) the trend agrees to 5e-10 on every gene, and every column agrees
+within 2e-4 on the 1,095 genes whose dispersion is below the cap (10). The other 392 genes sit at the cap, where the likelihood in
+the coefficients is flat: R's optimiser (L-BFGS-B) and CREST's (Newton) stop at different places, fold changes differ by up to 3.7
+log2 units with equal standard errors (*Known differences* 2), and the changed p-values move the `baseMean` threshold of
+independent filtering, so adjusted p-values are missing for 1,021 genes in CREST and 820 in R. The significant sets then differ:
+CREST 92, R 89, 85 shared at padj < 0.1, and 77, 78 and 77 at padj < 0.05.
+
+Not implemented: `lfcShrink` (apeglm/ashr/normal), `betaPrior=TRUE`, `glmGamPoi`, observation weights, `lfcThreshold`,
 interaction terms in formulas (pass `design_matrix=` instead).
 
 ## Validation against R
@@ -52,24 +104,67 @@ inputs to R and CREST. Results are in `bench/deseq2/results/`.
   contrast, 2×8 and 2×12 with outlier replacement): size factors, dispersions,
   log2 fold changes, standard errors and p-values agree to ~1e-9 relative. The
   significant gene sets are identical.
-* Kang 2018: identical significant sets (padj < 0.1) in 6 of 8 cell types. In
-  FCGR3A+ monocytes 1468/1469 match, in CD4 T cells 1350/1365. Every difference
-  traces to a few genes at the dispersion floor (*Known differences* 1).
-  For comparison, pydeseq2's number of calls differs from R's by 3–25% per cell
+* Kang 2018 (R 4.5.2 / DESeq2 1.50.2, BiocParallel 1.44.0; CREST built from release/0.5 at
+  commit d6a1f16, Linux x86-64; `bench/deseq2/kang_concordance.py`): identical significant
+  sets in 6 of 8 cell types at padj < 0.1 and at padj < 0.05. In CD4 T cells CREST calls
+  1356 genes at padj < 0.1 and R 1365, with 1350 shared (15 R-only, 6 CREST-only); at
+  padj < 0.05 the numbers are 1107 and 1108 with 1104 shared. In FCGR3A+ monocytes CREST
+  calls 1468 and R 1469 at padj < 0.1 (1468 shared; the one gene only R calls has padj
+  0.1004 in CREST and 0.0999 in R) and both call 1213 at padj < 0.05. The 21 + 7
+  discordant CD4 T genes are all removed by independent filtering choosing a different
+  `baseMean` threshold in the two tools, which follows from a slightly different
+  dispersion trend (*Known differences* 1). The script re-measures these figures, and
+  also lists every discordant gene with both adjusted p-values, both dispersions and its
+  cause. For comparison, pydeseq2's number of calls differs from R's by 3–25% per cell
   type (e.g. 1630 vs 1365 in CD4 T cells).
-* `tests/test_crest.py` checks against stored R 1.42 output (`tests/data/`), so CI
-  guards R-parity without needing R.
+* COVID-19 atlas (Stephenson et al. 2021; donor-level pseudobulk, design `~ Status`, Covid vs Healthy, 109 donors, 30 cell
+  types; R 4.5.2 / DESeq2 1.50.2 / locfit 1.5-9.12; CREST at commit 3dd708e, Linux x86-64;
+  `bench/deseq2/covid_concordance.py`, tables in `bench/deseq2/results/covid_concordance_*.csv`): R's parametric trend
+  fails in 11 of the 30 strata and DESeq2 substitutes its local trend. CREST substitutes it in the same 11 and in one more
+  (myeloid dendritic cell, *Known differences* 4). In the 11 strata CREST and R call the same genes: 9,043 at padj < 0.1 and
+  6,494 at padj < 0.05 (before the local trend was ported CREST used the mean and called 6% to 22% fewer genes than R in each
+  of the 12 strata where it did so, 9,723 against 10,901 in total at padj < 0.1). Over all 30 strata the significant sets are
+  identical in 28 at padj < 0.1 and in 29 at padj < 0.05. The exceptions at 0.1: "dendritic cell, human" (CREST 1,502, R 1,499,
+  1,499 shared; the three CREST-only genes sit at the threshold) and "myeloid dendritic cell" (CREST 2,110, R 1,858, 1,856
+  shared at 0.1; 1,584, 1,436 and 1,432 at 0.05; independent filtering picks the `baseMean` threshold 0.344 in CREST and 0.438
+  in R because the two trends differ). In all 30 strata the same genes have their counts replaced in the two tools (1,581 in total, 121 of them in "IgA plasma cell"; `R_replaced`, `CREST_replaced` and `replaced_flag_mismatch` in `covid_concordance_fit.csv`). R's `localDispersionFit` given CREST's gene-wise dispersions reproduces CREST's fitted dispersions to 5.8e-15 at the genes
+that enter the trend fit (gene-wise dispersion above 100 * `minDisp`: 6,403 to 9,457 of the 24,245 genes per stratum) in eight of
+these strata (`bench/deseq2/covid_local_trend_swap.py`), so the trend function is not what differs. The fitted dispersions of
+the two tools do differ in some strata. Over the 11 strata where R uses its local trend, the largest relative difference of the
+fitted dispersion per stratum is at most 2e-9 in three, 3e-5 or less in three more, and between 0.011 and 0.022 in five. In
+"IgA plasma cell" (`bench/deseq2/covid_trend_gap.py`, 16,639 genes with counts, 16,625 with a p-value in both tools) the
+comparison was made at every gene. Like for like, CREST's reported `dispFit` and R's `localDispersionFit` given CREST's first-pass
+gene-wise values agree to 5.6e-12 over all 16,637 genes whose reported base mean is above zero, and over the 16,623 of them with a
+p-value. Evaluating R's trend at the first-pass base means instead gives a maximum of 5.4e5: for 110 genes (99 with a p-value, all replaced in CREST) the base mean reported after outlier replacement is far below the first-pass one (ENSG00000253822: 0.66 and
+0.0065, where the smallest mean in the fit is 0.037), so the two evaluations are made at different points; for some of these
+genes the reported mean lies below the fitted range, in locfit's quadratic extrapolation, where the curve reaches 3e5; R reports the same post-replacement base means (to 1e-9) for every gene with a p-value. The reported `dispFit` of the two tools differs over the genes with a p-value in both with median 1.8e-3, 99th percentile 2.0e-2 and maximum 0.022, which is the effect of the trend's inputs: 15 first-pass gene-wise estimates differ between the tools, R's trend moves by a median 1.8e-3 and at most 2.2e-2 when CREST's values replace R's, and with R's values put back at those 15 genes alone it is reproduced to 3.5e-8. The two tools replace the same 121 genes and report the same base mean at all of them; this needs the hat convention of *Known differences* 2 (with the hat diagonals of the refit, CREST skipped one replacement that R makes, at ENSG00000211942, and replaced one sample fewer at ENSG00000211946, so that their base means were 64.8 against 49.9 and 60.0 against 42.6). The differences reach the results: `dispersion` differs by up to 0.030 over the genes with a p-value, and the p-value by up to a factor of about 40 (ENSG00000211974: 3.8e-11 in CREST, 1.5e-9 in R; median relative difference 1.8e-5). Among the eight genes with the largest p-value differences the log2 fold changes are 19.2 to 25.2 and differ between the tools by 0.04 to 1.8, with the dispersion and the gene-wise estimate equal to six digits in all eight: equal dispersions with different fold changes at large fold changes is the pattern of the flat likelihood in the coefficients (*Known differences* 2), not of the trend.
+* `tests/test_crest.py` and `tests/test_deseq2_r_parity.py` check against stored R output
+  (`tests/data/`), so CI guards R-parity without needing R. The R-parity file pins eleven
+  count tables made with R 1.50.2 (scripts `make_pin_inputs.py` and `make_pin_fixtures.R`
+  next to them): heterogeneous dispersions with 2 and 3 residual degrees of freedom, outlier
+  replacement and refit, counts up to 10⁸, independent filtering together with Cook's
+  p-value filtering, `poscounts` size factors, a numeric covariate with all-zero contrast
+  rows, an LRT with Cook's distances at the cut-off, and a contrast over replaced counts.
+  Each tolerance is ten times the larger of the deviations measured on Linux x86-64 and macOS
+  arm64; what is excluded from a comparison (gene-wise dispersions on the flat part of the
+  likelihood, Cook's distances above the cut-off) is stated in the test module.
+* `tests/test_deseq2_edge_pins.py` adds four more R-pinned cases (scripts
+  `make_edge_inputs.py` and `make_edge_fixtures.R`): three groups of 8, 4 and 8 samples with
+  outliers inside and outside the groups that are replaced (at `minReplicatesForReplace` 7, 4
+  and 9), two sparse 6-sample designs in which hundreds of gene-wise dispersions stop at
+  `maxit` (one where R falls back to a local trend, which CREST now does too), and random vectors with tied x for
+  `lowess` and `loess`. No gene fails the beta fit in R in these data. The rows that R refits
+  after IRLS diverges are pinned in `tests/test_deseq2_replace_hat.py` (scripts `make_replace_inputs.py` and
+  `make_replace_fixtures.R`): 16 samples in groups of 4 and 12, with 450 genes that have zero counts in the group of 4 and
+  heavy-tailed counts in the other, 313 of them refit before any replacement. It pins the replaced genes, the base means after replacement, the dispersions and the first-pass Cook's distance (the run without replacement). `maxCooks` after replacement is not pinned: on the refit rows its values are around 4e-6, and they differ from R's in relative terms (up to 29.7 on the fixture, 0.84 over the 24,245 genes of "IgA plasma cell"; median 2.7e-8 there); the cause of this difference has not been traced.
 
 ## Speed
 
-On the Kang 2018 cell types (≈ 12–16k expressed genes, 10–16 samples, 9
-coefficients), on the 4-core benchmark machine:
-
-| | per cell type | all 8 cell types |
-|---|---|---|
-| R DESeq2 1.42 | 12–19 s | 131 s |
-| pydeseq2 0.5.4 | 20–28 s | 202 s |
-| **CREST** | **0.4–1.2 s** | **7.2 s** (plus 0.4 s to pseudobulk 24k cells) |
+Timings against R DESeq2 and pydeseq2 on the Kang 2018 cell types are thread-matched:
+CREST, R (`DESeq()` serial or with BiocParallel workers) and pydeseq2 (`n_cpus`) are timed
+at the same thread counts, and each tool is also compared at its own best thread count
+(`bench/deseq2/kang_pseudobulk.py`). No speed-up is quoted here until that comparison has been
+re-run; the results will be published in {doc}`benchmarks`.
 
 ## Known differences
 
@@ -79,17 +174,91 @@ coefficients), on the 4-core benchmark machine:
    That is larger than the likelihood differences it compares, so R's line
    search ends in numerical noise. CREST evaluates the same quantities
    without cancellation (Stirling-remainder and `log1p` forms), so a few such
-   genes (4 of 15,720 in Kang CD4 T cells) can land elsewhere on the flat
-   region. When one of them crosses the `1e-6` threshold for inclusion in the
-   trend fit, the trend shifts by ~0.1% and a few borderline calls flip.
+   genes can land elsewhere on the flat region. `dispGeneIter` is not comparable
+   there: in Kang CD4 T cells it differs on 11,567 of 15,720 genes, and all of
+   them sit at the floor in both tools. A gene-wise estimate above `1e-6` enters
+   the trend fit, so when a gene crosses that threshold in one tool only, the
+   trend moves (coefficients by 1e-4 to 1e-3, fitted dispersions by ~0.1%, prior
+   variance by ~1%), the number of rejections at each filter quantile changes,
+   independent filtering picks another `baseMean` threshold (CD4 T cells: 1.81 in R,
+   1.56 in CREST) and borderline calls flip. In CD4 T cells two genes that exhaust
+   `maxit` are at 1e-8 in R and at 2.6e-5 and 7e-6 in CREST (adjusted
+   log-likelihood differing by 6e-5 and 4e-6). In FCGR3A+ monocytes one gene is not at the
+   floor: R stops at 2e-6 after 23 iterations, where the adjusted log-likelihood is 1.1
+   below its value at CREST's 0.25. Replacing, in R, the gene-wise estimates of the four
+   genes per cell type that differ by CREST's values reproduces CREST's trend to 1e-13
+   and removes every discordant call at padj < 0.05 and < 0.1 in both cell types
+   (`bench/deseq2/kang_trend_swap.py`).
 2. **Rows IRLS does not converge on.** R refits them with L-BFGS-B (`optim`),
    CREST with Newton's method on the same concave penalised likelihood and the
    same bounds. The optimum is the same, but R's optimizer tolerance leaves
-   differences of ~1e-4 in log2 fold change for these rows.
-3. **Prior variance with ≤ 3 residual degrees of freedom** (e.g. 2 vs 2). R
-   estimates it by simulating 10⁴ draws with `set.seed(2)`, then smooths with
-   `loess`. CREST integrates the same reference distribution exactly, which is
-   deterministic but differs from R's Monte-Carlo value by a few percent. With
-   3+ residual df the closed form is used and the results agree exactly.
-4. **Parametric trend failure.** R substitutes a local regression (`locfit`).
-   CREST uses the mean dispersion and reports it in `DESeq2.fit["messages"]`.
+   differences of about 1e-4 in log2 fold change for most of these rows, and larger ones for
+   sparse genes (up to about 1 log2 unit in the Kang comparison).
+   The hat diagonals that Cook's distance uses do not come from the refit: R's refit replaces the coefficients and the fitted
+   means, and the `H` matrix that `DESeq()` keeps for these rows stays that of the last iteration of the iteratively reweighted
+   least squares (weights from the means of that iteration). CREST does the same, so that the distances, and with them the choice
+   of the counts to replace, follow R's. The hat of the refit gives distances up to 20% smaller at such rows; in the COVID-19
+   atlas stratum "IgA plasma cell" this made CREST skip a replacement that R makes (ENSG00000211946, the sample with count 1,447:
+   Cook's distance 5.053 in R, 4.936 with the refit's hat, 5.053 now, cut-off 5.013). The distances of refit rows still differ
+   from R's by the refit's own difference (up to 1.2e-3 relative on the 313 refit rows of the fixture of
+   `tests/test_deseq2_replace_hat.py`, against 6e-11 on the rows IRLS converges on).
+3. **Prior variance with ≤ 3 residual degrees of freedom** (e.g. 2 vs 2). R estimates it by
+   simulating 10⁴ draws after `set.seed(2)` for each of 200 candidate variances, comparing
+   the histogram of the draws with the observed residuals (KL divergence) and smoothing
+   with `loess(span = 0.2)`. The draws do not depend on the data, so CREST uses the same
+   draws, tabulated once from R (`src/deseq/data/`), with the same pseudo-count, the same
+   histogram bins and an interpolating `loess` as R's; on the test designs it returns R's
+   value (to 1e-9). R's value is itself one draw of a Monte-Carlo estimate: repeating R's
+   computation over seeds 1 to 50 on the 1,000-gene test tables gives
+   2v2 (sd 1.0): 0.25 to 0.36 (mean 0.29); 2v2 (sd 1.5): 1.01 to 1.21 (mean 1.08); 2v3: 0.61 to 0.66 (mean 0.63); 3v2: 0.73 to 0.74 (mean 0.73).
+   With 4 or more residual degrees of freedom the closed form is used and the results agree.
+   Before this was done CREST integrated the reference distribution exactly, which moved
+   the estimate outside R's seed range for two of the four designs (0.41 against 0.27 at
+   2 vs 2, 0.67 against 0.73 at 3 vs 2).
+4. **Parametric trend failure.** R substitutes a local regression (`locfit`) and so does CREST
+   (*The local dispersion trend* above); `DESeq2.fit["fit_substituted"]` is `True`,
+   `fit["fitType"]` is `"local"`, and `fit["messages"]` and a `UserWarning` carry R's note
+   (`quiet=True` silences the warning, not the flag). Whether the parametric fit fails depends on
+   the gene-wise dispersions, so a gene that differs between the tools in the way *Known differences* 1
+   describes can make the fit fail in one tool and not in the other: in the COVID-19 atlas stratum
+   "myeloid dendritic cell" (56 donors) two genes with a flat likelihood sit at 1e-8 in R and at 3.7e-5 and
+   4.7e-5 in CREST; with CREST's values R's own `parametricDispersionFit` stops with "dispersion fit did not
+   converge" (the fit keeps changing its coefficients in the fourth digit), with R's values it converges, and CREST's
+   Gamma-GLM loop returns R's coefficients to 2e-13 on R's values and fails on CREST's as R does
+   (`tests/test_deseq2_local_fit.py`). CREST then uses the local trend where R uses its parametric one. Where the
+   mean was substituted before (versions up to 0.4.0), results differed markedly from R's; the local trend removes
+   that difference. A parametric fit that fails for numerical reasons only (for example at counts in the hundreds
+   of millions) is no longer a cause: the normal equations of the trend fit are equilibrated before the pivot test.
+5. **Cook's cut-off and missing values.** `qf(0.99, p, m - p)` is evaluated to double precision,
+   as R does. A p-value or adjusted p-value that is missing is `null` in the table; the reason
+   (no counts, Cook's outlier, removed by independent filtering) is in
+   `DESeq2.last_results_info["na"]`, a dict of boolean masks over genes.
+6. **Checks R makes and variants it has.** `min_replicates_for_replace < 3` raises, as R's
+   `replaceOutliers` stops (`float("inf")` switches replacement off). R's `sfType = "iterate"`
+   is not available (`"ratio"` and `"poscounts"` are). When every gene-wise dispersion is at the
+   floor R's `estimateDispersionsFit` stops; CREST continues with the mean trend and sets the
+   dispersions to 10 times the floor (the first pass only; genes refitted after outlier
+   replacement always get their MAP dispersion). `obs` must be a polars `DataFrame`
+   (`pl.from_pandas` converts a pandas table). The all-zero test of numeric and tuple contrasts
+   uses the original counts, as R's `contrastAllZeroNumeric` / `contrastAllZeroCharacter` do,
+   also for genes whose outliers were replaced.
+
+## Reference version
+
+New fixtures and the numbers in this page refer to R 4.5.2 / DESeq2 1.50.2 (the Kang
+comparison above was run with BiocParallel 1.44.0). The older
+fixtures (`deseq2_{two_vs_two,three_level_batch,outlier_replacement}_*`, the LRT outputs from
+`make_lrt_fixtures.R`) were made with DESeq2 1.42 and stay in the tests. Known differences
+between the two R versions, so that they are not mistaken for CREST differences:
+
+* Under `test="LRT"`, DESeq2 1.42.1 does not store the full model's fitted means before it
+  computes Cook's distances, 1.50.2 does; CREST follows 1.50.2. On a 3-level design with
+  4 + 4 + 4 samples the earlier comparison found `maxCooks` differing by up to 0.21 in
+  absolute terms between the two R versions and by about 3e-14 between CREST and 1.50.2
+  (carried over from that comparison; 1.42 is not installed where the fixtures are made).
+  The 1.50.2 fixture `lrt_cooks` has four genes within 5 % of the cut-off, on either side,
+  and CREST agrees with R there to 1e-9.
+* The two 1.42 LRT fixtures have no group with three replicates, so R reports `maxCooks` as
+  `NA` for them in both versions. Re-running `make_lrt_fixtures.R` with 1.50.2 reproduces
+  the stored statistics, p-values and adjusted p-values to 2.2e-11 relative, log2 fold
+  changes to 4.3e-13 and dispersions to 9.7e-14.

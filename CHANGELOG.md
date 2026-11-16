@@ -5,9 +5,9 @@
 ### Changed
 - Final paper benchmark: standard tier, 5 repeats, CPU governor `performance`, commit
   `d75475e` (`dev`, both Leiden parallelisations + the `read_h5ad`/`from_anndata` I/O work).
-  284/284 runs succeeded. Headline best-vs-best speed-up 1.20×–16.70× across 2,700–199,531
-  cells (10.28× on PBMC 68k), memory 1.6×–4.7× lower; CREST scales as cells^0.74 vs scanpy's
-  cells^0.91. Full results in `docs/benchmarks.md`.
+  284/284 runs succeeded. Headline speed-up (the smaller of matched-thread and best-vs-best)
+  ranges from 1.20× to 16.70× across 2,700–199,531 cells (10.28× on PBMC 68k), memory
+  1.6×–4.7× lower. Full results in `docs/benchmarks.md`.
 - `read_h5ad` now keeps every obs/var column (previously only the cell/gene index and
   `gene_ids`), including anndata's categorical encoding (a sub-group of `categories` +
   integer `codes`), expanded to strings the same way `BioFrame.from_anndata` already
@@ -50,8 +50,8 @@
     change, keeping the aggregation parallelisation) reproduced the +0.00152/2-of-20 baseline
     exactly, isolating this specific change as the cause.
   Per the project's accuracy rules, a parity-losing change does not ship even when it is
-  faster: `fast_move_nodes` stays single-threaded. Design notes for a future attempt are in
-  `HANDOVER.md`.
+  faster: `fast_move_nodes` stays single-threaded (the two designs that were tried are
+  described in `docs/benchmarks.md`).
 - Leiden refinement (phase 2) now runs each unrefined community on its own thread (rayon),
   with an RNG seeded from `(seed, community id)` via SplitMix64: a merge only ever pulls a
   node into a sub-community of its own unrefined community, so communities refine
@@ -61,7 +61,7 @@
   leidenalg +0.0015 either way over 20 seeds at resolution 1; the exact per-seed partition
   changes along with the RNG draw sequence, so this is not bit-identical to the old code).
   `fast_move_nodes` (phase 1) is still single-threaded and is now the larger share of
-  Leiden's wall time; parallelising it is the next step (HANDOVER.md).
+  Leiden's wall time; parallelising it is the next step.
 - UMAP (parallel): threads read one shared snapshot of the embedding instead of each copying
   all n rows 16 times per epoch; removes O(threads x cells) copying and ~threads x cells x 8 B
   of memory. Output bit-identical.
@@ -70,8 +70,6 @@
   its parallel runs (was one copy per run). Output bit-identical.
 - Benchmark accuracy: Leiden seed-to-seed baseline (3 seeds per tool on the same graph, untimed)
   reported next to CREST-vs-scanpy ARI.
-
-### Changed
 - Benchmark protocol (`bench/paper/`, `crest_paper_bench.sh`): the headline is the core workflow,
   run at 8 and all threads so every speed-up is reported at matched threads **and** best vs
   best (the smaller is the headline); optional modules run separately so their time and memory
@@ -99,8 +97,8 @@
   `results()`: median-of-ratios size factors, Cox-Reid gene-wise dispersions,
   parametric trend, MAP shrinkage, NB-GLM Wald tests, Cook's filtering and
   outlier replacement, and independent filtering. It matches R to ~1e-9 on
-  simulated designs, is ~18× faster than R and ~28× faster than pydeseq2 on
-  Kang 2018 pseudobulk. See `docs/deseq2.md`.
+  simulated designs. Timings against R and pydeseq2 are in `docs/benchmarks.md` once the
+  thread-matched comparison has been re-run. See `docs/deseq2.md`.
 - `crest.tl.pseudobulk` (streamed raw-count sums per sample × group) and
   `crest.tl.pseudobulk_de` (per-cell-type DESeq2 in one call).
 - `bench/deseq2/`: R comparison on simulated designs and on Kang et al. 2018.
@@ -118,10 +116,8 @@
 - Native `knn_query` (reference -> query kNN, exact or IVF).
 - `scripts/crest_paper_bench.sh` + `bench/paper/`: one-command publication benchmark
   (datasets, per-core CPU/clock/memory monitoring, statistics, figures).
-- `scripts/crest_git_housekeeping.sh`: repository housekeeping (dev branch, stale branches).
 - **Documentation site** (Sphinx + MyST, Read the Docs): installation, quickstart, concepts,
   full API reference, benchmarks, developer guide; `.readthedocs.yaml`; CI `docs` job.
-- `work.md`: the development history; `CLAUDE.md` / `HANDOVER.md` rewritten for new sessions.
 
 ### Removed
 - The `.bio` Polars expression namespace and its Rust plugin code (duplicated the

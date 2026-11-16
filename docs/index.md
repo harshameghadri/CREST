@@ -6,7 +6,7 @@ PCA, neighbours, Leiden, UMAP and differential expression. After clustering it a
 integration, doublet detection, reference mapping and pseudobulk DESeq2.
 
 The standard is to **give the same answers as the reference tools** (scanpy 1.11,
-R DESeq2 1.42, harmonypy 2.x) while being faster and using less memory. How much faster
+R DESeq2 1.50, harmonypy 2.x) while being faster and using less memory. How much faster
 depends on dataset size and thread count; {doc}`benchmarks` reports the measured numbers,
 including where CREST is not faster.
 
@@ -66,6 +66,5 @@ api
 :caption: Project
 
 development
-readthedocs
 changelog
 ```

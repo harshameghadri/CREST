@@ -14,6 +14,7 @@ curl -LO https://cf.10xgenomics.com/samples/cell-exp/3.0.0/pbmc_10k_v3/pbmc_10k_
 
 ```python
 import crest
+import polars as pl   # for the table filters in steps 5 and 6 (see "Why polars?" below)
 
 bf = crest.read_10x_h5("pbmc_10k_v3_filtered_feature_bc_matrix.h5")
 print(bf)
@@ -37,6 +38,12 @@ bf = crest.pp.filter_cells(bf, min_genes=200, max_pct_mt=20)
 bf = crest.pp.filter_genes(bf, min_cells=3)
 ```
 
+The readers expect **raw integer UMI counts**, the input CREST is validated on. A `UserWarning`
+is raised when the matrix holds negative values or non-integers (for example a log-normalised
+`.h5ad`), because normalisation, `seurat_v3` and DESeq2 would then be applied to the wrong
+quantity. Counts are stored as `float32`, so integers above 2**24 are not exact. A legacy (v2)
+10x file with several genomes needs `genome=`: `crest.read_10x_h5(path, genome="mm10")`.
+
 Unlike scanpy, the filters **return** a new `BioFrame`, so assign the result. The new object
 shares the count matrix with the old one (it is not copied); only the tables of kept cells
 and genes are new.
@@ -44,12 +51,10 @@ and genes are new.
 ### Why `polars`?
 
 `bf.obs` (cells) and `bf.var` (genes) are [Polars](https://pola.rs) DataFrames, not pandas.
-Polars is installed with CREST, and you only need to import it yourself to write a Polars
-*expression*, for example a custom filter:
+Polars is installed with CREST, and you only need to import it yourself (as in step 2) to
+write a Polars *expression*, for example a custom filter:
 
 ```python
-import polars as pl
-
 bf = bf.filter_cells(pl.col("total_counts") < 30_000)
 ```
 
@@ -65,9 +70,9 @@ hand the whole object over with `bf.to_anndata()`.
 ## 3. Normalise, select genes, reduce
 
 ```python
-crest.pp.normalize_total(bf, target_sum=1e4)  # lazy: noted in bf.ops, nothing computed yet
+crest.pp.normalize_total(bf, target_sum=1e4)  # noted in bf.ops + per-cell totals (one pass)
 crest.pp.log1p(bf)                            # lazy: noted in bf.ops, nothing computed yet
-print(bf.ops)                                 # [('normalize_total', 10000.0), ('log1p',)]
+print(bf.ops)                                 # [('normalize_total', 10000.0, '<fingerprint>'), ('log1p',)]
 
 crest.pp.highly_variable_genes(bf, n_top_genes=2000, flavor="seurat")
 crest.pp.scale(bf, max_value=10)              # lazy: noted in bf.uns["scale"]; used by PCA only
@@ -75,8 +80,9 @@ crest.tl.pca(bf, n_comps=50)                  # obsm["X_pca"], varm["PCs"], uns[
 ```
 
 **What "lazy" means here.** In scanpy, `sc.pp.normalize_total` and `sc.pp.log1p` rewrite
-`adata.X` immediately. In CREST these two calls finish instantly: they only add an entry to
-the list `bf.ops`, and the count matrix is left untouched. Every later step that needs
+`adata.X` immediately. In CREST these two calls only add an entry to the list `bf.ops`
+(`normalize_total` also stores each cell's total, one number per cell, from a single pass),
+and the count matrix is left untouched. Every later step that needs
 normalised values (`highly_variable_genes`, `pca`, `rank_genes_groups`, `score_genes`) reads the
 raw counts chunk by chunk and applies the operations in `bf.ops` on the fly, inside its Rust
 kernel, so it sees exactly the values scanpy would have in `adata.X`. Nothing normalised is
@@ -126,7 +132,17 @@ plt.scatter(xy[:, 0], xy[:, 1], c=codes, s=1, cmap="tab20"); plt.gca().set_aspec
 
 adata = bf.to_anndata()          # AnnData with raw counts in X, obs/var/obsm/uns copied
 # import scanpy as sc; sc.pl.umap(adata, color="leiden")
+adata.write_h5ad("pbmc3k.h5ad")  # works after the whole workflow
 ```
+
+`to_anndata` converts `uns` to types the h5ad format stores: the Polars result tables
+(`rank_genes_groups`, `leiden_sweep`) become pandas DataFrames, the recorded transforms in
+`ops` become `"|"`-joined strings (`"normalize_total|10000.0|<fingerprint>"`), and entries that
+are `None` are left out. The store's own `cell_id` / `gene_id` columns are not exported, so
+`BioFrame.from_anndata(adata)` and `crest.read_h5ad(...)` of the written file work after any
+filter. `bf.write_parquet(dir)` refuses (`ValueError`, nothing touched) to write into the
+directory the frame itself reads from, which includes `backed=` datasets: write to a new
+directory instead.
 
 ## 7. Out of core: the same code for a dataset larger than RAM
 
@@ -136,6 +152,10 @@ bf = crest.read_10x_h5("big.h5", backed="big_parquet/")    # converts to Parquet
 
 bf = crest.read_parquet("big_parquet/")                    # reopen later without the .h5
 ```
+
+`backed=` replaces the `part-*.parquet` files already in that directory, once the new dataset
+is complete. It raises `ValueError` if a frame in the same session still reads from the
+directory (release it with `del bf` or use another directory).
 
 With `backed=`, the counts stay on disk and are read one file at a time, so the count matrix
 never has to fit in memory. Per-cell results (the table of cells, PCA, the neighbour graph,
@@ -157,6 +177,9 @@ adata = sc.read_loom("sample.loom")       # or sc.read_visium(...), ad.read_zarr
 bf = crest.BioFrame.from_anndata(adata)   # carries over every obs/var column, and obsm
 ```
 
+`read_h5ad` keeps anndata's nullable integer, boolean and string columns (missing values
+become nulls) and warns about any column in an encoding it cannot read.
+
 This loads the whole matrix into memory first (unlike `read_10x_h5(..., backed=...)`), so for
 files too large for that, convert to `.h5ad` and use `crest.read_h5ad` instead.
 
@@ -171,3 +194,32 @@ files too large for that, convert to `.h5ad` and use `crest.read_h5ad` instead.
 | `sc.pp.scale` densifies | `crest.pp.scale` is recorded and applied exactly inside PCA |
 | results in `adata.uns[...]` as recarrays | results returned as Polars DataFrames (and stored in `bf.uns`) |
 | plotting in `sc.pl` | convert with `bf.to_anndata()` |
+| `sc.tl.rank_genes_groups(reference=..., corr_method=..., pts=..., layer=..., use_raw=...)`, `method="t-test_overestim_var"` or `"logreg"` | not supported: `crest.tl.rank_genes_groups` always compares each group with every other cell (`reference="rest"`, which includes cells of unselected groups and cells without a label), supports `method="t-test"` and `"wilcoxon"`, adjusts with Benjamini-Hochberg (`corr_method`) and does not compute `pts`. Unknown names in `groups` and groups with fewer than two cells raise `ValueError` |
+
+## Defaults that differ from scanpy
+
+`normalize_total` and `scale` follow scanpy: `normalize_total(bf)` scales every cell to the
+median of the per-cell totals (`target_sum=None`) and `scale(bf)` does not clip
+(`max_value=None`). Earlier versions defaulted to `target_sum=1e4` and `max_value=10`; the
+examples here pass those two values explicitly, as most published pipelines do. The remaining
+differences (checked against the signatures in scanpy 1.11.5) are also noted in each function's
+docstring. Pass the scanpy value explicitly if you want scanpy's behaviour.
+
+| function | CREST default | scanpy 1.11 default | note |
+|---|---|---|---|
+| `tl.rank_genes_groups` | `n_genes=100` | `n_genes=None` (all genes) | `n_genes=None` returns all genes in CREST too |
+| `tl.leiden` | `n_iterations=2` | `n_iterations=-1` (until no improvement), `flavor="leidenalg"` | CREST has one implementation and no `flavor`. scanpy 1.11 warns that its future default is `flavor="igraph", n_iterations=2`, which is also what the benchmarks compare against |
+| `pp.regress_out` | not implemented | available | use `sc.pp.regress_out` on `bf.to_anndata()` if you need it |
+
+## Behaviour that differs from scanpy
+
+| | CREST | scanpy |
+|---|---|---|
+| `pp.filter_cells` / `pp.filter_genes` with `min_counts`, `max_counts` (and `max_pct_mt`) after `normalize_total` or `log1p` | evaluated on the **raw counts**, with a `UserWarning`; `transformed=True` evaluates the current values | evaluated on the current `X` |
+| `pp.log1p` called twice | one transform is recorded; the second call warns and changes nothing | transforms again |
+| `pp.normalize_total` after `pp.log1p` | `ValueError` | allowed |
+| `pp.highly_variable_genes(batch_key=...)` | only for `flavor="seurat_v3"` / `"seurat_v3_paper"`; `NotImplementedError` for `"seurat"` and `"cell_ranger"` | all flavours |
+| `tl.pca(n_comps=...)` with `n_comps` at least the number of genes or cells | returns the available components and warns | raises an error |
+| `pct_counts_mt` of a cell with total 0 | `NaN`, so `filter_cells(max_pct_mt=...)` removes it | `NaN` |
+| `ingest` on a reference whose cells were filtered | keeps the reference's `n_neighbors` and `n_pcs`; `ValueError` if the reference never had neighbours and `n_neighbors` is not given | needs `pp.neighbors` on the reference |
+| arguments not implemented | `normalize_total`: `exclude_highly_expressed`, `max_fraction`, `layer`; `scale`: `zero_center`, `layer`, `mask_obs`; `log1p`: `base`, `layer` | available |

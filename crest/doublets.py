@@ -18,6 +18,7 @@ therefore statistically, not bitwise, equivalent; see ``bench/doublets``.
 
 from __future__ import annotations
 
+import warnings
 from typing import Optional
 
 import numpy as np
@@ -32,7 +33,9 @@ __all__ = ["scrublet", "threshold_minimum"]
 def threshold_minimum(values: np.ndarray, nbins: int = 256, max_num_iter: int = 10000) -> Optional[float]:
     """``skimage.filters.threshold_minimum``: smooth the histogram with a 3-bin
     running mean until it has two maxima; return the lowest bin centre between
-    them (``None`` if the histogram never becomes bimodal)."""
+    them. Returns ``None`` where skimage raises ``RuntimeError``: the smoothed
+    histogram never has exactly two maxima, or that only happens on the last
+    allowed iteration ("Maximum iteration reached")."""
     v = np.asarray(values, np.float64)
     v = v[np.isfinite(v)]
     if v.size == 0 or v.min() == v.max():
@@ -52,16 +55,22 @@ def threshold_minimum(values: np.ndarray, nbins: int = 256, max_num_iter: int = 
                 direction = 1
         return out
 
-    idx = []
-    for _ in range(max_num_iter):
+    idx, it = [], -1
+    for it in range(max_num_iter):
         p = np.concatenate([h[:1], h, h[-1:]]).astype(np.float64)  # scipy "reflect" for size 3
         h = ((p[:-2] + p[1:-1] + p[2:]) / 3.0).astype(np.float32)
         idx = maxima(h)
         if len(idx) < 3:
             break
-    if len(idx) != 2:
+    if len(idx) != 2 or it == max_num_iter - 1:
         return None
     return float(centers[idx[0] + int(np.argmin(h[idx[0]:idx[1] + 1]))])
+
+
+# An automatic threshold above which fewer than this fraction of the simulated
+# doublets score is degenerate: threshold_minimum has split the histogram between
+# its main mode and a few saturated tail scores rather than between two modes.
+_DEGENERATE_DETECTABLE = 0.01
 
 
 def _pca_obs_sim(Xo, Xs, n_comps: int):
@@ -93,8 +102,8 @@ def _pca_obs_sim(Xo, Xs, n_comps: int):
     return bo.obsm["X_pca"], Ys
 
 
-def _scrublet_one(bf: BioFrame, sim_doublet_ratio, expected_doublet_rate, stdev_doublet_rate, n_neighbors,
-                  n_prin_comps, threshold, random_state, min_counts_genes):
+def _scrublet_one(bf: BioFrame, label, sim_doublet_ratio, expected_doublet_rate, stdev_doublet_rate, n_neighbors,
+                  n_prin_comps, threshold, random_state, min_counts_genes, include_self_neighbor=True):
     import scipy.sparse as sp
     from . import pp
 
@@ -132,11 +141,22 @@ def _scrublet_one(bf: BioFrame, sim_doublet_ratio, expected_doublet_rate, stdev_
         n_neighbors = int(round(0.5 * np.sqrt(n)))
     k_adj = int(round(n_neighbors * (1 + n_sim / float(n))))
     M = np.ascontiguousarray(np.vstack([Po, Ps]), dtype=np.float32)
+    # scanpy takes the k_adj nearest columns of a graph whose first column is the cell itself (its approximate
+    # path drops that column). With include_self_neighbor the cell is one of its own k_adj neighbours:
+    # k_adj - 1 other cells are searched and the cell counts with its own label (simulated cells are doublets).
+    k_search = k_adj - 1 if include_self_neighbor else k_adj
+    if k_search < 1:
+        raise ValueError(f"scrublet: n_neighbors={n_neighbors} leaves no neighbour to search (k_adj={k_adj}); "
+                         "increase n_neighbors or pass include_self_neighbor=False")
     # k_adj is large (~3 * 0.5 * sqrt(n)): tiled exact search is faster than
     # NN-descent refinement up to ~150k points
-    idx, _ = _native.knn_graph(M, k_adj, exact=len(M) <= 150_000, seed=random_state)
-    nd = (idx >= n).sum(1).astype(np.float64)
-    rho, r, kk = expected_doublet_rate, n_sim / float(n), float(idx.shape[1])
+    idx, _ = _native.knn_graph(M, k_search, exact=len(M) <= 150_000, seed=random_state)
+    nd = ((idx >= n) & (idx < len(M))).sum(1).astype(np.float64)  # u32::MAX = unfilled slot, not a doublet
+    kk = float(idx.shape[1])
+    if include_self_neighbor:
+        nd[n:] += 1.0  # a simulated cell is its own doublet neighbour
+        kk += 1.0
+    rho, r = expected_doublet_rate, n_sim / float(n)
     q = (nd + 1) / (kk + 2)
     ld = q * rho / r / (1 - rho - q * (1 - rho - rho / r))
     se_q = np.sqrt(q * (1 - q) / (kk + 3))
@@ -144,23 +164,42 @@ def _scrublet_one(bf: BioFrame, sim_doublet_ratio, expected_doublet_rate, stdev_
              * np.sqrt((se_q / q * (1 - rho)) ** 2 + (stdev_doublet_rate / rho * (1 - q)) ** 2))
     s_obs, s_sim, e_obs = ld[:n], ld[n:], se_ld[:n]
     thr = threshold if threshold is not None else threshold_minimum(s_sim)
+    where = "" if label is None else f" in batch {label!r}"
     uns = {"doublet_scores_sim": s_sim, "doublet_parents": np.column_stack([i, j]),
            "parameters": {"expected_doublet_rate": expected_doublet_rate, "sim_doublet_ratio": sim_doublet_ratio,
-                          "n_neighbors": n_neighbors, "random_state": random_state, "n_hvg": int(hv.sum())}}
+                          "n_neighbors": n_neighbors, "random_state": random_state, "n_hvg": int(hv.sum()),
+                          "include_self_neighbor": bool(include_self_neighbor)}}
     pred = np.zeros(n, bool)
-    if thr is not None:
+    if thr is None:
+        uns["threshold_status"] = "failed"
+        # scanpy logs the same warning and sets predicted_doublet = False
+        warnings.warn(f"scrublet: failed to automatically identify a doublet score threshold{where} (the "
+                      "simulated-doublet score histogram never has exactly two maxima); predicted_doublet is "
+                      "False for these cells. Pass a user-specified `threshold`.", stacklevel=3)
+    else:
         uns["threshold"] = thr
         pred = s_obs > thr
         uns["detected_doublet_rate"] = float(pred.mean())
         uns["detectable_doublet_fraction"] = float((s_sim > thr).mean())
         uns["overall_doublet_rate"] = uns["detected_doublet_rate"] / max(uns["detectable_doublet_fraction"], 1e-12)
+        uns["threshold_status"] = "user"
+        if threshold is None:
+            uns["threshold_status"] = "auto"
+            if uns["detectable_doublet_fraction"] < _DEGENERATE_DETECTABLE:
+                uns["threshold_status"] = "degenerate"
+                warnings.warn(
+                    f"scrublet: the automatic threshold{where} ({thr:.3g}) lies in the tail of the simulated-doublet "
+                    f"score histogram: only {uns['detectable_doublet_fraction']:.2%} of simulated doublets and "
+                    f"{int(pred.sum())} of {n} cells score above it. The histogram is probably not bimodal "
+                    "(scanpy.pp.scrublet uses the same threshold_minimum and behaves alike). Inspect "
+                    "uns['scrublet'] doublet_scores_sim and pass a user-specified `threshold`.", stacklevel=3)
     return kept_cells, s_obs, pred, (s_obs - thr) / e_obs if thr is not None else np.full(n, np.nan), uns
 
 
 def scrublet(bf: BioFrame, batch_key: Optional[str] = None, sim_doublet_ratio: float = 2.0,
              expected_doublet_rate: float = 0.05, stdev_doublet_rate: float = 0.02,
              n_neighbors: Optional[int] = None, n_prin_comps: int = 30, threshold: Optional[float] = None,
-             random_state: int = 0) -> BioFrame:
+             random_state: int = 0, include_self_neighbor: bool = True) -> BioFrame:
     """Predict doublets from raw counts (``scanpy.pp.scrublet`` defaults).
 
     Adds obs ``doublet_score``, ``predicted_doublet`` (and ``doublet_z``) and
@@ -168,6 +207,26 @@ def scrublet(bf: BioFrame, batch_key: Optional[str] = None, sim_doublet_ratio: f
     ``uns['scrublet']['batches']`` with ``batch_key``). Cells removed by the
     internal ``min_genes=3`` filter get a null score. The recorded
     normalisation of ``bf`` is ignored: Scrublet works on raw counts.
+
+    ``include_self_neighbor`` selects the neighbour convention of the doublet score. ``True`` (the default)
+    is ``scanpy.pp.scrublet`` with ``use_approx_neighbors=None``, whose neighbour graph has the cell itself as its
+    first of ``k_adj`` neighbours: ``k_adj - 1`` other cells are searched and the cell counts with its own
+    label. ``False`` searches ``k_adj`` other cells, which is also what scanpy does with
+    ``use_approx_neighbors=True`` (it drops the self column); observed-cell scores are then higher (by 6-11%
+    on PBMC 3k with 150 added doublets, against scanpy 1.11.5). CREST 0.4.0 and the 0.5 release candidates used this convention.
+
+    Threshold diagnostics (CREST additions; the threshold itself is scanpy's):
+    each batch's uns records ``threshold_status``: ``"auto"``, ``"user"``,
+    ``"failed"`` (``threshold_minimum`` found no two maxima; as in scanpy, no
+    cell is called and a warning is raised) or ``"degenerate"`` (an automatic
+    threshold above which fewer than 1% of the simulated doublets score, so
+    almost nothing is called; a warning is raised). With ``batch_key``,
+    ``uns['scrublet']['thresholds']`` and ``['threshold_status']`` map each
+    batch to its threshold (``None`` if it failed) and status. Simulated
+    scores take few distinct values and often have a handful saturated at the
+    maximum; ``threshold_minimum`` can then split the histogram between its
+    main mode and that tail. scanpy does the same; pass ``threshold`` to
+    override.
     """
     if batch_key is None:
         parts = [(None, bf)]
@@ -181,12 +240,16 @@ def scrublet(bf: BioFrame, batch_key: Optional[str] = None, sim_doublet_ratio: f
     pred = np.zeros(bf.n_obs, bool)
     uns = {}
     for b, part in parts:
-        cells, s, p, zz, u = _scrublet_one(part, sim_doublet_ratio, expected_doublet_rate, stdev_doublet_rate,
-                                           n_neighbors, n_prin_comps, threshold, random_state, 3)
+        cells, s, p, zz, u = _scrublet_one(part, b, sim_doublet_ratio, expected_doublet_rate, stdev_doublet_rate,
+                                           n_neighbors, n_prin_comps, threshold, random_state, 3,
+                                           include_self_neighbor)
         rows = np.array([pos[c] for c in cells.tolist()], dtype=np.int64)
         score[rows], pred[rows], z[rows] = s, p, zz
         uns[b] = u
     bf.obs = bf.obs.with_columns(pl.Series("doublet_score", score).fill_nan(None),
                                  pl.Series("predicted_doublet", pred), pl.Series("doublet_z", z).fill_nan(None))
-    bf.uns["scrublet"] = uns[None] if batch_key is None else {"batches": uns, "batched_by": batch_key}
+    bf.uns["scrublet"] = uns[None] if batch_key is None else {
+        "batches": uns, "batched_by": batch_key,
+        "thresholds": {b: u.get("threshold") for b, u in uns.items()},
+        "threshold_status": {b: u["threshold_status"] for b, u in uns.items()}}
     return bf

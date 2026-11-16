@@ -14,9 +14,9 @@ metadata:
 | you call | what CREST stores |
 |---|---|
 | `pp.filter_cells`, `pp.filter_genes`, `bf.filter_cells(expr)` | which cells / genes are kept (`obs["cell_id"]`, `var["gene_id"]` point into the raw store) |
-| `pp.normalize_total(bf, 1e4)` | `("normalize_total", 1e4)` appended to `bf.ops` |
+| `pp.normalize_total(bf, 1e4)` (`target_sum=None`: the median total) | `("normalize_total", 1e4, <totals fingerprint>)` appended to `bf.ops`; each cell's total over the kept genes (one pass) in `bf.cell_totals`, so later filters do not renormalise (as in scanpy) |
 | `pp.log1p(bf)` | `("log1p",)` appended to `bf.ops` |
-| `pp.scale(bf, max_value=10)` | `bf.uns["scale"] = {"max_value": 10}` |
+| `pp.scale(bf, max_value=10)` (`max_value=None`: no clipping) | `bf.uns["scale"] = {"max_value": 10}` |
 
 Every computing step (QC, HVG, PCA, DE, scores, pseudobulk) then streams the raw counts **one
 chunk at a time** into a Rust kernel. The kernel applies the filters and transforms to each
@@ -41,22 +41,41 @@ fields:
 | field | type | contents |
 |---|---|---|
 | `store` | `CSRStore` / `FrameStore` / `ParquetStore` | the raw counts (never modified) |
-| `obs` | `polars.DataFrame` | one row per **kept** cell; `cell_id` = row in the store |
-| `var` | `polars.DataFrame` | one row per **kept** gene; `gene_id` = column in the store |
+| `obs` | `polars.DataFrame` | one row per **kept** cell; `cell_id` = row in the store (assigned by the constructors; an input column of that name is kept as `cell_id_orig`) |
+| `var` | `polars.DataFrame` | one row per **kept** gene; `gene_id` = column in the store (an input column of that name is kept as `gene_id_orig`) |
 | `obsm` | `dict[str, ndarray]` | per-cell embeddings: `X_pca`, `X_umap`, `X_pca_harmony` |
 | `varm` | `dict[str, ndarray]` | per-gene matrices: `PCs` |
 | `uns` | `dict` | everything else: parameters, the kNN graph, DE tables |
-| `ops` | `list[tuple]` | the recorded transforms, in order, e.g. `[("normalize_total", 10000.0), ("log1p",)]` |
+| `ops` | `list[tuple]` | the recorded transforms, in order, e.g. `[("normalize_total", 10000.0, "3f9c…"), ("log1p",)]` (the last element fingerprints `cell_totals`) |
 | `chunk_nnz` | `int` | target non-zeros per chunk for the in-memory stores (default 2²⁴ ≈ 16.8 M); the Parquet store ignores it (one chunk = one file) |
+| `cell_totals` | `ndarray` or `None` | the per-cell totals `normalize_total` divides by (over the genes kept when it was called), by store cell id; carried by every filter |
 
 There is no `X`: the counts are only reachable through `store`, and the current (filtered,
 transformed) matrix is materialised only if you ask for it with `bf.to_scipy()` or
 `bf.to_anndata()`.
 
 **Subsetting shares the store.** `filter_cells`, `filter_genes` and `copy` return a new
-BioFrame with its own (smaller) `obs`/`var` tables and copies of the `obsm`/`varm` rows it
-keeps; the count matrix itself is shared, never copied. This is safe because nothing writes to
-the store.
+BioFrame whose count matrix is shared, never copied; this is safe because nothing writes to the
+store. What else is shared differs:
+
+| | `obs` / `var` | `obsm` / `varm` arrays | `uns` |
+|---|---|---|---|
+| `filter_cells`, `filter_genes` | new tables | new arrays (rows of the kept cells or genes, or a copy when that axis is unfiltered) | new dictionary, **same nested objects** (dicts, arrays and tables inside it belong to both frames) |
+| `copy` | new tables | new arrays | deep copy |
+
+Editing an `obsm`/`varm` array of a filtered frame in place therefore never changes the parent,
+but editing a nested `uns` entry (for example `bf2.uns["pca"]["params"]["max_value"] = 5`) does.
+Use `bf.copy()` when you need a frame that is independent of the original.
+
+**Gene identity.** Cell Ranger feature tables repeat some gene symbols (95 extra copies of 91
+symbols in PBMC 3k), so a symbol does not always name one gene. Steps that match genes between
+objects use the stable id in `var["gene_ids"]` when both sides have it:
+{func}`crest.tl.ingest` stores the ids of the reference PCA genes and maps each query gene by id;
+{func}`crest.tl.score_genes` accepts gene ids in `gene_list`. Without ids, genes are matched by
+symbol only when the symbol is unique, and `ingest` warns about the genes it leaves out;
+`score_genes` raises `ValueError` for a symbol that names several genes (scanpy refuses every
+AnnData with non-unique `var_names`). `to_anndata()` gives the repeats a `-1`, `-2`, ...
+suffix in the AnnData index, with a warning; the original symbols stay in `var["gene_name"]`.
 
 **What each function returns:**
 
@@ -79,6 +98,18 @@ the store.
 | `FrameStore` | in memory: a Polars DataFrame of `(cell_id, gene_id, count)` triplets sorted by cell, about 12 bytes per non-zero | `read_10x_mtx`, `read_h5ad` (dense `X`), `BioFrame.from_triplets` |
 | `ParquetStore` | **on disk**: a directory of `part-*.parquet` files of `(cell_id, gene_id, count)` triplets, each file holding whole cells (~8.4 M non-zeros by default), plus `obs.parquet` and `var.parquet` | `read_10x_h5(path, backed=dir)` streams the .h5 into it; `bf.write_parquet(dir)` then `crest.read_parquet(dir)` |
 
+**What the stores accept.** A (cell, gene) pair is stored at most once, and the order of the genes
+within a cell is free (Cell Ranger `.h5` files list them in descending order). Repeated entries
+would count as two non-zeros, so they are summed, as scipy does: `BioFrame.from_scipy`,
+`from_csr`, `from_triplets`, `read_h5ad` and `read_10x_h5` do it on a copy and never change the
+caller's matrix, and a hand-made Parquet directory is summed part by part. `CSRStore(...)` itself
+raises `ValueError` for a repeat. A Parquet directory must hold whole cells per part, in cell order, with
+ids inside `n_cells` / `n_genes`; every part is checked when it is read and a split cell or an
+out-of-range id raises `ValueError` (a split cell would otherwise be processed as two cells and
+give wrong PCA variances). A stored `0.0` is never counted as a non-zero: `n_genes_by_counts`,
+`n_cells_by_counts`, `n_cells_expr`, the Wilcoxon zero blocks and `to_scipy()` ignore it
+(`store.nnz` counts stored entries).
+
 All three expose the same `chunks()` iterator, so every analysis function works unchanged on
 all of them. The Parquet store is what makes CREST *out-of-core*: only one file is in memory
 at a time, so the **count matrix** never has to fit in RAM. What still grows with the number
@@ -95,7 +126,7 @@ cells, barely slower on small data (where out-of-core also saves nothing).
 | step | writes |
 |---|---|
 | `pp.calculate_qc_metrics` | obs `n_genes_by_counts`, `total_counts`, `pct_counts_mt`; var `n_cells_by_counts`, `total_counts` |
-| `pp.highly_variable_genes` | var `highly_variable`, `means`, `dispersions(_norm)`, cached `mean_log` / `std_log`; `uns["hvg"]` |
+| `pp.highly_variable_genes` | var `highly_variable`, `means`, `dispersions(_norm)`, cached `mean_log` / `std_log` (reused by `tl.pca` for `scale` until a cell filter or a new transform; then recomputed over the current cells); `uns["hvg"]` |
 | `tl.pca` | `obsm["X_pca"]`, `varm["PCs"]`, `uns["pca"]` (variance, variance_ratio, `projection` for `ingest`) |
 | `pp.neighbors` | `uns["neighbors"]`: `indices`, `distances` (kNN), `rows`, `cols`, `weights` (fuzzy graph) |
 | `tl.leiden` | obs `leiden` (strings, `"0"` = largest cluster); `uns["leiden"]` (parameters) |
@@ -105,14 +136,14 @@ cells, barely slower on small data (where out-of-core also saves nothing).
 | `tl.score_genes` | obs `<score_name>` |
 | `tl.harmony` | `obsm["X_pca_harmony"]`, `uns["harmony"]` |
 | `pp.scrublet` | obs `doublet_score`, `predicted_doublet`, `doublet_z`; `uns["scrublet"]` |
-| `tl.ingest` (on the query) | `obsm["X_pca"]`, `obsm["X_umap"]`, obs `<label>` + `<label>_confidence`; `uns["ingest"]` (neighbours used) |
+| `tl.ingest` (on the query) | `obsm["X_pca"]`, `obsm["X_umap"]`, obs `<label>` + `<label>_confidence`; `uns["ingest"]` (neighbours used). Reads `n_neighbors` / `n_pcs` from the reference's `uns["neighbors"]["params"]`, or from `uns["neighbors_params"]`, which a cell filter leaves behind when it drops the graph |
 | `tl.pseudobulk_de` | returns a Polars table; `uns["pseudobulk_de"]` |
 
 ## Which values each step uses
 
 | step | uses |
 |---|---|
-| QC, filters, `seurat_v3` HVG, Scrublet, pseudobulk / DESeq2 | **raw counts** (the recorded transforms are ignored) |
+| QC, filters, `seurat_v3` HVG, Scrublet, pseudobulk / DESeq2 | **raw counts** (the recorded transforms are ignored; the count thresholds of `filter_cells` / `filter_genes` and `calculate_qc_metrics` take `transformed=True` to use the current values as scanpy does) |
 | `seurat` / `cell_ranger` HVG, DE, `score_genes` | **log-normalised** values (what `adata.raw` holds in scanpy) |
 | PCA | log-normalised, then **scaled and clipped** if `pp.scale` was called |
 | neighbors, Leiden, UMAP, Harmony, ingest | the embedding in `obsm` (`X_pca` by default) |
@@ -149,8 +180,13 @@ dense PCA (principal angles 0.000°); see {doc}`memory_model`.
 
 Every stochastic step takes `random_state` (default 0). With the same seed:
 
-* the kNN graph and Leiden clusters are identical for any number of threads (checked on Kang,
-  1 vs 4 threads);
+* the kNN neighbour sets and the Leiden labels did not change with the number of threads in any
+  check we ran (Kang, 1 vs 4 threads; a 3,000-cell pipeline in the test suite at 1 and 7 threads;
+  neighbour indices were bit-identical on PBMC 10k at 1, 3 and 10 threads). This is a
+  measurement, not a guarantee: floating-point sums over cells are merged per thread, so statistics
+  such as gene sums and the PCA variance agree between thread counts only to about 1e-14 relative,
+  `X_pca` can differ in rare entries (about 3e-8), and kNN distances and connectivity weights are not
+  guaranteed to be bit-identical;
 * UMAP coordinates are identical for the same number of threads, but differ across thread
   counts, because the parallel optimisation splits the work by thread;
 * Harmony's k-means initialisation is random like harmonypy's, so compare Harmony outcomes

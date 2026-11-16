@@ -1,0 +1,18 @@
+{
+  "design": "~ condition",
+  "contrast": ["condition", "c1", "c0"],
+  "levels": {
+    "condition": ["c0", "c1"]
+  },
+  "R": {
+    "deseq2_version": "1.50.2",
+    "r_version": "R version 4.5.2 (2025-10-31)",
+    "generated_by": "tests/data/make_pin_fixtures.R",
+    "fitType": "parametric",
+    "trend": [1.10593667842887, 5.28074277116395],
+    "priorVar": 1.14340875145805,
+    "sf": [0.873593969189501, 1.11175823080906, 1.16186840900312, 1.23370402974226, 0.853572026983632, 0.721992239869203, 0.798000501442895, 1.05144526726766],
+    "cooksCutoff": 10.9247665008383,
+    "messages": []
+  }
+}

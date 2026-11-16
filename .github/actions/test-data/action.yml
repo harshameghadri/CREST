@@ -1,0 +1,22 @@
+name: Test data
+description: >-
+  Fetch the public test datasets (cached, sha256 verified), build the PBMC 3k connectivities
+  matrix and export the CREST_TEST_* variables that the environment-gated tests read to the
+  following steps. Needs the virtual environment `.venv` with the test extra installed.
+runs:
+  using: composite
+  steps:
+    - name: Restore the cached test data
+      uses: actions/cache@v4
+      with:
+        path: ${{ github.workspace }}/.test-data
+        # the derived graph depends on the pinned scanpy stack, so the pins are part of the key
+        key: test-data-${{ hashFiles('scripts/fetch_test_data.py', 'pyproject.toml') }}
+    - name: Fetch the test data and export CREST_TEST_DATA, CREST_TEST_PBMC3K and CREST_TEST_PBMC_CONNECTIVITIES
+      shell: bash
+      env:
+        CREST_TEST_DATA: ${{ github.workspace }}/.test-data
+        NUMBA_CACHE_DIR: ${{ github.workspace }}/.numba-cache
+      run: |
+        . .venv/bin/activate
+        python scripts/fetch_test_data.py --derive --github-env "$GITHUB_ENV"

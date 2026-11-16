@@ -1,0 +1,3 @@
+- Changed: the `numpy` requirement is now `>=1.24,<3`; the `test` extra pins the scanpy reference stack (scanpy 1.11.5 with matching pynndescent, umap-learn, harmonypy and leidenalg) so the parity tests run instead of being skipped.
+- Changed: wheels are published for Linux x86-64 and aarch64 (manylinux and musllinux), macOS arm64 and x86-64, and Windows x64; 32-bit x86, armv7 and Windows arm64 wheels are no longer published.
+- Added: `KNOWN_ISSUES.md` lists the documented limitations of the current release.

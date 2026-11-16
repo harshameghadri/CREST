@@ -1,0 +1,4 @@
+- `read_10x_h5` takes `genome=` for legacy multi-genome files and raises, listing the genomes, when several exist and none is chosen (it used to read the first one silently); v3 files keep their `genome` feature column.
+- `ingest` matches genes by stable gene id (`var["gene_ids"]`) when both objects have it and leaves out repeated symbols otherwise; `score_genes` raises for a repeated symbol and accepts gene ids; `to_anndata` makes repeated names unique with a warning.
+- `BioFrame.copy()` is now a deep copy and the filters copy every `obsm`/`varm` array; the docs state what filters share (the nested `uns` objects).
+- The readers warn when the matrix is not raw counts (negative or non-integer values), `seurat_v3` does too, and `read_h5ad` keeps nullable integer/boolean/string columns and warns about columns it cannot read.

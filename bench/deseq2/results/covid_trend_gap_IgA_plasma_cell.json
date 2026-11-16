@@ -1,0 +1,324 @@
+{
+ "stratum": "IgA plasma cell",
+ "R_fitType": "local",
+ "CREST_fitType": "local",
+ "genes_with_counts": 16639,
+ "genes_with_a_p_value_in_both": 16625,
+ "replaced_CREST": 121,
+ "replaced_R": 121,
+ "trend_function": {
+  "at_reported_baseMean": {
+   "all_genes": {
+    "n": 16637,
+    "max": 5.609068765011216e-12,
+    "median": 2.9976021664879227e-15
+   },
+   "genes_with_a_p_value": {
+    "n": 16623,
+    "max": 5.609068765011216e-12,
+    "median": 2.9976021664879227e-15
+   }
+  },
+  "at_first_pass_baseMean": {
+   "all_genes": {
+    "n": 16639,
+    "max": 540412.6243924906,
+    "median": 3.3306690738754696e-15
+   },
+   "genes_with_a_p_value": {
+    "n": 16625,
+    "max": 540412.6243924906,
+    "median": 3.3306690738754696e-15
+   }
+  },
+  "genes_whose_baseMean_changed_with_replacement": 110,
+  "of_which_replaced_in_CREST": 110,
+  "of_which_with_a_p_value": 99,
+  "reported_baseMean_CREST_vs_R_over_genes_with_a_p_value": {
+   "n_differing_above_1e-9": 0
+  },
+  "smallest_fitted_baseMean": 0.0367662962997935,
+  "R_reported_dispFit_vs_R_localDispersionFit_on_R_values_at_R_baseMean": {
+   "n": 16637,
+   "max": 6.432074317608283e-09,
+   "median": 2.0183854587685346e-13
+  },
+  "genes_with_the_largest_first_pass_difference": [
+   {
+    "gene": "ENSG00000253822",
+    "baseMean_first_pass": 0.657795700474975,
+    "baseMean_reported": 0.006516654680033799,
+    "first_pass_gene_wise_dispersion": 57.0,
+    "CREST_dispFit": 303766.9309796076,
+    "R_prediction_at_first_pass_baseMean": 0.562100800698889,
+    "R_prediction_at_reported_baseMean": 303766.930981201,
+    "R_reported_dispFit": 308155.516213005,
+    "relative_difference_first_pass": 540412.6243924906,
+    "replaced_CREST": true,
+    "p_value_CREST": 0.7447850424448996
+   },
+   {
+    "gene": "ENSG00000270467",
+    "baseMean_first_pass": 14.07924945671,
+    "baseMean_reported": 0.01614112203903967,
+    "first_pass_gene_wise_dispersion": 57.0,
+    "CREST_dispFit": 12155.636005678733,
+    "R_prediction_at_first_pass_baseMean": 0.0437690170235861,
+    "R_prediction_at_reported_baseMean": 12155.6360057453,
+    "R_reported_dispFit": 12271.6164651035,
+    "relative_difference_first_pass": 277721.38977010484,
+    "replaced_CREST": true,
+    "p_value_CREST": 0.7447850425446041
+   },
+   {
+    "gene": "ENSG00000211643",
+    "baseMean_first_pass": 1.88983103615075,
+    "baseMean_reported": 0.018383148149896764,
+    "first_pass_gene_wise_dispersion": 57.0,
+    "CREST_dispFit": 7749.2146796253,
+    "R_prediction_at_first_pass_baseMean": 0.137355072184888,
+    "R_prediction_at_reported_baseMean": 7749.21467966689,
+    "R_reported_dispFit": 7817.77491284924,
+    "relative_difference_first_pass": 56416.390026881585,
+    "replaced_CREST": true,
+    "p_value_CREST": 0.744785042559863
+   },
+   {
+    "gene": "ENSG00000197794",
+    "baseMean_first_pass": 2.23137764213677,
+    "baseMean_reported": 0.02901266753795824,
+    "first_pass_gene_wise_dispersion": 57.0,
+    "CREST_dispFit": 1633.3486048793704,
+    "R_prediction_at_first_pass_baseMean": 0.1183575723645,
+    "R_prediction_at_reported_baseMean": 1633.34860488699,
+    "R_reported_dispFit": 1643.85406174774,
+    "relative_difference_first_pass": 13799.119183327173,
+    "replaced_CREST": true,
+    "p_value_CREST": 0.7606752598014597
+   },
+   {
+    "gene": "ENSG00000270472",
+    "baseMean_first_pass": 0.680666261646307,
+    "baseMean_reported": 0.021475038851410912,
+    "first_pass_gene_wise_dispersion": 57.0,
+    "CREST_dispFit": 4541.3421820578005,
+    "R_prediction_at_first_pass_baseMean": 0.530639662561134,
+    "R_prediction_at_reported_baseMean": 4541.3421820813,
+    "R_reported_dispFit": 4577.76888065591,
+    "relative_difference_first_pass": 8557.241123814601,
+    "replaced_CREST": true,
+    "p_value_CREST": 0.762610482710768
+   },
+   {
+    "gene": "ENSG00000277282",
+    "baseMean_first_pass": 0.685000502341338,
+    "baseMean_reported": 0.03765984619067614,
+    "first_pass_gene_wise_dispersion": 57.0,
+    "CREST_dispFit": 681.4050569981499,
+    "R_prediction_at_first_pass_baseMean": 0.525024001614057,
+    "R_prediction_at_reported_baseMean": 681.405057000911,
+    "R_reported_dispFit": 684.856007322836,
+    "relative_difference_first_pass": 1296.8550597750536,
+    "replaced_CREST": true,
+    "p_value_CREST": 0.761713980579206
+   },
+   {
+    "gene": "ENSG00000254174",
+    "baseMean_first_pass": 4.1935571818028,
+    "baseMean_reported": 0.08809332838545893,
+    "first_pass_gene_wise_dispersion": 57.0,
+    "CREST_dispFit": 51.70009641537759,
+    "R_prediction_at_first_pass_baseMean": 0.0761540171907503,
+    "R_prediction_at_reported_baseMean": 51.7000964154432,
+    "R_reported_dispFit": 51.7676626949276,
+    "relative_difference_first_pass": 677.8886302068528,
+    "replaced_CREST": true,
+    "p_value_CREST": 0.7293654140893675
+   },
+   {
+    "gene": "ENSG00000211958",
+    "baseMean_first_pass": 1.2289321105926,
+    "baseMean_reported": 0.07156548292929274,
+    "first_pass_gene_wise_dispersion": 28.908825318674925,
+    "CREST_dispFit": 93.25590886085689,
+    "R_prediction_at_first_pass_baseMean": 0.22087020964474,
+    "R_prediction_at_reported_baseMean": 93.2559088610388,
+    "R_reported_dispFit": 93.4506755846791,
+    "relative_difference_first_pass": 421.2204027010022,
+    "replaced_CREST": true,
+    "p_value_CREST": 0.6766991576780437
+   }
+  ]
+ },
+ "reported_dispFit_vs_R": {
+  "genes_with_a_p_value": {
+   "n": 16625,
+   "max": 0.021635887589309455,
+   "median": 0.0017790343445026613
+  },
+  "p99_over_genes_with_a_p_value": 0.01964422899576246,
+  "n_above_0.0002": 14846,
+  "n_above_0.001": 10566,
+  "n_above_0.01": 1440,
+  "n_above_0.1": 0,
+  "over_genes_with_equal_baseMean": {
+   "n": 16623,
+   "max": 0.021635887589309455,
+   "median": 0.0017790851338077562
+  },
+  "genes_above_0.1": []
+ },
+ "first_pass_gene_wise": {
+  "n_differ_above_1e-6": 15,
+  "n_differ_entering_or_leaving_the_fit": 1,
+  "R_trend_on_CREST_values_vs_R_values": {
+   "median": 0.0017692102229620588,
+   "max": 0.021635893880840085
+  },
+  "R_trend_on_hybrid_values_vs_R_values_max": 3.460794117948751e-08
+ },
+ "downstream": {
+  "dispersion_over_genes_with_a_p_value": {
+   "n": 16625,
+   "max": 0.030034208242785687,
+   "median": 0.00017849293431382307
+  },
+  "dispersion_over_genes_with_equal_baseMean": {
+   "n": 16623,
+   "max": 0.030034208242785687,
+   "median": 0.00017854120961591224
+  },
+  "p_value_over_genes_with_a_p_value": {
+   "n": 16625,
+   "max": 0.9752817119528786,
+   "median": 1.7734260054247386e-05
+  },
+  "p_value_over_genes_with_equal_baseMean": {
+   "n": 16623,
+   "max": 0.9752817119528786,
+   "median": 1.7735122790907276e-05
+  },
+  "genes_with_the_largest_p_value_difference": [
+   {
+    "gene": "ENSG00000211974",
+    "rel_diff": 0.9752817119528786,
+    "p_CREST": 3.816798758405285e-11,
+    "p_R": 1.54411937878917e-09,
+    "baseMean": 46.60072831505452,
+    "dispersion_CREST": 14.985521778437496,
+    "dispersion_R": 14.9855217784375,
+    "dispGeneEst_CREST": 14.985521778437496,
+    "dispGeneEst_R": 14.9855217784375,
+    "lfc_CREST": 20.29855016266356,
+    "lfc_R": 18.5443267506747,
+    "replaced_CREST": true,
+    "replaced_R": true
+   },
+   {
+    "gene": "ENSG00000211658",
+    "rel_diff": 0.945294221823034,
+    "p_CREST": 1.905730552643216e-17,
+    "p_R": 3.48360011711821e-16,
+    "baseMean": 167.27516965137025,
+    "dispersion_CREST": 10.191988372391224,
+    "dispersion_R": 10.1919883723912,
+    "dispGeneEst_CREST": 10.191988372391224,
+    "dispGeneEst_R": 10.1919883723912,
+    "lfc_CREST": 22.07285844290023,
+    "lfc_R": 21.1791926883597,
+    "replaced_CREST": true,
+    "replaced_R": true
+   },
+   {
+    "gene": "ENSG00000281990",
+    "rel_diff": 0.8073662875970615,
+    "p_CREST": 3.6252024327258826e-06,
+    "p_R": 1.88191484631876e-05,
+    "baseMean": 21.240954939282584,
+    "dispersion_CREST": 28.873568200316065,
+    "dispersion_R": 28.8735682003161,
+    "dispGeneEst_CREST": 28.873568200316065,
+    "dispGeneEst_R": 28.8735682003161,
+    "lfc_CREST": 19.20922273220256,
+    "lfc_R": 17.7438746021047,
+    "replaced_CREST": true,
+    "replaced_R": true
+   },
+   {
+    "gene": "ENSG00000211664",
+    "rel_diff": 0.5822602113560187,
+    "p_CREST": 7.834690715216778e-12,
+    "p_R": 1.87549544673464e-11,
+    "baseMean": 37.737991546444185,
+    "dispersion_CREST": 13.41938918961022,
+    "dispersion_R": 13.4193891896102,
+    "dispGeneEst_CREST": 13.41938918961022,
+    "dispGeneEst_R": 13.4193891896102,
+    "lfc_CREST": 20.006421975455,
+    "lfc_R": 19.6375625917629,
+    "replaced_CREST": true,
+    "replaced_R": true
+   },
+   {
+    "gene": "ENSG00000211937",
+    "rel_diff": 0.44392221965139966,
+    "p_CREST": 9.344993645766964e-23,
+    "p_R": 1.68051916045066e-22,
+    "baseMean": 887.8566691005026,
+    "dispersion_CREST": 9.171062303068004,
+    "dispersion_R": 9.171062303068,
+    "dispGeneEst_CREST": 9.171062303068004,
+    "dispGeneEst_R": 9.171062303068,
+    "lfc_CREST": 24.395005910101236,
+    "lfc_R": 24.2475697631675,
+    "replaced_CREST": false,
+    "replaced_R": false
+   },
+   {
+    "gene": "ENSG00000282639",
+    "rel_diff": 0.20246573212352936,
+    "p_CREST": 3.5036378239276865e-12,
+    "p_R": 4.39308750112586e-12,
+    "baseMean": 42.605746732238025,
+    "dispersion_CREST": 13.170754522825208,
+    "dispersion_R": 13.1707545228252,
+    "dispGeneEst_CREST": 13.170754522825208,
+    "dispGeneEst_R": 13.1707545228252,
+    "lfc_CREST": 20.174473110116953,
+    "lfc_R": 20.0817780447271,
+    "replaced_CREST": true,
+    "replaced_R": true
+   },
+   {
+    "gene": "ENSG00000242534",
+    "rel_diff": 0.15791454869308807,
+    "p_CREST": 1.554719859985299e-21,
+    "p_R": 1.84627327021549e-21,
+    "baseMean": 182.61382652262097,
+    "dispersion_CREST": 7.829715605451076,
+    "dispersion_R": 7.82971560545108,
+    "dispGeneEst_CREST": 7.829715605451076,
+    "dispGeneEst_R": 7.82971560545108,
+    "lfc_CREST": 22.194476738826765,
+    "lfc_R": 22.1528950962456,
+    "replaced_CREST": false,
+    "replaced_R": false
+   },
+   {
+    "gene": "ENSG00000211669",
+    "rel_diff": 0.15642974918367547,
+    "p_CREST": 7.242539101199447e-25,
+    "p_R": 8.58557908388878e-25,
+    "baseMean": 1585.4612626589867,
+    "dispersion_CREST": 8.844901466778902,
+    "dispersion_R": 8.8449014667789,
+    "dispGeneEst_CREST": 8.844901466778902,
+    "dispGeneEst_R": 8.8449014667789,
+    "lfc_CREST": 25.20287398726772,
+    "lfc_R": 25.1627808676071,
+    "replaced_CREST": true,
+    "replaced_R": true
+   }
+  ]
+ }
+}

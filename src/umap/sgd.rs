@@ -18,16 +18,43 @@ fn ld(a: &AtomicU32) -> f32 {
 fn st(a: &AtomicU32, v: f32) {
     a.store(v.to_bits(), Ordering::Relaxed)
 }
-/// Flush denormals to zero on the current thread. UMAP's exp/pow terms produce
-/// many subnormal floats, which are ~100x slower on x86 without FTZ/DAZ; rayon
-/// worker threads start with the default (slow) floating-point mode.
-#[inline]
-fn set_flush_denormals() {
+/// Flushes denormals to zero on the current thread for as long as it is alive,
+/// then restores the previous floating-point mode. UMAP's exp/pow terms produce
+/// many subnormal floats, which are ~100x slower on x86 without FTZ/DAZ.
+///
+/// The control register (MXCSR) is per thread and is not saved across calls, so
+/// it must be restored: the serial path runs on the Python caller's thread, and
+/// leaving FTZ/DAZ set there would make every later numpy/scipy computation in
+/// the process flush subnormals. RAII so a panic or early return restores it too.
+struct FlushDenormals {
     #[cfg(target_arch = "x86_64")]
-    #[allow(deprecated)]
-    unsafe {
-        use std::arch::x86_64::{_mm_getcsr, _mm_setcsr};
-        _mm_setcsr(_mm_getcsr() | 0x8040); // FTZ | DAZ
+    saved: u32,
+}
+
+impl FlushDenormals {
+    #[inline]
+    fn new() -> Self {
+        #[cfg(target_arch = "x86_64")]
+        #[allow(deprecated)]
+        unsafe {
+            use std::arch::x86_64::{_mm_getcsr, _mm_setcsr};
+            let saved = _mm_getcsr();
+            _mm_setcsr(saved | 0x8040); // FTZ | DAZ
+            FlushDenormals { saved }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        FlushDenormals {}
+    }
+}
+
+impl Drop for FlushDenormals {
+    #[inline]
+    fn drop(&mut self) {
+        #[cfg(target_arch = "x86_64")]
+        #[allow(deprecated)]
+        unsafe {
+            std::arch::x86_64::_mm_setcsr(self.saved);
+        }
     }
 }
 
@@ -69,7 +96,6 @@ struct Params<'a> {
 /// threads never write rows they do not own nor read rows being written.
 #[inline(never)]
 fn run_chunk<const PAR: bool>(p: &Params, base: usize, nx: &mut [f32], nn: &mut [f32]) {
-    set_flush_denormals();
     let (dim, a, b, alpha) = (p.dim, p.a, p.b, p.alpha);
     let ep = p.epoch as f32;
     let other = |x: usize| if PAR { ld(&p.snap[x]) } else { ld(&p.pos[x]) };
@@ -202,7 +228,8 @@ pub fn optimize_layout(
                 let (lo, hi) = (bounds[tid], bounds[tid + 1]);
                 let (edges, eps, eps_neg, pos, barrier) = (&edges, &eps, &eps_neg, &pos, &barrier);
                 sc.spawn(move || {
-                    set_flush_denormals();
+                    // scoped threads exit at the end of the scope, but restore anyway
+                    let _ftz = FlushDenormals::new();
                     let rows = if lo < hi {
                         (edges[lo].0 as usize * dim)..((edges[hi - 1].0 as usize + 1) * dim)
                     } else {
@@ -234,12 +261,13 @@ pub fn optimize_layout(
         });
     } else {
         let empty: Vec<AtomicU32> = Vec::new();
+        // the caller's thread (the Python thread): restored when the loop ends
+        let _ftz = FlushDenormals::new();
         for epoch in 0..n_epochs {
             let p = Params {
                 edges: &edges, eps: &eps, eps_neg: &eps_neg, pos: &pos, snap: &empty, dim, n, a, b, gamma: 1.0,
                 alpha: 1.0 - epoch as f32 / n_epochs as f32, epoch, seed,
             };
-            set_flush_denormals();
             for (ci, (nx, nn)) in next.chunks_mut(chunk).zip(next_neg.chunks_mut(chunk)).enumerate() {
                 run_chunk::<false>(&p, ci * chunk, nx, nn);
             }
@@ -285,5 +313,44 @@ mod tests {
         optimize_layout(&graph, &mut emb, 2, 200, a, b, 0);
         assert!(emb.iter().all(|v| v.is_finite()));
         assert!(spread(&emb, 0) < before);
+    }
+
+    /// The FTZ/DAZ mode must not leak to the caller's thread (the Python thread on
+    /// the serial path, n < 1000) nor to rayon workers.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    #[allow(deprecated)]
+    fn test_optimize_layout_restores_mxcsr() {
+        use std::arch::x86_64::{_mm_getcsr, _mm_setcsr};
+        let mut edges = vec![];
+        for a in 0..20usize {
+            for b in 0..20usize {
+                if a != b && (a < 10) == (b < 10) {
+                    edges.push(Edge { source: a, target: b, weight: 1.0 });
+                }
+            }
+        }
+        let graph = UmapGraph { n: 20, edges };
+        let (a, b) = super::super::utils::find_ab_params(1.0, 0.1);
+        let original = unsafe { _mm_getcsr() };
+        // a sticky flag that the guard must also give back
+        let before = (original & !0x8040) | 0x20;
+        unsafe { _mm_setcsr(before) };
+        // workers: compare the control bits only (FTZ, DAZ, rounding, masks); their
+        // sticky exception flags change with any float work other tests run there
+        let control = |_: rayon::BroadcastContext| unsafe { _mm_getcsr() } & !0x3f;
+        let workers_before: Vec<u32> = rayon::broadcast(control);
+        let mut emb: Vec<f32> = (0..40).map(|i| (i % 7) as f32).collect();
+        optimize_layout(&graph, &mut emb, 2, 50, a, b, 0); // serial path (n < 1000)
+        let after = unsafe { _mm_getcsr() };
+        let workers_after: Vec<u32> = rayon::broadcast(control);
+        unsafe { _mm_setcsr(original) };
+        assert_eq!(after, before, "MXCSR changed on the caller's thread: {:#x} -> {:#x}", before, after);
+        assert_eq!(workers_after, workers_before, "MXCSR changed on rayon workers");
+        // and the guard does set FTZ|DAZ while alive
+        let g = FlushDenormals::new();
+        assert_eq!(unsafe { _mm_getcsr() } & 0x8040, 0x8040);
+        drop(g);
+        assert_eq!(unsafe { _mm_getcsr() }, original);
     }
 }

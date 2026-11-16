@@ -1,0 +1,3 @@
+- Added: `fit_type="local"` for `crest.tl.DESeq2`, a port of DESeq2's `locfit` dispersion trend (locfit 1.5-9.12), which matches R's trend to 5e-13 relative on synthetic cases and on real strata of the COVID-19 atlas.
+- Changed: when the parametric dispersion trend fails, CREST now substitutes the local trend as R does (`fit["fitType"]` is `"local"`, R's note is the message) instead of the mean; the mean remains where R uses it and where R's local fit would stop with an error.
+- Added: R-pinned tests of the local trend (synthetic cases, six atlas strata, two whole `DESeq()` fixtures) and of the parametric trend on the gene-wise dispersions of the stratum where CREST's fit fails and R's does not.

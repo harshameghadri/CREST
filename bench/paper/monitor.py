@@ -1,6 +1,6 @@
 """Resource monitoring for one benchmark process.
 
-A background thread samples, every ``interval`` seconds:
+A background thread samples, every ``interval`` seconds (default 0.05; recorded in every run's JSON):
 
 * process RSS (including child processes),
 * process CPU time (user + system) -> instantaneous cores in use,
@@ -22,7 +22,10 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
 import psutil
+
+from protocol import QUIET_MAX_FOREIGN_CORES, foreign_busy_cores
 
 RAPL = [p for p in Path("/sys/class/powercap").glob("intel-rapl:*") if (p / "energy_uj").exists()
         and ":" not in p.name.split("intel-rapl:")[1]] if Path("/sys/class/powercap").exists() else []
@@ -46,6 +49,21 @@ def _freqs() -> list[float]:
         return []
 
 
+def foreign_busy_stats(samples: list[dict], threshold: float = QUIET_MAX_FOREIGN_CORES) -> dict:
+    """Load on the host that is not this process, from the monitor's samples: per sample the busy cores
+    of the whole machine minus the cores this process used. A run violates the quiet-host rule when the
+    MEDIAN over its samples reaches ``threshold`` busy cores."""
+    vals = [foreign_busy_cores(s["core_util"], s["proc_cores"]) for s in samples if s.get("core_util")]
+    if not vals:
+        return {"median_foreign_busy_cores": None, "p95_foreign_busy_cores": None, "max_foreign_busy_cores": None,
+                "n_samples": 0, "threshold": threshold, "violated": False}
+    v = np.asarray(vals)
+    med = float(np.median(v))
+    return {"median_foreign_busy_cores": med, "p95_foreign_busy_cores": float(np.percentile(v, 95)),
+            "max_foreign_busy_cores": float(v.max()), "n_samples": int(len(v)), "threshold": threshold,
+            "violated": bool(med >= threshold)}
+
+
 class Monitor:
     def __init__(self, interval: float = 0.05, freq_every: int = 4):
         self.proc = psutil.Process(os.getpid())
@@ -56,6 +74,9 @@ class Monitor:
         self.steps: dict[str, dict] = {}
         self._stop = threading.Event()
         self._peak = 0
+        # RSS when monitoring starts (interpreter, imported libraries, warm-up leftovers):
+        # reported so memory can be given both as the absolute peak and as peak - baseline
+        self.baseline_rss = self._rss()
         psutil.cpu_percent(percpu=True)  # prime
         self.t0 = time.perf_counter()
         self._th = threading.Thread(target=self._run, daemon=True)
@@ -141,7 +162,8 @@ class Monitor:
         self._th.join()
         ru = resource.getrusage(resource.RUSAGE_SELF)
         maxrss = ru.ru_maxrss * (1 if os.uname().sysname == "Darwin" else 1024)
-        return {"ru_maxrss_gb": maxrss / 1e9, "ru_utime_s": ru.ru_utime, "ru_stime_s": ru.ru_stime,
+        # ru_maxrss is the process-lifetime peak, so it includes the warm-up: not a run metric
+        return {"ru_maxrss_lifetime_gb": maxrss / 1e9, "baseline_rss_gb": self.baseline_rss / 1e9, "ru_utime_s": ru.ru_utime, "ru_stime_s": ru.ru_stime,
                 "ru_majflt": ru.ru_majflt, "ru_minflt": ru.ru_minflt, "ru_nvcsw": ru.ru_nvcsw,
                 "ru_nivcsw": ru.ru_nivcsw, "wall_s": time.perf_counter() - self.t0}
 

@@ -1,7 +1,7 @@
 //! DESeq2 (Love, Huber & Anders 2014, *Genome Biology* 15:550) in Rust, for
 //! pseudobulk and bulk count matrices.
 //!
-//! This follows DESeq2 1.42's `DESeq()` + `results()` step by step (the R and
+//! This follows DESeq2's `DESeq()` + `results()` (reference version 1.50.2) step by step (the R and
 //! C++ sources were used as the reference), so results agree with R:
 //!
 //! 1. size factors: median-of-ratios (`type = "ratio"` or `"poscounts"`);
@@ -24,11 +24,12 @@
 //! parallel pass over genes.
 
 pub(crate) mod linalg;
+pub mod locfit;
 pub mod lowess;
 
-use linalg::{xb, xtwx, xtwz, Lu};
+use linalg::{xb, xtwx, xtwz, Lu, ScaledLu};
 use rayon::prelude::*;
-use statrs::distribution::{ChiSquared, ContinuousCDF, FisherSnedecor, Normal};
+use statrs::distribution::{ChiSquared, Continuous, ContinuousCDF, FisherSnedecor};
 use statrs::function::gamma::{digamma, ln_gamma};
 
 const LN2: f64 = std::f64::consts::LN_2;
@@ -203,6 +204,7 @@ impl Design {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FitType {
     Parametric,
+    Local,
     Mean,
 }
 
@@ -269,6 +271,9 @@ pub struct Fit {
     pub lrt_stat: Option<Vec<f64>>,
     pub lrt_pvalue: Option<Vec<f64>>,
     pub fit_type: FitType,
+    /// The parametric trend was requested but did not fit, and the local regression trend was used instead
+    /// (as DESeq2 does; the mean trend only where the local fit failed as well).
+    pub fit_substituted: bool,
     pub trend: Vec<f64>,
     pub disp_prior_var: f64,
     pub var_log_disp_ests: f64,
@@ -459,6 +464,9 @@ fn fit_beta(y: &[f64], sf: &[f64], d: &Design, alpha: f64, pa: &Params) -> BetaF
     let mut iter = 0;
     let mut w = vec![0.0; m];
     let mut z = vec![0.0; m];
+    // weights and ridged X'WX of the last IRLS iteration: R keeps the hat diagonals of that iteration for rows that its
+    // L-BFGS-B refit then replaces (the coefficients and means come from the refit, the hat values do not)
+    let mut last_irls: Option<(Vec<f64>, Vec<f64>)> = None;
     for t in 0..pa.beta_maxit {
         iter += 1;
         for j in 0..m {
@@ -470,6 +478,7 @@ fn fit_beta(y: &[f64], sf: &[f64], d: &Design, alpha: f64, pa: &Params) -> BetaF
             a[k * p + k] += lambda;
         }
         let b = xtwz(&d.x, m, p, &w, &z);
+        last_irls = Some((w.clone(), a.clone()));
         match Lu::new(a, p) {
             Some(lu) => beta = lu.solve(&b),
             None => {
@@ -494,6 +503,7 @@ fn fit_beta(y: &[f64], sf: &[f64], d: &Design, alpha: f64, pa: &Params) -> BetaF
         dev_old = dev;
     }
     let mut conv = iter < pa.beta_maxit;
+    let irls_conv = conv;
     let unstable = beta.iter().any(|v| !v.is_finite());
     let mut out = finish_beta(&beta, y, sf, d, alpha, lambda, pa.min_mu, r);
     out.iter = iter;
@@ -503,11 +513,33 @@ fn fit_beta(y: &[f64], sf: &[f64], d: &Design, alpha: f64, pa: &Params) -> BetaF
         let (b2, ok) = newton_beta(start, y, sf, d, alpha, lambda);
         let mut o2 = finish_beta(&b2, y, sf, d, alpha, lambda, pa.min_mu, r);
         o2.iter = iter;
+        if !irls_conv {
+            if let Some(h) = last_irls.as_ref().and_then(|(w, a)| irls_hat(&d.x, m, p, w, a)) {
+                o2.hat = h;
+            }
+        }
         conv = ok;
         out = o2;
     }
     out.conv = conv;
     out
+}
+
+/// Hat diagonals `w_j x_j' (X'WX + ridge)^-1 x_j` of one IRLS iteration, from its weights and its ridged `X'WX`.
+fn irls_hat(x: &[f64], m: usize, p: usize, w: &[f64], a: &[f64]) -> Option<Vec<f64>> {
+    let inv = Lu::new(a.to_vec(), p)?.inverse();
+    Some((0..m)
+        .map(|j| {
+            let xr = &x[j * p..(j + 1) * p];
+            let mut h = 0.0;
+            for a in 0..p {
+                for b in 0..p {
+                    h += xr[a] * inv[b * p + a] * xr[b];
+                }
+            }
+            h * w[j]
+        })
+        .collect())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -682,7 +714,7 @@ fn gamma_identity_glm(means: &[f64], disps: &[f64], start: [f64; 2]) -> Option<(
         }).collect();
         let a = xtwx(&x, n, 2, &w);
         let b = xtwz(&x, n, 2, &w, disps);
-        let sol = Lu::new(a, 2)?.solve(&b);
+        let sol = ScaledLu::new(&a, 2)?.solve(&b);
         let mut cand = [sol[0], sol[1]];
         let mut dev = dev_of(&cand);
         let mut ii = 0;
@@ -706,7 +738,9 @@ fn gamma_identity_glm(means: &[f64], disps: &[f64], start: [f64; 2]) -> Option<(
 }
 
 /// DESeq2 `parametricDispersionFit`: disp = a + b / mean.
-fn parametric_fit(means: &[f64], disps: &[f64]) -> Option<[f64; 2]> {
+pub(crate) const PARAMETRIC_FALLBACK_MESSAGE: &str = "-- note: fitType='parametric', but the dispersion trend was not well captured by the\n   function: y = a/x + b, and a local regression fit was automatically substituted.\n   specify fitType='local' or 'mean' to avoid this message next time.";
+
+pub(crate) fn parametric_fit(means: &[f64], disps: &[f64]) -> Option<[f64; 2]> {
     let mut coefs = [0.1, 1.0];
     let mut iter = 0;
     loop {
@@ -739,107 +773,208 @@ fn parametric_fit(means: &[f64], disps: &[f64]) -> Option<[f64; 2]> {
     }
 }
 
-/// Local quadratic regression with tricube weights (R `loess(span, degree = 2)`,
-/// evaluated directly rather than through loess's interpolation surface).
-fn loess_predict(x: &[f64], y: &[f64], span: f64, at: &[f64]) -> Vec<f64> {
+/// Quantile of the F distribution to full double precision. `statrs` stops its bisection at a
+/// relative width of about 1e-6, which moves Cook's cut-off `qf(0.99, p, m - p)` away from R's
+/// value in the sixth digit; a few Newton steps on the (accurate) cdf remove that.
+pub(crate) fn f_quantile(d1: f64, d2: f64, q: f64) -> f64 {
+    let f = match FisherSnedecor::new(d1, d2) {
+        Ok(f) => f,
+        Err(_) => return f64::NAN,
+    };
+    let mut x = f.inverse_cdf(q);
+    for _ in 0..50 {
+        let d = f.pdf(x);
+        if !(d > 0.0) || !d.is_finite() {
+            break;
+        }
+        let nx = x - (f.cdf(x) - q) / d;
+        let nx = if nx > 0.0 { nx } else { 0.5 * x };
+        let done = (nx - x).abs() <= 1e-15 * x.abs();
+        x = nx;
+        if done {
+            break;
+        }
+    }
+    x
+}
+
+/// One-predictor `loess(y ~ x, span, degree = 2)` as R computes it (netlib `dloess`
+/// defaults: `surface = "interpolate"`, tricube weights, `family = "gaussian"`):
+/// a 1-d k-d tree splits the sorted `x` until a cell holds at most
+/// `floor(n * span * 0.2)` points, the local quadratic fit and its slope are
+/// evaluated at the cell boundaries, and values in between are cubic Hermite
+/// interpolates. `at` must lie within the range of `x` (plus the 0.5 % margin of the tree).
+fn loess_interp(x: &[f64], y: &[f64], span: f64, at: &[f64]) -> Vec<f64> {
     let n = x.len();
-    let q = ((span * n as f64).floor() as usize).clamp(3, n);
-    at.iter()
-        .map(|&x0| {
-            let mut dist: Vec<f64> = x.iter().map(|&xi| (xi - x0).abs()).collect();
-            let mut sorted = dist.clone();
-            sorted.sort_by(|a, b| a.total_cmp(b));
-            let h = sorted[q - 1].max(1e-12);
-            let mut s = [0.0f64; 9]; // Σw, Σw t, Σw t², Σw t³, Σw t⁴, Σw y, Σw t y, Σw t² y
-            for i in 0..n {
-                let u = dist[i] / h;
-                if u >= 1.0 {
+    let nf = n.min((n as f64 * span + 1e-5).floor() as usize).max(3);
+    let fc = (n as f64 * span * 0.2).floor() as usize;
+    let (lo, hi) = (x.iter().copied().fold(f64::INFINITY, f64::min), x.iter().copied().fold(f64::NEG_INFINITY, f64::max));
+    let mu = 0.005 * (hi - lo).max(1e-10 * lo.abs().max(hi.abs()) + 1e-30);
+    let (lo, hi) = (lo - mu, hi + mu);
+    let mut xs = x.to_vec();
+    xs.sort_by(|a, b| a.total_cmp(b));
+    let mut verts = vec![lo, hi];
+    let mut stack: Vec<(i64, i64, f64, f64)> = vec![(0, n as i64 - 1, lo, hi)];
+    while let Some((l, u, vlo, vhi)) = stack.pop() {
+        if (u - l + 1) as usize <= fc {
+            continue;
+        }
+        let mut m = (l + u + 2) / 2 - 1;
+        let mut off = 0i64;
+        while l <= m + off && m + off < u {
+            if xs[(m + off) as usize] == xs[(m + off + 1) as usize] {
+                off = -off;
+                if off >= 0 {
+                    off += 1;
+                }
+            } else {
+                m += off;
+                break;
+            }
+        }
+        let xi = xs[m as usize];
+        if xi == vlo || xi == vhi {
+            continue;
+        }
+        verts.push(xi);
+        stack.push((l, m, vlo, xi));
+        stack.push((m + 1, u, xi, vhi));
+    }
+    verts.sort_by(|a, b| a.total_cmp(b));
+    verts.dedup();
+    // local quadratic value and slope at each vertex
+    let fits: Vec<(f64, f64)> = verts
+        .iter()
+        .map(|&q| {
+            let d2: Vec<f64> = x.iter().map(|&xi| (xi - q) * (xi - q)).collect();
+            let mut order: Vec<usize> = (0..n).collect();
+            order.sort_by(|&i, &j| d2[i].total_cmp(&d2[j]));
+            let near = &order[..nf.min(n)];
+            let rho = d2[near[near.len() - 1]] * span.max(1.0);
+            if rho <= 0.0 {
+                let m = near.iter().map(|&i| y[i]).sum::<f64>() / near.len() as f64;
+                return (m, 0.0);
+            }
+            let h = rho.sqrt();
+            // weighted least squares on t = (x - q) / h: sums of w t^k and w t^k y
+            let mut s = [0.0f64; 5];
+            let mut r = [0.0f64; 3];
+            for &i in near {
+                if d2[i] >= rho {
                     continue;
                 }
-                let wv = (1.0 - u * u * u).powi(3);
-                let t = x[i] - x0;
-                s[0] += wv;
-                s[1] += wv * t;
-                s[2] += wv * t * t;
-                s[3] += wv * t * t * t;
-                s[4] += wv * t * t * t * t;
-                s[5] += wv * y[i];
-                s[6] += wv * t * y[i];
-                s[7] += wv * t * t * y[i];
+                let u = (d2[i] / rho).sqrt();
+                let w = (1.0 - u * u * u).powi(3);
+                let t = (x[i] - q) / h;
+                let mut tk = 1.0;
+                for k in 0..5 {
+                    s[k] += w * tk;
+                    if k < 3 {
+                        r[k] += w * tk * y[i];
+                    }
+                    tk *= t;
+                }
             }
-            dist.clear();
-            let a = vec![s[0], s[1], s[2], s[1], s[2], s[3], s[2], s[3], s[4]];
-            match Lu::new(a, 3) {
-                Some(lu) => lu.solve(&[s[5], s[6], s[7]])[0],
-                None => s[5] / s[0],
+            let mut a = [[s[0], s[1], s[2], r[0]], [s[1], s[2], s[3], r[1]], [s[2], s[3], s[4], r[2]]];
+            for c in 0..3 {
+                let piv = (c..3).max_by(|&i, &j| a[i][c].abs().total_cmp(&a[j][c].abs())).unwrap();
+                a.swap(c, piv);
+                if a[c][c] == 0.0 {
+                    return (r[0] / s[0], 0.0);
+                }
+                for rw in c + 1..3 {
+                    let f = a[rw][c] / a[c][c];
+                    for k in c..4 {
+                        a[rw][k] -= f * a[c][k];
+                    }
+                }
             }
+            let c2 = a[2][3] / a[2][2];
+            let c1 = (a[1][3] - a[1][2] * c2) / a[1][1];
+            let c0 = (a[0][3] - a[0][1] * c1 - a[0][2] * c2) / a[0][0];
+            (c0, c1 / h)
+        })
+        .collect();
+    at.iter()
+        .map(|&a| {
+            let j = verts.partition_point(|&v| v < a).saturating_sub(1).min(verts.len() - 2);
+            let (x0, x1) = (verts[j], verts[j + 1]);
+            let h = x1 - x0;
+            let u = (a - x0) / h;
+            let phi0 = (1.0 - u) * (1.0 - u) * (1.0 + 2.0 * u);
+            let phi1 = u * u * (3.0 - 2.0 * u);
+            let psi0 = u * (1.0 - u) * (1.0 - u);
+            let psi1 = -(u * u) * (1.0 - u);
+            phi0 * fits[j].0 + phi1 * fits[j + 1].0 + (psi0 * fits[j].1 + psi1 * fits[j + 1].1) * h
         })
         .collect()
 }
 
-/// DESeq2 `estimateDispersionsPriorVar` for (m - p) <= 3: the prior variance
-/// whose implied residual distribution best matches the observed residuals
-/// (KL divergence over a histogram). DESeq2 simulates the reference
-/// distribution with 10⁴ draws; here the histogram of
-/// log(χ²_k / k) + N(0, v) is integrated numerically, so it is deterministic.
-fn prior_var_small_df(resid: &[f64], df: f64) -> f64 {
-    let brks: Vec<f64> = (-20..=20).map(|v| v as f64 / 2.0).collect();
-    let nb = brks.len() - 1;
-    let hist = |vals: &mut dyn Iterator<Item = f64>| -> Vec<f64> {
-        let mut h = vec![0.0; nb];
-        let mut n = 0.0;
-        for v in vals {
-            if v > -10.0 && v < 10.0 {
-                let k = (((v + 10.0) / 0.5).ceil() as usize).clamp(1, nb) - 1; // (a, b]
-                h[k] += 1.0;
-                n += 1.0;
+/// Histogram counts, per bin of width 0.5 on (-10, 10), of the 10^4 simulated residuals
+/// `log(chi^2_df) + N(0, x) - log(df)` that R's `estimateDispersionsPriorVar` draws after
+/// `set.seed(2)` for each of the 200 values x of `seq(0, 8, length = 200)`; df = 1, 2, 3.
+/// The draws do not depend on the data, so the table (made by `data/make_prior_var_stream.R`)
+/// reproduces R's reference distribution exactly.
+const PRIOR_VAR_STREAM: &str = include_str!("data/prior_var_stream_counts.txt");
+const PV_BINS: usize = 40;
+const PV_GRID: usize = 200;
+
+fn prior_var_stream(df: usize) -> &'static [[u32; PV_BINS]] {
+    static TABLE: std::sync::OnceLock<Vec<Vec<[u32; PV_BINS]>>> = std::sync::OnceLock::new();
+    let t = TABLE.get_or_init(|| {
+        let mut out: Vec<Vec<[u32; PV_BINS]>> = Vec::new();
+        for line in PRIOR_VAR_STREAM.lines() {
+            if line.starts_with('#') || line.trim().is_empty() {
+                continue;
             }
+            if line.starts_with("df ") {
+                out.push(Vec::with_capacity(PV_GRID));
+                continue;
+            }
+            let mut row = [0u32; PV_BINS];
+            for (k, tok) in line.split_whitespace().enumerate() {
+                row[k] = tok.parse().expect("prior variance table: integer count");
+            }
+            out.last_mut().expect("prior variance table: df header").push(row);
         }
-        h.iter().map(|c| c / (n * 0.5)).collect()
-    };
-    let obs = hist(&mut resid.iter().copied());
-    // quadrature for L = log(X/k), X ~ χ²_k
-    let chi = ChiSquared::new(df).unwrap();
-    let nq = 4000;
-    let (llo, lhi) = (-40.0f64, 4.0f64);
-    let mut lq = Vec::with_capacity(nq);
-    let mut wq = Vec::with_capacity(nq);
-    for i in 0..nq {
-        let a = llo + (lhi - llo) * i as f64 / nq as f64;
-        let b = llo + (lhi - llo) * (i + 1) as f64 / nq as f64;
-        let pm = chi.cdf(df * b.exp()) - chi.cdf(df * a.exp());
-        lq.push(0.5 * (a + b));
-        wq.push(pm);
+        out
+    });
+    &t[df - 1]
+}
+
+/// DESeq2 `estimateDispersionsPriorVar` for (m - p) <= 3: the prior variance whose implied
+/// residual distribution best matches the observed residuals (KL divergence over a histogram
+/// with bins of width 0.5). R simulates the reference histogram from 10^4 draws seeded by
+/// `set.seed(2)`; the same draws are tabulated in `PRIOR_VAR_STREAM`, so the KL curve, the
+/// pseudo-count `small` (smallest positive density, which depends on the Monte-Carlo
+/// resolution), the span-0.2 loess smoothing and the grid search all follow R.
+fn prior_var_small_df(resid: &[f64], df: f64) -> f64 {
+    let nb = PV_BINS;
+    let mut obs = vec![0.0f64; nb];
+    let mut n = 0.0;
+    for &v in resid {
+        if v > -10.0 && v < 10.0 {
+            let k = (((v + 10.0) / 0.5).ceil() as usize).clamp(1, nb) - 1; // (a, b]
+            obs[k] += 1.0;
+            n += 1.0;
+        }
     }
-    let nd = Normal::new(0.0, 1.0).unwrap();
-    let grid: Vec<f64> = (0..200).map(|i| 8.0 * i as f64 / 199.0).collect();
-    let kl: Vec<f64> = grid
-        .par_iter()
-        .map(|&v| {
-            let sd = v.sqrt();
-            let mut ph = vec![0.0; nb];
-            for (l, w) in lq.iter().zip(&wq) {
-                if *w == 0.0 {
-                    continue;
-                }
-                for k in 0..nb {
-                    let (a, b) = (brks[k], brks[k + 1]);
-                    let pk = if sd == 0.0 {
-                        if *l > a && *l <= b { 1.0 } else { 0.0 }
-                    } else {
-                        nd.cdf((b - l) / sd) - nd.cdf((a - l) / sd)
-                    };
-                    ph[k] += w * pk;
-                }
-            }
-            let tot: f64 = ph.iter().sum();
-            let rd: Vec<f64> = ph.iter().map(|p| p / (tot * 0.5)).collect();
+    for o in obs.iter_mut() {
+        *o /= n * 0.5;
+    }
+    let table = prior_var_stream((df.round() as usize).clamp(1, 3));
+    let grid: Vec<f64> = (0..PV_GRID).map(|i| 8.0 * i as f64 / (PV_GRID - 1) as f64).collect();
+    let kl: Vec<f64> = table
+        .iter()
+        .map(|counts| {
+            let tot: f64 = counts.iter().map(|&c| c as f64).sum();
+            let rd: Vec<f64> = counts.iter().map(|&c| c as f64 / (tot * 0.5)).collect();
             let small = obs.iter().chain(&rd).copied().filter(|&z| z > 0.0).fold(f64::INFINITY, f64::min);
             obs.iter().zip(&rd).map(|(&o, &r)| o * ((o + small).ln() - (r + small).ln())).sum()
         })
         .collect();
     let fine: Vec<f64> = (0..1000).map(|i| 8.0 * i as f64 / 999.0).collect();
-    let fitted = loess_predict(&grid, &kl, 0.2, &fine);
+    let fitted = loess_interp(&grid, &kl, 0.2, &fine);
     let mut best = (0usize, f64::INFINITY);
     for (i, &v) in fitted.iter().enumerate() {
         if v < best.1 {
@@ -932,7 +1067,7 @@ struct Stage {
 #[allow(clippy::too_many_arguments)]
 fn fit_genes(
     counts: &[f64], genes: &[usize], sf: &[f64], d: &Design, pa: &Params, xim: f64,
-    trend: &dyn Fn(&[f64], &[f64]) -> (Vec<f64>, f64, f64), base_mean: &[f64],
+    trend: &dyn Fn(&[f64], &[f64]) -> (Vec<f64>, f64, f64), base_mean: &[f64], first_pass: bool,
 ) -> (Stage, f64, f64) {
     let m = d.m;
     let ys: Vec<&[f64]> = genes.iter().map(|&i| &counts[i * m..(i + 1) * m]).collect();
@@ -941,7 +1076,9 @@ fn fit_genes(
     let bm: Vec<f64> = genes.iter().map(|&i| base_mean[i]).collect();
     let (disp_fit, prior_var, var_log) = trend(&bm, &gest);
     let mus: Vec<Vec<f64>> = ge.iter().map(|g| g.mu.clone()).collect();
-    let all_small = gest.iter().all(|&g| g < pa.min_disp * 100.0);
+    // DESeq2 takes this shortcut only when it estimates the trend (first pass); the refit
+    // after outlier replacement reuses the frozen trend and prior and always runs the MAP step.
+    let all_small = first_pass && gest.iter().all(|&g| g < pa.min_disp * 100.0);
     let disp = if all_small {
         let n = genes.len();
         DispResult { disp_fit, disp_map: vec![pa.min_disp * 10.0; n], dispersion: vec![pa.min_disp * 10.0; n], outlier: vec![false; n] }
@@ -999,27 +1136,40 @@ pub fn deseq(counts: &[f64], g: usize, d: &Design, sf: Option<Vec<f64>>, poscoun
     }
 
     // trend + prior variance, decided on the first (full) pass and then frozen
-    let fitted: std::sync::Mutex<Option<(FitType, Vec<f64>, f64, f64)>> = std::sync::Mutex::new(None);
+    let fitted: std::sync::Mutex<Option<(FitType, Vec<f64>, f64, f64, Option<std::sync::Arc<locfit::LocalTrend>>)>> = std::sync::Mutex::new(None);
     let fit_type_req = pa.fit_type;
     let msgs = std::sync::Mutex::new(Vec::<String>::new());
+    let substituted = std::sync::atomic::AtomicBool::new(false);
     let trend = |bm: &[f64], gest: &[f64]| -> (Vec<f64>, f64, f64) {
         let mut guard = fitted.lock().unwrap();
-        let (ft, coefs, prior_var, var_log) = match guard.as_ref() {
+        let (ft, coefs, prior_var, var_log, local) = match guard.as_ref() {
             Some(t) => t.clone(),
             None => {
                 let use_fit: Vec<usize> = (0..gest.len()).filter(|&i| gest[i] > 100.0 * pa.min_disp).collect();
                 let mut ft = fit_type_req;
                 let mut coefs = vec![];
+                let mut local: Option<std::sync::Arc<locfit::LocalTrend>> = None;
+                let mb: Vec<f64> = use_fit.iter().map(|&i| bm[i]).collect();
+                let dg: Vec<f64> = use_fit.iter().map(|&i| gest[i]).collect();
                 if use_fit.is_empty() {
                     msgs.lock().unwrap().push("all gene-wise dispersion estimates are within 2 orders of magnitude from the minimum value; using their mean as the trend".into());
                     ft = FitType::Mean;
                 } else if ft == FitType::Parametric {
-                    let mb: Vec<f64> = use_fit.iter().map(|&i| bm[i]).collect();
-                    let dg: Vec<f64> = use_fit.iter().map(|&i| gest[i]).collect();
                     match parametric_fit(&mb, &dg) {
                         Some(c) => coefs = c.to_vec(),
                         None => {
-                            msgs.lock().unwrap().push("the parametric dispersion trend (a + b/mean) did not fit; using fit_type=\"mean\" (DESeq2 would substitute a local regression)".into());
+                            msgs.lock().unwrap().push(PARAMETRIC_FALLBACK_MESSAGE.into());
+                            substituted.store(true, std::sync::atomic::Ordering::Relaxed);
+                            ft = FitType::Local;
+                        }
+                    }
+                }
+                if ft == FitType::Local {
+                    match locfit::local_dispersion_fit(&mb, &dg) {
+                        Ok(t) => local = Some(std::sync::Arc::new(t)),
+                        Err(e) => {
+                            msgs.lock().unwrap().push(format!("the local regression dispersion trend failed ({e}); using the mean of the gene-wise dispersions as the trend, so dispersions, the prior variance, p-values and the number of significant genes can differ from R's"));
+                            substituted.store(true, std::sync::atomic::Ordering::Relaxed);
                             ft = FitType::Mean;
                         }
                     }
@@ -1028,7 +1178,11 @@ pub fn deseq(counts: &[f64], g: usize, d: &Design, sf: Option<Vec<f64>>, poscoun
                     let v: Vec<f64> = gest.iter().copied().filter(|&x| x > 10.0 * pa.min_disp).collect();
                     coefs = vec![if v.is_empty() { pa.min_disp * 10.0 } else { trimmed_mean(&v, 0.001) }];
                 }
-                let f = |mn: f64| if coefs.len() == 2 { coefs[0] + coefs[1] / mn } else { coefs[0] };
+                let f = |mn: f64| match (&local, coefs.len()) {
+                    (Some(t), _) => t.disp_at(mn),
+                    (None, 2) => coefs[0] + coefs[1] / mn,
+                    _ => coefs[0],
+                };
                 let above: Vec<usize> = (0..gest.len()).filter(|&i| gest[i] >= pa.min_disp * 100.0).collect();
                 let resid: Vec<f64> = above.iter().map(|&i| gest[i].ln() - f(bm[i]).ln()).collect();
                 let var_log = if resid.is_empty() { f64::NAN } else { mad(&resid).powi(2) };
@@ -1040,15 +1194,19 @@ pub fn deseq(counts: &[f64], g: usize, d: &Design, sf: Option<Vec<f64>>, poscoun
                 } else {
                     (var_log - trigamma(dfr / 2.0)).max(0.25)
                 };
-                *guard = Some((ft, coefs.clone(), prior_var, var_log));
-                (ft, coefs, prior_var, var_log)
+                *guard = Some((ft, coefs.clone(), prior_var, var_log, local.clone()));
+                (ft, coefs, prior_var, var_log, local)
             }
         };
-        let fv = bm.iter().map(|&mn| if coefs.len() == 2 && ft == FitType::Parametric { coefs[0] + coefs[1] / mn } else { coefs[0] }).collect();
+        let fv = bm.iter().map(|&mn| match (&local, ft) {
+            (Some(t), _) => t.disp_at(mn),
+            (None, FitType::Parametric) => coefs[0] + coefs[1] / mn,
+            _ => coefs[0],
+        }).collect();
         (fv, prior_var, var_log)
     };
 
-    let (stage, prior_var, var_log) = fit_genes(counts, &nz, &sf, d, pa, xim, &trend, &base_mean);
+    let (stage, prior_var, var_log) = fit_genes(counts, &nz, &sf, d, pa, xim, &trend, &base_mean, true);
     messages.extend(msgs.lock().unwrap().drain(..));
     let (fit_type, trend_coefs) = {
         let t = fitted.lock().unwrap();
@@ -1066,7 +1224,7 @@ pub fn deseq(counts: &[f64], g: usize, d: &Design, sf: Option<Vec<f64>>, poscoun
         max_cooks: nan_g(), replace: vec![false; g], replace_counts: None,
         deviance_reduced: reduced.map(|_| nan_g()), beta_conv_reduced: reduced.map(|_| vec![false; g]),
         lrt_stat: None, lrt_pvalue: None,
-        fit_type, trend: trend_coefs, disp_prior_var: prior_var, var_log_disp_ests: var_log, messages,
+        fit_type, fit_substituted: substituted.load(std::sync::atomic::Ordering::Relaxed), trend: trend_coefs, disp_prior_var: prior_var, var_log_disp_ests: var_log, messages,
     };
     let write_stage = |out: &mut Fit, genes: &[usize], st: &Stage| {
         for (k, &i) in genes.iter().enumerate() {
@@ -1153,7 +1311,7 @@ pub fn deseq(counts: &[f64], g: usize, d: &Design, sf: Option<Vec<f64>>, poscoun
     // outlier replacement and refit (DESeq2 refitWithoutOutliers)
     let replaceable = d.n_or_more(pa.min_replicates_for_replace);
     if replaceable.iter().any(|&b| b) && m > p {
-        let cutoff = FisherSnedecor::new(p as f64, (m - p) as f64).unwrap().inverse_cdf(0.99);
+        let cutoff = f_quantile(p as f64, (m - p) as f64, 0.99);
         let mut new_counts = counts.to_vec();
         let mut nrefit = 0usize;
         for &i in &nz {
@@ -1182,7 +1340,7 @@ pub fn deseq(counts: &[f64], g: usize, d: &Design, sf: Option<Vec<f64>>, poscoun
             out.base_var = base_var.clone();
             if !refit.is_empty() {
                 out.messages.push(format!("replacing outliers and refitting for {} genes (min_replicates_for_replace = {})", nrefit, pa.min_replicates_for_replace));
-                let (st, _, _) = fit_genes(&new_counts, &refit, &sf, d, pa, xim, &trend, &base_mean);
+                let (st, _, _) = fit_genes(&new_counts, &refit, &sf, d, pa, xim, &trend, &base_mean, false);
                 write_stage(&mut out, &refit, &st);
                 fit_reduced(&mut out, &new_counts, &refit);
                 for &i in &new_zero {
@@ -1263,5 +1421,91 @@ mod tests {
         let c = vec![10.0, 20.0, 5.0, 4.0, 8.0, 3.0, 100.0, 200.0, 40.0, 0.0, 1.0, 2.0];
         let sf = size_factors(&c, 4, 3, false).unwrap();
         assert!((sf[1] / sf[0] - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn gamma_glm_is_invariant_to_rescaling_the_means() {
+        // dispersions on an a + b / mean trend with deterministic multiplicative scatter
+        let n = 400;
+        let means: Vec<f64> = (0..n).map(|i| 10f64.powf(2.0 + 3.0 * i as f64 / n as f64)).collect();
+        let disps: Vec<f64> = means.iter().enumerate().map(|(i, &m)| (0.05 + 40.0 / m) * (1.0 + 0.3 * ((i * 7) as f64).sin())).collect();
+        let (c1, ok1) = gamma_identity_glm(&means, &disps, [0.1, 1.0]).expect("moderate means");
+        assert!(ok1);
+        // the same data with every mean 1e6 times larger: b scales by 1e6, a is unchanged
+        let big: Vec<f64> = means.iter().map(|m| m * 1e6).collect();
+        let (c2, ok2) = gamma_identity_glm(&big, &disps, [0.1, 1.0e6]).expect("large means");
+        assert!(ok2);
+        assert!((c2[0] / c1[0] - 1.0).abs() < 1e-6, "{:?} {:?}", c1, c2);
+        assert!((c2[1] / (c1[1] * 1e6) - 1.0).abs() < 1e-6, "{:?} {:?}", c1, c2);
+    }
+
+    #[test]
+    fn scaled_lu_matches_lu_and_survives_badly_scaled_columns() {
+        let a = vec![4.0, 1.0, 1.0, 3.0];
+        let (x1, x2) = (Lu::new(a.clone(), 2).unwrap().solve(&[1.0, 2.0]), ScaledLu::new(&a, 2).unwrap().solve(&[1.0, 2.0]));
+        assert!((x1[0] - x2[0]).abs() < 1e-14 && (x1[1] - x2[1]).abs() < 1e-14);
+        // columns of very different magnitude: the plain pivot test rejects it, the scaled one does not
+        let b = vec![1.0e6, 1.0e-2, 1.0e-2, 1.0e-9];
+        assert!(Lu::new(b.clone(), 2).is_none());
+        let x = ScaledLu::new(&b, 2).unwrap().solve(&[1.0e6 + 1.0e-2, 1.0e-2 + 1.0e-9]);
+        assert!((x[0] - 1.0).abs() < 1e-8 && (x[1] - 1.0).abs() < 1e-8, "{:?}", x);
+        // genuinely singular stays singular
+        assert!(ScaledLu::new(&[1.0, 2.0, 2.0, 4.0], 2).is_none());
+        assert!(ScaledLu::new(&[0.0, 0.0, 0.0, 1.0], 2).is_none());
+    }
+
+    #[test]
+    fn interpolating_loess_reproduces_a_quadratic_and_smooths_noise() {
+        // a local quadratic fit is exact for quadratic data, so are the Hermite interpolates
+        let x: Vec<f64> = (0..200).map(|i| 8.0 * i as f64 / 199.0).collect();
+        let y: Vec<f64> = x.iter().map(|v| 1.0 - 0.5 * v + 0.25 * v * v).collect();
+        let at: Vec<f64> = (0..1000).map(|i| 8.0 * i as f64 / 999.0).collect();
+        for (a, f) in at.iter().zip(loess_interp(&x, &y, 0.2, &at)) {
+            assert!((f - (1.0 - 0.5 * a + 0.25 * a * a)).abs() < 1e-9, "{a}: {f}");
+        }
+        // the fit at the data points is a smoother of noisy data, with less spread than the data
+        let noisy: Vec<f64> = x.iter().enumerate().map(|(i, v)| v * v + ((i * 37 % 11) as f64 - 5.0)).collect();
+        let fit = loess_interp(&x, &noisy, 0.2, &x);
+        let rss = |f: &[f64]| x.iter().zip(f).map(|(v, f)| (f - v * v).powi(2)).sum::<f64>();
+        assert!(rss(&fit) < 0.2 * rss(&noisy));
+    }
+
+    #[test]
+    fn prior_variance_stream_table_is_complete() {
+        for df in 1..=3 {
+            let t = prior_var_stream(df);
+            assert_eq!(t.len(), PV_GRID);
+            for row in t {
+                let tot: u32 = row.iter().sum();
+                assert!((8000..=10000).contains(&tot), "df {df}: {tot} draws inside (-10, 10)");
+            }
+            // x = 0 puts all mass on log(chi^2_df / df); a wider x spreads it over more bins
+            let width = |r: &[u32; PV_BINS]| r.iter().filter(|&&c| c > 0).count();
+            assert!(width(&t[PV_GRID - 1]) > width(&t[0]));
+        }
+    }
+
+    #[test]
+    fn prior_variance_matches_the_data_generating_value() {
+        // residuals drawn from the reference distribution at x = 2 (df = 2) should give about 2
+        let (df, x) = (2usize, 2.0f64);
+        let row = &prior_var_stream(df)[(x / 8.0 * (PV_GRID - 1) as f64).round() as usize];
+        let mut resid = Vec::new();
+        for (k, &c) in row.iter().enumerate() {
+            for j in 0..c {
+                resid.push(-10.0 + 0.5 * (k as f64 + (j as f64 + 0.5) / c as f64));
+            }
+        }
+        let pv = prior_var_small_df(&resid, df as f64);
+        assert!((pv - x).abs() < 0.1, "{pv}");
+    }
+
+    #[test]
+    fn f_quantile_matches_r_qf() {
+        // qf(0.99, p, m - p) as R prints it (15 digits)
+        for (d1, d2, want) in [(3.0, 9.0, 6.99191722223346), (2.0, 4.0, 18.0), (5.0, 4.0, 15.5218575444252)] {
+            let got = f_quantile(d1, d2, 0.99);
+            assert!((got / want - 1.0).abs() < 1e-12, "{d1} {d2}: {got} vs {want}");
+        }
     }
 }

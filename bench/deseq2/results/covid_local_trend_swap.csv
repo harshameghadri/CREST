@@ -1,0 +1,9 @@
+stratum,genes_in_fit,R_trend_on_CREST_values_max_rel_diff_to_CREST_dispFit,genes_with_different_gene_wise_estimate,of_which_either_at_floor,largest_baseMean_among_them
+B cell,6403,4.884981308350689e-15,212,211,7.041972120842214
+IgA plasma cell,8234,5.551115123125783e-15,15,4,10.349214286900995
+T follicular helper cell,9457,4.9960036108132044e-15,255,0,19.790023797729226
+"effector memory CD4-positive, alpha-beta T cell",7566,5.10702591327572e-15,4,4,3.0065136858741712
+natural killer cell,9065,5.773159728050814e-15,5,1,7.092401253015574
+plasmacytoid dendritic cell,9114,4.884981308350689e-15,7,5,7.823534396069614
+IgG plasma cell,9170,5.773159728050814e-15,15,6,12.1037915095388
+immature B cell,6946,4.9960036108132044e-15,281,279,6.545319173808414

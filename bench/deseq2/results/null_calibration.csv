@@ -1,0 +1,745 @@
+method,labelling,cell_type,status,n_samples,fit_type,n_genes,n_tested,n_padj,n_p_lt_0.05,n_tested_bm10,n_p_lt_0.05_bm10,n_tested_bm100,n_p_lt_0.05_bm100,n_padj_lt_0.05,n_padj_lt_0.1
+crest,observed,B cells,ok,16,parametric,13775,13775,6297,1171,1805,625,178,116,664,790
+crest,observed,CD14+ Monocytes,ok,16,parametric,14820,14820,9073,3838,3610,2369,711,589,3162,3660
+crest,observed,CD4 T cells,ok,16,parametric,15720,15720,9015,1887,4521,1414,659,378,1103,1350
+crest,observed,CD8 T cells,ok,16,parametric,12884,12884,4641,594,929,291,97,56,274,320
+crest,observed,Dendritic cells,ok,12,parametric,11800,11800,3564,715,1066,390,147,79,412,488
+crest,observed,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,6076,1850,1844,992,269,202,1215,1480
+crest,observed,Megakaryocytes,ok,10,parametric,9442,9442,1205,106,269,37,31,6,46,51
+crest,observed,NK cells,ok,16,parametric,12919,12919,5155,824,1215,445,115,70,421,505
+crest,perm00,B cells,ok,16,parametric,13775,13775,13775,75,1820,34,179,13,0,0
+crest,perm00,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,29,3658,11,715,2,0,0
+crest,perm00,CD4 T cells,ok,16,parametric,15720,15720,15720,103,4530,63,658,26,0,0
+crest,perm00,CD8 T cells,ok,16,parametric,12884,12884,12884,44,936,15,97,1,0,0
+crest,perm00,Dendritic cells,ok,12,parametric,11800,11800,11800,15,1048,6,144,3,0,0
+crest,perm00,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,58,1854,26,271,13,0,0
+crest,perm00,Megakaryocytes,ok,10,parametric,9442,9442,9442,11,266,8,28,1,0,0
+crest,perm00,NK cells,ok,16,parametric,12919,12919,12919,55,1231,13,116,4,0,0
+crest,perm01,B cells,ok,16,parametric,13775,13775,13775,65,1805,37,177,8,0,0
+crest,perm01,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,55,3658,32,716,13,0,0
+crest,perm01,CD4 T cells,ok,16,parametric,15720,15720,15720,93,4525,54,656,11,0,0
+crest,perm01,CD8 T cells,ok,16,mean,12884,12884,12884,28,933,3,98,0,0,0
+crest,perm01,Dendritic cells,ok,16,parametric,12001,12001,12001,22,875,4,117,0,0,0
+crest,perm01,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,68,1851,39,271,17,0,0
+crest,perm01,Megakaryocytes,ok,10,parametric,9442,9442,9442,8,272,2,29,0,0,0
+crest,perm01,NK cells,ok,16,parametric,12919,12919,12919,53,1226,20,116,9,0,0
+crest,perm02,B cells,ok,16,parametric,13775,13775,13775,73,1823,25,179,3,0,0
+crest,perm02,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,42,3649,19,717,5,0,0
+crest,perm02,CD4 T cells,ok,16,parametric,15720,15720,15720,77,4524,37,657,8,0,0
+crest,perm02,CD8 T cells,ok,16,mean,12884,12884,12884,30,928,9,97,0,0,0
+crest,perm02,Dendritic cells,ok,14,parametric,11909,11909,11909,34,958,24,131,8,0,0
+crest,perm02,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,48,1858,19,272,6,0,0
+crest,perm02,Megakaryocytes,ok,10,parametric,9442,9442,9442,10,268,6,31,0,0,0
+crest,perm02,NK cells,ok,16,parametric,12919,12919,12919,46,1217,15,115,2,0,0
+crest,perm03,B cells,ok,16,parametric,13775,13775,13775,50,1821,14,179,4,0,0
+crest,perm03,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,42,3658,16,716,2,0,0
+crest,perm03,CD4 T cells,ok,16,parametric,15720,15720,15720,73,4528,48,657,14,0,0
+crest,perm03,CD8 T cells,ok,16,parametric,12884,12884,12884,33,924,8,97,3,0,0
+crest,perm03,Dendritic cells,ok,16,parametric,12001,12001,12001,29,873,14,117,3,0,0
+crest,perm03,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,60,1846,30,272,10,0,1
+crest,perm03,Megakaryocytes,ok,8,parametric,8927,8927,8927,12,279,9,31,6,0,0
+crest,perm03,NK cells,ok,16,parametric,12919,12919,12919,54,1230,11,116,1,0,0
+crest,perm04,B cells,ok,16,parametric,13775,13775,13775,54,1804,21,177,3,0,0
+crest,perm04,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,56,3661,28,717,7,0,0
+crest,perm04,CD4 T cells,ok,16,parametric,15720,15720,15720,85,4520,46,657,12,0,0
+crest,perm04,CD8 T cells,ok,16,mean,12884,12884,12884,29,926,4,97,0,0,0
+crest,perm04,Dendritic cells,ok,12,parametric,11800,11800,11800,13,1065,5,146,0,0,0
+crest,perm04,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,65,1843,31,270,6,0,0
+crest,perm04,Megakaryocytes,ok,6,parametric,8307,8307,8307,16,275,11,31,2,0,0
+crest,perm04,NK cells,ok,16,mean,12919,12919,12919,46,1221,4,116,0,0,0
+crest,perm05,B cells,ok,16,parametric,13775,13775,13775,62,1817,18,179,3,0,0
+crest,perm05,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,47,3648,19,713,9,0,0
+crest,perm05,CD4 T cells,ok,16,parametric,15720,15720,15720,80,4521,40,657,8,0,0
+crest,perm05,CD8 T cells,ok,16,parametric,12884,12884,12884,57,935,17,96,6,0,0
+crest,perm05,Dendritic cells,ok,16,parametric,12001,12001,12001,55,874,31,119,16,0,0
+crest,perm05,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,49,1847,25,270,9,0,0
+crest,perm05,Megakaryocytes,ok,10,parametric,9442,9442,9442,3,266,3,29,0,0,0
+crest,perm05,NK cells,ok,16,mean,12919,12919,12919,55,1215,12,116,0,0,0
+crest,perm06,B cells,ok,16,parametric,13775,13775,13775,105,1797,57,175,12,0,0
+crest,perm06,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,51,3651,15,714,5,0,0
+crest,perm06,CD4 T cells,ok,16,parametric,15720,15720,15720,81,4526,46,658,13,0,0
+crest,perm06,CD8 T cells,ok,16,mean,12884,12884,12884,26,941,1,97,0,0,0
+crest,perm06,Dendritic cells,ok,14,parametric,11909,11909,11909,20,972,9,133,1,0,0
+crest,perm06,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,44,1857,22,273,6,0,0
+crest,perm06,Megakaryocytes,ok,8,parametric,8974,8974,8974,7,269,2,31,0,0,0
+crest,perm06,NK cells,ok,16,parametric,12919,12919,12919,48,1230,10,115,2,0,0
+crest,perm07,B cells,ok,16,parametric,13775,13775,13775,54,1822,27,179,9,0,0
+crest,perm07,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,51,3652,30,715,12,0,0
+crest,perm07,CD4 T cells,ok,16,parametric,15720,15720,15720,80,4522,41,657,4,0,0
+crest,perm07,CD8 T cells,ok,16,parametric,12884,12884,12884,47,929,13,96,6,0,0
+crest,perm07,Dendritic cells,ok,14,parametric,11909,11909,11909,15,952,6,129,4,0,0
+crest,perm07,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,49,1863,16,273,6,0,0
+crest,perm07,Megakaryocytes,ok,10,parametric,9442,9442,9442,13,272,6,32,1,0,0
+crest,perm07,NK cells,ok,16,parametric,12919,12919,12919,48,1199,9,113,4,0,0
+crest,perm08,B cells,ok,16,parametric,13775,13775,13775,61,1815,25,178,6,2,2
+crest,perm08,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,56,3656,29,713,7,0,0
+crest,perm08,CD4 T cells,ok,16,parametric,15720,15720,15720,88,4534,57,656,14,0,0
+crest,perm08,CD8 T cells,ok,16,parametric,12884,12884,12884,37,932,15,97,4,0,0
+crest,perm08,Dendritic cells,ok,16,parametric,12001,12001,12001,27,873,10,118,3,0,0
+crest,perm08,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,42,1861,17,273,2,0,0
+crest,perm08,Megakaryocytes,ok,10,parametric,9442,9442,9442,12,258,3,28,1,0,0
+crest,perm08,NK cells,ok,16,parametric,12919,12919,12919,57,1220,23,116,5,0,0
+crest,perm09,B cells,ok,16,parametric,13775,13775,13775,52,1821,25,179,3,0,0
+crest,perm09,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,48,3652,26,715,11,0,0
+crest,perm09,CD4 T cells,ok,16,parametric,15720,15720,15720,115,4527,65,658,20,0,0
+crest,perm09,CD8 T cells,ok,16,parametric,12884,12884,12884,43,903,9,96,0,0,0
+crest,perm09,Dendritic cells,ok,14,parametric,11909,11909,11909,28,962,14,133,4,0,0
+crest,perm09,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,49,1859,30,272,10,0,0
+crest,perm09,Megakaryocytes,ok,10,parametric,9442,9442,9442,2,269,1,28,0,0,0
+crest,perm09,NK cells,ok,16,mean,12919,12919,12919,51,1223,10,115,1,0,0
+crest,perm10,B cells,ok,16,parametric,13775,13775,13775,73,1816,32,179,7,1,1
+crest,perm10,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,58,3654,32,714,14,0,0
+crest,perm10,CD4 T cells,ok,16,parametric,15720,15720,15720,84,4528,54,657,15,0,0
+crest,perm10,CD8 T cells,ok,16,parametric,12884,12884,12884,43,921,7,97,0,0,0
+crest,perm10,Dendritic cells,ok,14,parametric,11897,11897,11897,20,946,6,132,0,0,0
+crest,perm10,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,44,1856,18,273,4,0,0
+crest,perm10,Megakaryocytes,ok,8,parametric,8974,8974,8974,6,282,1,32,0,0,0
+crest,perm10,NK cells,ok,16,parametric,12919,12919,12919,36,1227,7,116,2,0,0
+crest,perm11,B cells,ok,16,parametric,13775,13775,13775,45,1813,14,178,0,0,0
+crest,perm11,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,66,3647,26,715,9,0,0
+crest,perm11,CD4 T cells,ok,16,parametric,15720,15720,15720,81,4529,47,658,11,0,0
+crest,perm11,CD8 T cells,ok,16,parametric,12884,12884,12884,43,927,22,96,5,0,0
+crest,perm11,Dendritic cells,ok,14,parametric,11909,11909,11909,32,959,13,132,1,0,0
+crest,perm11,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,31,1850,13,270,6,0,0
+crest,perm11,Megakaryocytes,ok,10,parametric,9442,9442,9442,20,274,14,30,3,0,0
+crest,perm11,NK cells,ok,16,parametric,12919,12919,12919,69,1230,24,116,7,0,0
+crest,perm12,B cells,ok,16,parametric,13775,13775,13775,47,1807,17,177,6,0,0
+crest,perm12,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,52,3665,30,716,9,0,0
+crest,perm12,CD4 T cells,ok,16,parametric,15720,15720,15720,89,4521,60,657,19,0,0
+crest,perm12,CD8 T cells,ok,16,parametric,12884,12884,12884,38,935,14,97,3,0,0
+crest,perm12,Dendritic cells,ok,14,parametric,11909,11909,11909,33,935,12,128,5,0,0
+crest,perm12,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,50,1863,25,274,10,0,0
+crest,perm12,Megakaryocytes,ok,10,parametric,9442,9442,9442,8,272,5,32,1,0,0
+crest,perm12,NK cells,ok,16,parametric,12919,12919,12919,52,1209,13,115,1,0,0
+crest,perm13,B cells,ok,16,parametric,13775,13775,13775,70,1814,27,179,7,0,0
+crest,perm13,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,51,3644,17,712,2,0,0
+crest,perm13,CD4 T cells,ok,16,parametric,15720,15720,15720,89,4533,47,657,10,0,0
+crest,perm13,CD8 T cells,ok,16,parametric,12884,12884,12884,52,937,12,96,1,0,0
+crest,perm13,Dendritic cells,ok,14,parametric,11897,11897,11897,22,957,10,132,3,0,0
+crest,perm13,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,44,1845,18,272,1,0,0
+crest,perm13,Megakaryocytes,ok,10,parametric,9442,9442,9442,9,267,4,30,1,0,0
+crest,perm13,NK cells,ok,16,mean,12919,12919,12919,62,1216,9,116,0,0,0
+crest,perm14,B cells,ok,16,parametric,13775,13775,13775,51,1817,15,179,1,0,0
+crest,perm14,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,59,3663,24,714,3,0,0
+crest,perm14,CD4 T cells,ok,16,parametric,15720,15720,15720,73,4533,42,658,9,0,0
+crest,perm14,CD8 T cells,ok,16,parametric,12884,12884,12884,41,930,8,96,1,0,0
+crest,perm14,Dendritic cells,ok,14,parametric,11909,11909,11909,29,956,16,129,2,0,0
+crest,perm14,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,59,1848,23,270,6,0,0
+crest,perm14,Megakaryocytes,ok,10,parametric,9442,9442,9442,3,272,1,32,0,0,0
+crest,perm14,NK cells,ok,16,parametric,12919,12919,12919,43,1216,10,115,0,0,0
+crest,perm15,B cells,ok,16,parametric,13775,13775,13775,70,1819,24,179,7,0,0
+crest,perm15,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,35,3661,15,715,5,0,0
+crest,perm15,CD4 T cells,ok,16,parametric,15720,15720,15720,67,4521,46,657,9,0,0
+crest,perm15,CD8 T cells,ok,16,parametric,12884,12884,12884,51,929,17,97,3,0,0
+crest,perm15,Dendritic cells,ok,12,parametric,11800,11800,11800,16,1061,8,144,4,0,0
+crest,perm15,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,51,1846,17,270,10,0,0
+crest,perm15,Megakaryocytes,ok,10,parametric,9442,9442,9442,20,262,15,29,6,0,0
+crest,perm15,NK cells,ok,16,parametric,12919,12919,12919,73,1207,24,115,6,0,0
+crest,perm16,B cells,ok,16,parametric,13775,13775,13775,56,1813,27,179,5,0,0
+crest,perm16,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,50,3658,21,716,4,0,0
+crest,perm16,CD4 T cells,ok,16,parametric,15720,15720,15720,69,4529,39,657,13,0,0
+crest,perm16,CD8 T cells,ok,16,parametric,12884,12884,12884,46,938,14,97,3,0,0
+crest,perm16,Dendritic cells,ok,12,parametric,11800,11800,11800,19,1068,9,146,4,0,0
+crest,perm16,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,40,1850,18,272,8,0,0
+crest,perm16,Megakaryocytes,ok,10,parametric,9442,9442,9442,10,268,6,30,3,0,0
+crest,perm16,NK cells,ok,16,parametric,12919,12919,12919,62,1226,22,116,4,0,0
+crest,perm17,B cells,ok,16,parametric,13775,13775,13775,64,1815,24,178,2,0,0
+crest,perm17,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,72,3636,35,714,9,0,0
+crest,perm17,CD4 T cells,ok,16,parametric,15720,15720,15720,87,4531,47,658,13,0,0
+crest,perm17,CD8 T cells,ok,16,mean,12884,12884,12884,39,939,5,98,1,0,0
+crest,perm17,Dendritic cells,ok,16,parametric,12001,12001,12001,13,867,6,118,1,0,0
+crest,perm17,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,52,1858,17,273,5,0,0
+crest,perm17,Megakaryocytes,ok,10,parametric,9442,9442,9442,8,261,2,29,1,0,0
+crest,perm17,NK cells,ok,16,parametric,12919,12919,12919,38,1221,7,116,0,0,0
+crest,perm18,B cells,ok,16,parametric,13775,13775,13775,59,1816,22,179,6,0,0
+crest,perm18,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,90,3643,62,714,30,0,0
+crest,perm18,CD4 T cells,ok,16,parametric,15720,15720,15720,76,4530,44,657,13,0,0
+crest,perm18,CD8 T cells,ok,16,mean,12884,12884,12884,34,931,2,96,1,0,0
+crest,perm18,Dendritic cells,ok,14,parametric,11909,11909,11909,38,953,25,129,8,0,0
+crest,perm18,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,59,1853,23,270,10,0,0
+crest,perm18,Megakaryocytes,ok,10,parametric,9442,9442,9442,17,267,10,29,1,0,0
+crest,perm18,NK cells,ok,16,parametric,12919,12919,12919,52,1225,15,116,3,0,0
+crest,perm19,B cells,ok,16,parametric,13775,13775,13775,87,1793,42,176,14,0,0
+crest,perm19,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,82,3658,49,715,26,0,0
+crest,perm19,CD4 T cells,ok,16,parametric,15720,15720,15720,72,4527,44,657,7,0,0
+crest,perm19,CD8 T cells,ok,16,parametric,12884,12884,12884,48,936,11,97,3,0,0
+crest,perm19,Dendritic cells,ok,16,parametric,12001,12001,12001,25,877,10,120,2,0,0
+crest,perm19,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,77,1856,41,273,18,0,0
+crest,perm19,Megakaryocytes,ok,10,parametric,9442,9442,9442,11,269,6,29,0,0,0
+crest,perm19,NK cells,ok,16,parametric,12919,12919,12919,51,1226,19,116,2,0,0
+crest,perm20,B cells,ok,16,parametric,13775,13775,13775,58,1816,16,179,4,0,0
+crest,perm20,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,58,3663,16,716,5,0,0
+crest,perm20,CD4 T cells,ok,16,parametric,15720,15720,15720,91,4534,53,660,13,0,0
+crest,perm20,CD8 T cells,ok,16,parametric,12884,12884,12884,40,930,10,97,0,0,0
+crest,perm20,Dendritic cells,ok,14,parametric,11909,11909,11909,18,948,12,129,6,0,0
+crest,perm20,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,76,1863,44,271,16,0,0
+crest,perm20,Megakaryocytes,ok,10,parametric,9442,9442,9442,14,255,6,28,3,0,0
+crest,perm20,NK cells,ok,16,parametric,12919,12919,12919,51,1221,14,116,1,0,0
+crest,perm21,B cells,ok,16,parametric,13775,13775,13775,66,1814,27,179,7,0,0
+crest,perm21,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,45,3648,19,714,4,0,0
+crest,perm21,CD4 T cells,ok,16,parametric,15720,15720,15720,88,4525,43,657,16,0,0
+crest,perm21,CD8 T cells,ok,16,mean,12884,12884,12884,41,925,6,96,1,0,0
+crest,perm21,Dendritic cells,ok,14,parametric,11909,11909,11909,17,967,10,133,1,0,0
+crest,perm21,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,53,1855,24,271,4,0,0
+crest,perm21,Megakaryocytes,ok,10,parametric,9442,9442,9442,8,263,3,29,1,0,0
+crest,perm21,NK cells,ok,16,parametric,12919,12919,12919,66,1210,29,115,13,0,0
+crest,perm22,B cells,ok,16,parametric,13775,13775,13775,69,1819,23,179,7,0,0
+crest,perm22,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,71,3651,32,715,6,0,0
+crest,perm22,CD4 T cells,ok,16,parametric,15720,15720,15720,70,4528,39,655,5,0,0
+crest,perm22,CD8 T cells,ok,16,mean,12884,12884,12884,34,933,4,96,0,0,0
+crest,perm22,Dendritic cells,ok,14,parametric,11909,11909,11909,18,964,6,131,1,0,0
+crest,perm22,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,36,1856,12,272,3,0,0
+crest,perm22,Megakaryocytes,ok,10,parametric,9442,9442,9442,4,268,4,29,1,0,0
+crest,perm22,NK cells,ok,16,mean,12919,12919,12919,58,1196,7,114,0,0,0
+crest,perm23,B cells,ok,16,parametric,13775,13775,13775,64,1819,28,179,7,0,0
+crest,perm23,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,42,3651,19,716,8,0,0
+crest,perm23,CD4 T cells,ok,16,parametric,15720,15720,15720,57,4523,27,656,5,0,0
+crest,perm23,CD8 T cells,ok,16,mean,12884,12884,12884,30,919,6,96,2,0,0
+crest,perm23,Dendritic cells,ok,16,parametric,12001,12001,12001,23,878,8,120,2,0,0
+crest,perm23,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,68,1852,34,272,10,0,0
+crest,perm23,Megakaryocytes,ok,10,parametric,9442,9442,9442,10,267,7,29,2,0,0
+crest,perm23,NK cells,ok,16,parametric,12919,12919,12919,47,1214,21,115,3,0,0
+crest,perm24,B cells,ok,16,parametric,13775,13775,13775,60,1803,32,178,12,0,2
+crest,perm24,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,52,3654,31,716,12,0,0
+crest,perm24,CD4 T cells,ok,16,parametric,15720,15720,15720,72,4529,40,658,8,0,0
+crest,perm24,CD8 T cells,ok,16,parametric,12884,12884,12884,43,930,15,97,3,0,0
+crest,perm24,Dendritic cells,ok,16,parametric,12001,12001,12001,48,874,25,119,10,0,0
+crest,perm24,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,48,1848,16,270,4,0,0
+crest,perm24,Megakaryocytes,ok,8,parametric,8974,8974,8974,5,257,4,28,1,0,0
+crest,perm24,NK cells,ok,16,parametric,12919,12919,12919,58,1224,18,116,1,0,0
+crest,perm25,B cells,ok,16,parametric,13775,13775,13775,53,1808,22,177,4,0,0
+crest,perm25,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,70,3656,52,717,30,0,0
+crest,perm25,CD4 T cells,ok,16,parametric,15720,15720,15720,80,4525,49,657,12,0,0
+crest,perm25,CD8 T cells,ok,16,parametric,12884,12884,12884,34,934,13,97,4,0,0
+crest,perm25,Dendritic cells,ok,14,parametric,11909,11909,11909,38,972,21,133,11,0,0
+crest,perm25,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,41,1852,14,272,4,0,0
+crest,perm25,Megakaryocytes,ok,8,parametric,8974,8974,8974,10,281,4,30,2,0,0
+crest,perm25,NK cells,ok,16,parametric,12919,12919,12919,52,1225,15,117,0,0,0
+crest,perm26,B cells,ok,16,parametric,13775,13775,13775,42,1809,17,178,7,0,0
+crest,perm26,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,71,3659,32,715,9,0,0
+crest,perm26,CD4 T cells,ok,16,parametric,15720,15720,15720,97,4527,52,657,15,0,0
+crest,perm26,CD8 T cells,ok,16,parametric,12884,12884,12884,51,936,18,97,6,0,0
+crest,perm26,Dendritic cells,ok,16,parametric,12001,12001,12001,28,861,13,115,7,0,0
+crest,perm26,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,38,1854,16,272,8,0,0
+crest,perm26,Megakaryocytes,ok,10,parametric,9442,9442,9442,6,270,2,30,0,0,0
+crest,perm26,NK cells,ok,16,parametric,12919,12919,12919,56,1227,10,116,1,0,0
+crest,perm27,B cells,ok,16,parametric,13775,13775,13775,58,1819,22,179,5,0,0
+crest,perm27,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,53,3651,32,715,9,3,3
+crest,perm27,CD4 T cells,ok,16,parametric,15720,15720,15720,81,4531,42,658,11,0,0
+crest,perm27,CD8 T cells,ok,16,parametric,12884,12884,12884,49,942,16,97,5,0,0
+crest,perm27,Dendritic cells,ok,12,parametric,11800,11800,11800,32,1065,19,147,9,0,0
+crest,perm27,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,46,1858,19,273,4,0,0
+crest,perm27,Megakaryocytes,ok,10,parametric,9442,9442,9442,18,272,12,32,1,0,0
+crest,perm27,NK cells,ok,16,parametric,12919,12919,12919,57,1208,13,115,5,0,0
+crest,perm28,B cells,ok,16,parametric,13775,13775,13775,71,1819,23,179,1,0,0
+crest,perm28,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,70,3650,33,714,16,0,0
+crest,perm28,CD4 T cells,ok,16,parametric,15720,15720,15720,97,4526,58,657,14,0,0
+crest,perm28,CD8 T cells,ok,16,parametric,12884,12884,12884,39,936,14,98,5,0,0
+crest,perm28,Dendritic cells,ok,14,parametric,11909,11909,11909,20,966,8,132,2,0,0
+crest,perm28,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,66,1855,32,270,7,0,0
+crest,perm28,Megakaryocytes,ok,10,parametric,9442,9442,9442,15,247,7,27,1,0,0
+crest,perm28,NK cells,ok,16,parametric,12919,12919,12919,55,1230,18,116,3,0,0
+crest,perm29,B cells,ok,16,parametric,13775,13775,13775,66,1813,28,179,7,0,0
+crest,perm29,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,59,3658,35,717,13,0,0
+crest,perm29,CD4 T cells,ok,16,parametric,15720,15720,15720,57,4521,29,657,5,1,1
+crest,perm29,CD8 T cells,ok,16,parametric,12884,12884,12884,39,934,14,98,4,0,0
+crest,perm29,Dendritic cells,ok,16,parametric,12001,12001,12001,31,878,13,118,3,0,0
+crest,perm29,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,55,1855,24,271,6,0,0
+crest,perm29,Megakaryocytes,ok,12,parametric,9801,9801,9801,4,254,2,30,1,0,0
+crest,perm29,NK cells,ok,16,parametric,12919,12919,12919,56,1206,19,115,4,0,0
+r,observed,B cells,ok,16,parametric,13775,13775,6297,1171,1805,625,178,116,664,790
+r,observed,CD14+ Monocytes,ok,16,parametric,14820,14820,9073,3838,3610,2369,711,589,3162,3660
+r,observed,CD4 T cells,ok,16,parametric,15720,15720,9015,1883,4521,1411,659,378,1101,1349
+r,observed,CD8 T cells,ok,16,parametric,12884,12884,4641,594,929,291,97,56,274,320
+r,observed,Dendritic cells,ok,12,parametric,11800,11800,3564,715,1066,390,147,79,412,488
+r,observed,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,6334,1852,1844,992,269,202,1210,1468
+r,observed,Megakaryocytes,ok,10,parametric,9442,9442,1205,106,269,37,31,6,46,51
+r,observed,NK cells,ok,16,parametric,12919,12919,5155,824,1215,445,115,70,421,505
+r,perm00,B cells,ok,16,parametric,13775,13775,13775,75,1820,34,179,13,0,0
+r,perm00,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,29,3658,11,715,2,0,0
+r,perm00,CD4 T cells,ok,16,parametric,15720,15720,15720,102,4530,63,658,26,0,0
+r,perm00,CD8 T cells,ok,16,parametric,12884,12884,12884,44,936,15,97,1,0,0
+r,perm00,Dendritic cells,ok,12,parametric,11800,11800,11800,15,1048,6,144,3,0,0
+r,perm00,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,58,1854,26,271,13,0,0
+r,perm00,Megakaryocytes,ok,10,parametric,9442,9442,9442,11,266,8,28,1,0,0
+r,perm00,NK cells,ok,16,parametric,12919,12919,12919,55,1231,13,116,4,0,0
+r,perm01,B cells,ok,16,parametric,13775,13775,13775,65,1805,37,177,8,0,0
+r,perm01,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,55,3658,32,716,13,0,0
+r,perm01,CD4 T cells,ok,16,parametric,15720,15720,15720,92,4525,53,656,11,0,0
+r,perm01,CD8 T cells,ok,16,local,12884,12884,12884,58,933,19,98,4,0,0
+r,perm01,Dendritic cells,ok,16,parametric,12001,12001,12001,22,875,4,117,0,0,0
+r,perm01,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,68,1851,39,271,17,0,0
+r,perm01,Megakaryocytes,ok,10,parametric,9442,9442,9442,8,272,2,29,0,0,0
+r,perm01,NK cells,ok,16,parametric,12919,12919,12919,53,1226,20,116,9,0,0
+r,perm02,B cells,ok,16,parametric,13775,13775,13775,73,1823,25,179,3,0,0
+r,perm02,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,42,3649,19,717,5,0,0
+r,perm02,CD4 T cells,ok,16,parametric,15720,15720,15720,77,4524,37,657,8,0,0
+r,perm02,CD8 T cells,ok,16,local,12884,12884,12884,53,928,21,97,1,0,0
+r,perm02,Dendritic cells,ok,14,parametric,11909,11909,11909,34,958,24,131,8,0,0
+r,perm02,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,48,1858,19,272,6,0,0
+r,perm02,Megakaryocytes,ok,10,parametric,9442,9442,9442,10,268,6,31,0,0,0
+r,perm02,NK cells,ok,16,parametric,12919,12919,12919,46,1217,15,115,2,0,0
+r,perm03,B cells,ok,16,parametric,13775,13775,13775,50,1821,14,179,4,0,0
+r,perm03,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,42,3658,16,716,2,0,0
+r,perm03,CD4 T cells,ok,16,parametric,15720,15720,15720,73,4528,48,657,14,0,0
+r,perm03,CD8 T cells,ok,16,parametric,12884,12884,12884,33,924,8,97,3,0,0
+r,perm03,Dendritic cells,ok,16,parametric,12001,12001,12001,29,873,14,117,3,0,0
+r,perm03,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,60,1846,30,272,10,0,1
+r,perm03,Megakaryocytes,ok,8,parametric,8927,8927,8927,12,279,9,31,6,0,0
+r,perm03,NK cells,ok,16,parametric,12919,12919,12919,54,1230,11,116,1,0,0
+r,perm04,B cells,ok,16,parametric,13775,13775,13775,54,1804,21,177,3,0,0
+r,perm04,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,56,3661,28,717,7,0,0
+r,perm04,CD4 T cells,ok,16,parametric,15720,15720,15720,85,4520,46,657,12,0,0
+r,perm04,CD8 T cells,ok,16,local,12884,12884,12884,54,926,20,97,1,0,0
+r,perm04,Dendritic cells,ok,12,parametric,11800,11800,11800,13,1065,5,146,0,0,0
+r,perm04,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,65,1843,31,270,6,0,0
+r,perm04,Megakaryocytes,ok,6,parametric,8307,8307,8307,16,275,11,31,2,0,0
+r,perm04,NK cells,ok,16,local,12919,12919,12919,84,1221,25,116,2,0,0
+r,perm05,B cells,ok,16,parametric,13775,13775,13775,62,1817,18,179,3,0,0
+r,perm05,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,47,3648,19,713,9,0,0
+r,perm05,CD4 T cells,ok,16,parametric,15720,15720,15720,79,4521,40,657,8,0,0
+r,perm05,CD8 T cells,ok,16,parametric,12884,12884,12884,57,935,17,96,6,0,0
+r,perm05,Dendritic cells,ok,16,parametric,12001,12001,12001,55,874,31,119,16,0,0
+r,perm05,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,49,1847,25,270,9,0,0
+r,perm05,Megakaryocytes,ok,10,parametric,9442,9442,9442,3,266,3,29,0,0,0
+r,perm05,NK cells,ok,16,local,12919,12919,12919,92,1215,32,116,3,0,0
+r,perm06,B cells,ok,16,parametric,13775,13775,13775,105,1797,57,175,12,0,0
+r,perm06,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,51,3651,15,714,5,0,0
+r,perm06,CD4 T cells,ok,16,parametric,15720,15720,15720,81,4526,46,658,13,0,0
+r,perm06,CD8 T cells,ok,16,local,12884,12884,12884,64,941,16,97,0,0,0
+r,perm06,Dendritic cells,ok,14,parametric,11909,11909,11909,20,972,9,133,1,0,0
+r,perm06,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,44,1857,22,273,6,0,0
+r,perm06,Megakaryocytes,ok,8,parametric,8974,8974,8974,7,269,2,31,0,0,0
+r,perm06,NK cells,ok,16,parametric,12919,12919,12919,48,1230,10,115,2,0,0
+r,perm07,B cells,ok,16,parametric,13775,13775,13775,54,1822,27,179,9,0,0
+r,perm07,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,51,3652,30,715,12,0,0
+r,perm07,CD4 T cells,ok,16,parametric,15720,15720,15720,80,4522,41,657,4,0,0
+r,perm07,CD8 T cells,ok,16,parametric,12884,12884,12884,47,929,13,96,6,0,0
+r,perm07,Dendritic cells,ok,14,parametric,11909,11909,11909,15,952,6,129,4,0,0
+r,perm07,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,49,1863,16,273,6,0,0
+r,perm07,Megakaryocytes,ok,10,parametric,9442,9442,9442,13,272,6,32,1,0,0
+r,perm07,NK cells,ok,16,parametric,12919,12919,12919,48,1199,9,113,4,0,0
+r,perm08,B cells,ok,16,parametric,13775,13775,13775,61,1815,25,178,6,2,2
+r,perm08,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,56,3656,29,713,7,0,0
+r,perm08,CD4 T cells,ok,16,parametric,15720,15720,15720,88,4534,57,656,14,0,0
+r,perm08,CD8 T cells,ok,16,parametric,12884,12884,12884,37,932,15,97,4,0,0
+r,perm08,Dendritic cells,ok,16,parametric,12001,12001,12001,27,873,10,118,3,0,0
+r,perm08,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,42,1861,17,273,2,0,0
+r,perm08,Megakaryocytes,ok,10,parametric,9442,9442,9442,12,258,3,28,1,0,0
+r,perm08,NK cells,ok,16,parametric,12919,12919,12919,57,1220,23,116,5,0,0
+r,perm09,B cells,ok,16,parametric,13775,13775,13775,52,1821,25,179,3,0,0
+r,perm09,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,48,3652,26,715,11,0,0
+r,perm09,CD4 T cells,ok,16,parametric,15720,15720,15720,115,4527,65,658,20,0,0
+r,perm09,CD8 T cells,ok,16,parametric,12884,12884,12884,43,903,9,96,0,0,0
+r,perm09,Dendritic cells,ok,14,parametric,11909,11909,11909,28,962,14,133,4,0,0
+r,perm09,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,49,1859,30,272,10,0,0
+r,perm09,Megakaryocytes,ok,10,parametric,9442,9442,9442,2,269,1,28,0,0,0
+r,perm09,NK cells,ok,16,local,12919,12919,12919,89,1223,36,115,4,0,0
+r,perm10,B cells,ok,16,parametric,13775,13775,13775,73,1816,32,179,7,1,1
+r,perm10,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,58,3654,32,714,14,0,0
+r,perm10,CD4 T cells,ok,16,parametric,15720,15720,15720,84,4528,54,657,15,0,0
+r,perm10,CD8 T cells,ok,16,parametric,12884,12884,12884,43,921,7,97,0,0,0
+r,perm10,Dendritic cells,ok,14,parametric,11897,11897,11897,20,946,6,132,0,0,0
+r,perm10,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,44,1856,18,273,4,0,0
+r,perm10,Megakaryocytes,ok,8,parametric,8974,8974,8974,6,282,1,32,0,0,0
+r,perm10,NK cells,ok,16,parametric,12919,12919,12919,36,1227,7,116,2,0,0
+r,perm11,B cells,ok,16,parametric,13775,13775,13775,45,1813,14,178,0,0,0
+r,perm11,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,66,3647,26,715,9,0,0
+r,perm11,CD4 T cells,ok,16,parametric,15720,15720,15720,81,4529,47,658,11,0,0
+r,perm11,CD8 T cells,ok,16,parametric,12884,12884,12884,43,927,22,96,5,0,0
+r,perm11,Dendritic cells,ok,14,parametric,11909,11909,11909,32,959,13,132,1,0,0
+r,perm11,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,31,1850,13,270,6,0,0
+r,perm11,Megakaryocytes,ok,10,parametric,9442,9442,9442,20,274,14,30,3,0,0
+r,perm11,NK cells,ok,16,parametric,12919,12919,12919,69,1230,24,116,7,0,0
+r,perm12,B cells,ok,16,parametric,13775,13775,13775,47,1807,17,177,6,0,0
+r,perm12,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,52,3665,30,716,9,0,0
+r,perm12,CD4 T cells,ok,16,parametric,15720,15720,15720,89,4521,60,657,19,0,0
+r,perm12,CD8 T cells,ok,16,parametric,12884,12884,12884,38,935,14,97,3,0,0
+r,perm12,Dendritic cells,ok,14,parametric,11909,11909,11909,33,935,12,128,5,0,0
+r,perm12,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,50,1863,25,274,10,0,0
+r,perm12,Megakaryocytes,ok,10,parametric,9442,9442,9442,8,272,5,32,1,0,0
+r,perm12,NK cells,ok,16,parametric,12919,12919,12919,52,1209,13,115,1,0,0
+r,perm13,B cells,ok,16,parametric,13775,13775,13775,70,1814,27,179,7,0,0
+r,perm13,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,51,3644,17,712,2,0,0
+r,perm13,CD4 T cells,ok,16,parametric,15720,15720,15720,89,4533,47,657,10,0,0
+r,perm13,CD8 T cells,ok,16,parametric,12884,12884,12884,52,937,12,96,1,0,0
+r,perm13,Dendritic cells,ok,14,parametric,11897,11897,11897,22,957,10,132,3,0,0
+r,perm13,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,44,1845,18,272,1,0,0
+r,perm13,Megakaryocytes,ok,10,parametric,9442,9442,9442,9,267,4,30,1,0,0
+r,perm13,NK cells,ok,16,local,12919,12919,12919,87,1216,34,116,5,0,0
+r,perm14,B cells,ok,16,parametric,13775,13775,13775,51,1817,15,179,1,0,0
+r,perm14,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,59,3663,24,714,3,0,0
+r,perm14,CD4 T cells,ok,16,parametric,15720,15720,15720,73,4533,42,658,9,0,0
+r,perm14,CD8 T cells,ok,16,parametric,12884,12884,12884,41,930,8,96,1,0,0
+r,perm14,Dendritic cells,ok,14,parametric,11909,11909,11909,29,956,16,129,2,0,0
+r,perm14,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,59,1848,23,270,6,0,0
+r,perm14,Megakaryocytes,ok,10,parametric,9442,9442,9442,3,272,1,32,0,0,0
+r,perm14,NK cells,ok,16,parametric,12919,12919,12919,43,1216,10,115,0,0,0
+r,perm15,B cells,ok,16,parametric,13775,13775,13775,70,1819,24,179,7,0,0
+r,perm15,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,35,3661,15,715,5,0,0
+r,perm15,CD4 T cells,ok,16,parametric,15720,15720,15720,67,4521,46,657,9,0,0
+r,perm15,CD8 T cells,ok,16,parametric,12884,12884,12884,51,929,17,97,3,0,0
+r,perm15,Dendritic cells,ok,12,parametric,11800,11800,11800,16,1061,8,144,4,0,0
+r,perm15,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,52,1846,17,270,10,0,0
+r,perm15,Megakaryocytes,ok,10,parametric,9442,9442,9442,20,262,15,29,6,0,0
+r,perm15,NK cells,ok,16,parametric,12919,12919,12919,73,1207,24,115,6,0,0
+r,perm16,B cells,ok,16,parametric,13775,13775,13775,56,1813,27,179,5,0,0
+r,perm16,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,50,3658,21,716,4,0,0
+r,perm16,CD4 T cells,ok,16,parametric,15720,15720,15720,69,4529,39,657,13,0,0
+r,perm16,CD8 T cells,ok,16,parametric,12884,12884,12884,46,938,14,97,3,0,0
+r,perm16,Dendritic cells,ok,12,parametric,11800,11800,11800,19,1068,9,146,4,0,0
+r,perm16,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,40,1850,18,272,8,0,0
+r,perm16,Megakaryocytes,ok,10,parametric,9442,9442,9442,10,268,6,30,3,0,0
+r,perm16,NK cells,ok,16,parametric,12919,12919,12919,62,1226,22,116,4,0,0
+r,perm17,B cells,ok,16,parametric,13775,13775,13775,64,1815,24,178,2,0,0
+r,perm17,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,72,3636,35,714,9,0,0
+r,perm17,CD4 T cells,ok,16,parametric,15720,15720,15720,87,4531,47,658,13,0,0
+r,perm17,CD8 T cells,ok,16,local,12884,12884,12884,64,939,16,98,3,0,0
+r,perm17,Dendritic cells,ok,16,parametric,12001,12001,12001,13,867,6,118,1,0,0
+r,perm17,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,52,1858,17,273,5,0,0
+r,perm17,Megakaryocytes,ok,10,parametric,9442,9442,9442,8,261,2,29,1,0,0
+r,perm17,NK cells,ok,16,parametric,12919,12919,12919,38,1221,7,116,0,0,0
+r,perm18,B cells,ok,16,parametric,13775,13775,13775,59,1816,22,179,6,0,0
+r,perm18,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,90,3643,62,714,30,0,0
+r,perm18,CD4 T cells,ok,16,parametric,15720,15720,15720,76,4530,44,657,13,0,0
+r,perm18,CD8 T cells,ok,16,local,12884,12884,12884,52,931,14,96,1,0,0
+r,perm18,Dendritic cells,ok,14,parametric,11909,11909,11909,38,953,25,129,8,0,0
+r,perm18,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,59,1853,23,270,10,0,0
+r,perm18,Megakaryocytes,ok,10,parametric,9442,9442,9442,17,267,10,29,1,0,0
+r,perm18,NK cells,ok,16,parametric,12919,12919,12919,52,1225,15,116,3,0,0
+r,perm19,B cells,ok,16,parametric,13775,13775,13775,87,1793,42,176,14,0,0
+r,perm19,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,82,3658,49,715,26,0,0
+r,perm19,CD4 T cells,ok,16,parametric,15720,15720,15720,72,4527,44,657,7,0,0
+r,perm19,CD8 T cells,ok,16,parametric,12884,12884,12884,48,936,11,97,3,0,0
+r,perm19,Dendritic cells,ok,16,parametric,12001,12001,12001,25,877,10,120,2,0,0
+r,perm19,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,77,1856,41,273,18,0,0
+r,perm19,Megakaryocytes,ok,10,parametric,9442,9442,9442,11,269,6,29,0,0,0
+r,perm19,NK cells,ok,16,parametric,12919,12919,12919,51,1226,19,116,2,0,0
+r,perm20,B cells,ok,16,parametric,13775,13775,13775,58,1816,16,179,4,0,0
+r,perm20,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,58,3663,16,716,5,0,0
+r,perm20,CD4 T cells,ok,16,parametric,15720,15720,15720,91,4534,53,660,13,0,0
+r,perm20,CD8 T cells,ok,16,parametric,12884,12884,12884,40,930,10,97,0,0,0
+r,perm20,Dendritic cells,ok,14,parametric,11909,11909,11909,18,948,12,129,6,0,0
+r,perm20,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,76,1863,44,271,16,0,0
+r,perm20,Megakaryocytes,ok,10,parametric,9442,9442,9442,14,255,6,28,3,0,0
+r,perm20,NK cells,ok,16,parametric,12919,12919,12919,51,1221,14,116,1,0,0
+r,perm21,B cells,ok,16,parametric,13775,13775,13775,66,1814,27,179,7,0,0
+r,perm21,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,45,3648,19,714,4,0,0
+r,perm21,CD4 T cells,ok,16,parametric,15720,15720,15720,87,4525,42,657,15,0,0
+r,perm21,CD8 T cells,ok,16,local,12884,12884,12884,58,925,19,96,1,0,0
+r,perm21,Dendritic cells,ok,14,parametric,11909,11909,11909,17,967,10,133,1,0,0
+r,perm21,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,53,1855,24,271,4,0,0
+r,perm21,Megakaryocytes,ok,10,parametric,9442,9442,9442,8,263,3,29,1,0,0
+r,perm21,NK cells,ok,16,parametric,12919,12919,12919,66,1210,29,115,13,0,0
+r,perm22,B cells,ok,16,parametric,13775,13775,13775,69,1819,23,179,7,0,0
+r,perm22,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,71,3651,32,715,6,0,0
+r,perm22,CD4 T cells,ok,16,parametric,15720,15720,15720,70,4528,39,655,5,0,0
+r,perm22,CD8 T cells,ok,16,local,12884,12884,12884,66,933,15,96,3,0,0
+r,perm22,Dendritic cells,ok,14,parametric,11909,11909,11909,18,964,6,131,1,0,0
+r,perm22,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,36,1856,12,272,3,0,0
+r,perm22,Megakaryocytes,ok,10,parametric,9442,9442,9442,4,268,4,29,1,0,0
+r,perm22,NK cells,ok,16,local,12919,12919,12919,94,1196,28,114,3,0,0
+r,perm23,B cells,ok,16,parametric,13775,13775,13775,62,1819,28,179,7,0,0
+r,perm23,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,42,3651,19,716,8,0,0
+r,perm23,CD4 T cells,ok,16,parametric,15720,15720,15720,57,4523,27,656,5,0,0
+r,perm23,CD8 T cells,ok,16,local,12884,12884,12884,72,919,33,96,9,0,0
+r,perm23,Dendritic cells,ok,16,parametric,12001,12001,12001,23,878,8,120,2,0,0
+r,perm23,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,68,1852,34,272,10,0,0
+r,perm23,Megakaryocytes,ok,10,parametric,9442,9442,9442,10,267,7,29,2,0,0
+r,perm23,NK cells,ok,16,parametric,12919,12919,12919,47,1214,21,115,3,0,0
+r,perm24,B cells,ok,16,parametric,13775,13775,13775,60,1803,32,178,12,0,2
+r,perm24,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,52,3654,31,716,12,0,0
+r,perm24,CD4 T cells,ok,16,parametric,15720,15720,15720,72,4529,40,658,8,0,0
+r,perm24,CD8 T cells,ok,16,parametric,12884,12884,12884,43,930,15,97,3,0,0
+r,perm24,Dendritic cells,ok,16,parametric,12001,12001,12001,48,874,25,119,10,0,0
+r,perm24,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,48,1848,16,270,4,0,0
+r,perm24,Megakaryocytes,ok,8,parametric,8974,8974,8974,5,257,4,28,1,0,0
+r,perm24,NK cells,ok,16,parametric,12919,12919,12919,58,1224,18,116,1,0,0
+r,perm25,B cells,ok,16,parametric,13775,13775,13775,53,1808,22,177,4,0,0
+r,perm25,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,70,3656,52,717,30,0,0
+r,perm25,CD4 T cells,ok,16,parametric,15720,15720,15720,80,4525,49,657,12,0,0
+r,perm25,CD8 T cells,ok,16,parametric,12884,12884,12884,34,934,13,97,4,0,0
+r,perm25,Dendritic cells,ok,14,parametric,11909,11909,11909,38,972,21,133,11,0,0
+r,perm25,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,41,1852,14,272,4,0,0
+r,perm25,Megakaryocytes,ok,8,parametric,8974,8974,8974,10,281,4,30,2,0,0
+r,perm25,NK cells,ok,16,parametric,12919,12919,12919,52,1225,15,117,0,0,0
+r,perm26,B cells,ok,16,parametric,13775,13775,13775,42,1809,17,178,7,0,0
+r,perm26,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,71,3659,32,715,9,0,0
+r,perm26,CD4 T cells,ok,16,parametric,15720,15720,15720,97,4527,52,657,15,0,0
+r,perm26,CD8 T cells,ok,16,parametric,12884,12884,12884,51,936,18,97,6,0,0
+r,perm26,Dendritic cells,ok,16,parametric,12001,12001,12001,28,861,13,115,7,0,0
+r,perm26,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,38,1854,16,272,8,0,0
+r,perm26,Megakaryocytes,ok,10,parametric,9442,9442,9442,6,270,2,30,0,0,0
+r,perm26,NK cells,ok,16,parametric,12919,12919,12919,56,1227,10,116,1,0,0
+r,perm27,B cells,ok,16,parametric,13775,13775,13775,58,1819,22,179,5,0,0
+r,perm27,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,53,3651,32,715,9,3,3
+r,perm27,CD4 T cells,ok,16,parametric,15720,15720,15720,81,4531,42,658,11,0,0
+r,perm27,CD8 T cells,ok,16,parametric,12884,12884,12884,49,942,16,97,5,0,0
+r,perm27,Dendritic cells,ok,12,parametric,11800,11800,11800,32,1065,19,147,9,0,0
+r,perm27,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,46,1858,19,273,4,0,0
+r,perm27,Megakaryocytes,ok,10,parametric,9442,9442,9442,18,272,12,32,1,0,0
+r,perm27,NK cells,ok,16,parametric,12919,12919,12919,57,1208,13,115,5,0,0
+r,perm28,B cells,ok,16,parametric,13775,13775,13775,70,1819,23,179,1,0,0
+r,perm28,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,70,3650,33,714,16,0,0
+r,perm28,CD4 T cells,ok,16,parametric,15720,15720,15720,97,4526,58,657,14,0,0
+r,perm28,CD8 T cells,ok,16,parametric,12884,12884,12884,39,936,14,98,5,0,0
+r,perm28,Dendritic cells,ok,14,parametric,11909,11909,11909,20,966,8,132,2,0,0
+r,perm28,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,66,1855,32,270,7,0,0
+r,perm28,Megakaryocytes,ok,10,parametric,9442,9442,9442,15,247,7,27,1,0,0
+r,perm28,NK cells,ok,16,parametric,12919,12919,12919,55,1230,18,116,3,0,0
+r,perm29,B cells,ok,16,parametric,13775,13775,13775,66,1813,28,179,7,0,0
+r,perm29,CD14+ Monocytes,ok,16,parametric,14820,14820,14820,59,3658,35,717,13,0,0
+r,perm29,CD4 T cells,ok,16,parametric,15720,15720,15720,57,4521,29,657,5,1,1
+r,perm29,CD8 T cells,ok,16,parametric,12884,12884,12884,39,934,14,98,4,0,0
+r,perm29,Dendritic cells,ok,16,parametric,12001,12001,12001,31,878,13,118,3,0,0
+r,perm29,FCGR3A+ Monocytes,ok,16,parametric,13292,13292,13292,55,1855,24,271,6,0,0
+r,perm29,Megakaryocytes,ok,12,parametric,9801,9801,9801,4,254,2,30,1,0,0
+r,perm29,NK cells,ok,16,parametric,12919,12919,12919,56,1206,19,115,4,0,0
+pydeseq2,observed,Megakaryocytes,ok,10,"",9442,9442,1022,120,269,35,31,5,36,50
+pydeseq2,observed,Dendritic cells,ok,12,"",11800,11800,4022,837,1066,384,147,76,414,531
+pydeseq2,perm00,CD8 T cells,ok,16,"",12884,12884,12884,66,936,20,97,1,0,0
+pydeseq2,observed,NK cells,ok,16,"",12919,12919,4904,1043,1215,492,115,71,533,635
+pydeseq2,observed,CD8 T cells,ok,16,"",12884,12884,4391,709,929,314,97,54,320,388
+pydeseq2,perm00,B cells,ok,16,"",13775,13775,13775,113,1820,38,179,9,0,0
+pydeseq2,observed,B cells,ok,16,"",13775,13775,6564,1351,1805,660,178,111,769,927
+pydeseq2,perm00,CD14+ Monocytes,ok,16,"",14820,14820,14820,76,3658,35,715,3,1,1
+pydeseq2,observed,FCGR3A+ Monocytes,ok,16,"",13292,13292,6849,2002,1844,974,269,198,1235,1568
+pydeseq2,perm00,CD4 T cells,ok,16,"",15720,15720,15720,161,4530,94,658,29,0,0
+pydeseq2,observed,CD14+ Monocytes,ok,16,"",14820,14820,9361,3949,3610,2322,711,584,3214,3753
+pydeseq2,observed,CD4 T cells,ok,16,"",15720,15720,9624,2174,4521,1557,659,382,1319,1630
+pydeseq2,perm00,Dendritic cells,ok,12,"",11800,11800,11800,44,1048,5,144,2,0,0
+pydeseq2,perm00,Megakaryocytes,ok,10,"",9442,9442,9442,13,266,2,28,0,0,0
+pydeseq2,perm01,Megakaryocytes,ok,10,"",9442,9442,9442,11,272,2,29,0,0,0
+pydeseq2,perm00,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,98,1854,39,271,15,0,0
+pydeseq2,perm00,NK cells,ok,16,"",12919,12919,12919,110,1231,25,116,4,0,0
+pydeseq2,perm01,CD8 T cells,ok,16,"",12884,12884,12884,65,933,19,98,5,0,0
+pydeseq2,perm01,B cells,ok,16,"",13775,13775,13775,134,1805,61,177,8,0,0
+pydeseq2,perm01,Dendritic cells,ok,16,"",12001,12001,12001,34,875,4,117,0,0,0
+pydeseq2,perm01,CD14+ Monocytes,ok,16,"",14820,14820,14820,89,3658,46,716,14,0,0
+pydeseq2,perm01,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,116,1851,54,271,17,0,0
+pydeseq2,perm01,NK cells,ok,16,"",12919,12919,12919,104,1226,33,116,9,0,0
+pydeseq2,perm01,CD4 T cells,ok,16,"",15720,15720,15720,150,4525,82,656,11,0,0
+pydeseq2,perm02,B cells,ok,16,"",13775,13775,13775,130,1823,37,179,3,0,0
+pydeseq2,perm02,Megakaryocytes,ok,10,"",9442,9442,9442,22,268,5,31,0,0,0
+pydeseq2,perm02,CD14+ Monocytes,ok,16,"",14820,14820,14820,138,3649,45,717,7,0,0
+pydeseq2,perm02,Dendritic cells,ok,14,"",11909,11909,11909,64,958,20,131,4,0,0
+pydeseq2,perm02,CD8 T cells,ok,16,"",12884,12884,12884,66,928,24,97,2,0,0
+pydeseq2,perm02,CD4 T cells,ok,16,"",15720,15720,15720,146,4524,77,657,13,0,0
+pydeseq2,perm02,NK cells,ok,16,"",12919,12919,12919,100,1217,29,115,4,0,0
+pydeseq2,perm02,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,81,1858,19,272,6,0,0
+pydeseq2,perm03,B cells,ok,16,"",13775,13775,13775,98,1821,29,179,5,0,0
+pydeseq2,perm03,CD8 T cells,ok,16,"",12884,12884,12884,63,924,12,97,3,0,0
+pydeseq2,perm03,CD14+ Monocytes,ok,16,"",14820,14820,14820,75,3658,31,716,3,0,0
+pydeseq2,perm03,CD4 T cells,ok,16,"",15720,15720,15720,133,4528,80,657,17,0,0
+pydeseq2,perm03,Megakaryocytes,ok,8,"",8927,8927,8927,8,279,1,31,0,0,0
+pydeseq2,perm03,Dendritic cells,ok,16,"",12001,12001,12001,42,873,8,117,1,0,0
+pydeseq2,perm03,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,95,1846,36,272,10,0,0
+pydeseq2,perm04,Megakaryocytes,ok,6,"",8307,8307,8307,3,275,0,31,0,0,0
+pydeseq2,perm03,NK cells,ok,16,"",12919,12919,12919,98,1230,16,116,0,0,0
+pydeseq2,perm04,B cells,ok,16,"",13775,13775,13775,100,1804,37,177,3,0,0
+pydeseq2,perm04,Dendritic cells,ok,12,"",11800,11800,11800,36,1065,3,146,0,0,0
+pydeseq2,perm04,CD14+ Monocytes,ok,16,"",14820,14820,14820,99,3661,40,717,8,0,0
+pydeseq2,perm04,CD8 T cells,ok,16,"",12884,12884,12884,70,926,20,97,1,0,0
+pydeseq2,perm04,CD4 T cells,ok,16,"",15720,15720,15720,143,4520,77,657,16,0,0
+pydeseq2,perm04,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,108,1843,49,270,6,0,0
+pydeseq2,perm04,NK cells,ok,16,"",12919,12919,12919,92,1221,23,116,2,0,0
+pydeseq2,perm05,B cells,ok,16,"",13775,13775,13775,103,1817,23,179,3,0,0
+pydeseq2,perm05,CD14+ Monocytes,ok,16,"",14820,14820,14820,97,3648,42,713,11,0,0
+pydeseq2,perm05,CD8 T cells,ok,16,"",12884,12884,12884,86,935,23,96,6,0,0
+pydeseq2,perm05,Megakaryocytes,ok,10,"",9442,9442,9442,10,266,2,29,0,0,0
+pydeseq2,perm05,Dendritic cells,ok,16,"",12001,12001,12001,93,874,25,119,11,0,0
+pydeseq2,perm05,CD4 T cells,ok,16,"",15720,15720,15720,151,4521,84,657,12,0,0
+pydeseq2,perm05,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,96,1847,42,270,9,0,0
+pydeseq2,perm05,NK cells,ok,16,"",12919,12919,12919,101,1215,29,116,3,0,0
+pydeseq2,perm06,B cells,ok,16,"",13775,13775,13775,170,1797,75,175,10,0,0
+pydeseq2,perm06,CD14+ Monocytes,ok,16,"",14820,14820,14820,96,3651,38,714,8,0,0
+pydeseq2,perm06,CD8 T cells,ok,16,"",12884,12884,12884,75,941,17,97,0,0,0
+pydeseq2,perm06,CD4 T cells,ok,16,"",15720,15720,15720,129,4526,75,658,15,0,0
+pydeseq2,perm06,Megakaryocytes,ok,8,"",8974,8974,8974,5,269,0,31,0,0,0
+pydeseq2,perm06,Dendritic cells,ok,14,"",11909,11909,11909,45,972,11,133,2,0,0
+pydeseq2,perm06,NK cells,ok,16,"",12919,12919,12919,106,1230,22,115,4,0,0
+pydeseq2,perm06,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,91,1857,21,273,4,0,0
+pydeseq2,perm07,B cells,ok,16,"",13775,13775,13775,103,1822,37,179,6,0,0
+pydeseq2,perm07,Megakaryocytes,ok,10,"",9442,9442,9442,22,272,4,32,0,0,0
+pydeseq2,perm07,CD14+ Monocytes,ok,16,"",14820,14820,14820,89,3652,50,715,14,0,0
+pydeseq2,perm07,CD8 T cells,ok,16,"",12884,12884,12884,73,929,22,96,6,0,0
+pydeseq2,perm07,Dendritic cells,ok,14,"",11909,11909,11909,26,952,2,129,0,0,0
+pydeseq2,perm07,CD4 T cells,ok,16,"",15720,15720,15720,134,4522,65,657,6,0,0
+pydeseq2,perm07,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,84,1863,27,273,7,0,0
+pydeseq2,perm07,NK cells,ok,16,"",12919,12919,12919,100,1199,20,113,5,0,0
+pydeseq2,perm08,B cells,ok,16,"",13775,13775,13775,111,1815,35,178,5,2,2
+pydeseq2,perm08,CD14+ Monocytes,ok,16,"",14820,14820,14820,138,3656,51,713,8,0,0
+pydeseq2,perm08,Megakaryocytes,ok,10,"",9442,9442,9442,20,258,2,28,0,0,0
+pydeseq2,perm08,CD8 T cells,ok,16,"",12884,12884,12884,71,932,28,97,3,0,0
+pydeseq2,perm08,Dendritic cells,ok,16,"",12001,12001,12001,41,873,6,118,1,0,0
+pydeseq2,perm08,CD4 T cells,ok,16,"",15720,15720,15720,150,4534,94,656,16,0,0
+pydeseq2,perm08,NK cells,ok,16,"",12919,12919,12919,123,1220,40,116,7,0,0
+pydeseq2,perm08,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,97,1861,23,273,3,0,0
+pydeseq2,perm09,B cells,ok,16,"",13775,13775,13775,110,1821,39,179,3,0,0
+pydeseq2,perm09,CD14+ Monocytes,ok,16,"",14820,14820,14820,87,3652,41,715,12,0,0
+pydeseq2,perm09,CD8 T cells,ok,16,"",12884,12884,12884,71,903,11,96,0,0,0
+pydeseq2,perm09,CD4 T cells,ok,16,"",15720,15720,15720,170,4527,98,658,24,0,0
+pydeseq2,perm09,Dendritic cells,ok,14,"",11909,11909,11909,48,962,7,133,1,0,0
+pydeseq2,perm09,Megakaryocytes,ok,10,"",9442,9442,9442,11,269,1,28,0,0,0
+pydeseq2,perm09,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,79,1859,40,272,10,0,0
+pydeseq2,perm09,NK cells,ok,16,"",12919,12919,12919,120,1223,40,115,4,0,0
+pydeseq2,perm10,B cells,ok,16,"",13775,13775,13775,133,1816,54,179,8,1,1
+pydeseq2,perm10,CD14+ Monocytes,ok,16,"",14820,14820,14820,104,3654,51,714,15,0,0
+pydeseq2,perm10,Megakaryocytes,ok,8,"",8974,8974,8974,8,282,1,32,0,0,0
+pydeseq2,perm10,CD8 T cells,ok,16,"",12884,12884,12884,76,921,15,97,0,0,0
+pydeseq2,perm10,Dendritic cells,ok,14,"",11897,11897,11897,38,946,5,132,0,0,0
+pydeseq2,perm10,CD4 T cells,ok,16,"",15720,15720,15720,129,4528,75,657,19,0,0
+pydeseq2,perm10,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,75,1856,22,273,2,0,0
+pydeseq2,perm10,NK cells,ok,16,"",12919,12919,12919,110,1227,24,116,3,0,0
+pydeseq2,perm11,B cells,ok,16,"",13775,13775,13775,86,1813,27,178,1,0,0
+pydeseq2,perm11,CD14+ Monocytes,ok,16,"",14820,14820,14820,111,3647,47,715,11,0,0
+pydeseq2,perm11,Megakaryocytes,ok,10,"",9442,9442,9442,25,274,5,30,0,0,0
+pydeseq2,perm11,CD8 T cells,ok,16,"",12884,12884,12884,76,927,28,96,4,0,0
+pydeseq2,perm11,CD4 T cells,ok,16,"",15720,15720,15720,147,4529,83,658,16,0,0
+pydeseq2,perm11,Dendritic cells,ok,14,"",11909,11909,11909,69,959,15,132,0,0,0
+pydeseq2,perm11,NK cells,ok,16,"",12919,12919,12919,114,1230,35,116,8,0,0
+pydeseq2,perm11,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,57,1850,12,270,3,0,0
+pydeseq2,perm12,B cells,ok,16,"",13775,13775,13775,98,1807,32,177,6,0,0
+pydeseq2,perm12,CD14+ Monocytes,ok,16,"",14820,14820,14820,87,3665,45,716,10,0,0
+pydeseq2,perm12,CD8 T cells,ok,16,"",12884,12884,12884,76,935,21,97,3,0,0
+pydeseq2,perm12,CD4 T cells,ok,16,"",15720,15720,15720,128,4521,78,657,21,0,0
+pydeseq2,perm12,Dendritic cells,ok,14,"",11909,11909,11909,49,935,8,128,2,0,0
+pydeseq2,perm12,Megakaryocytes,ok,10,"",9442,9442,9442,14,272,4,32,1,0,0
+pydeseq2,perm12,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,69,1863,19,274,4,0,0
+pydeseq2,perm12,NK cells,ok,16,"",12919,12919,12919,88,1209,21,115,0,0,0
+pydeseq2,perm13,B cells,ok,16,"",13775,13775,13775,119,1814,42,179,6,0,0
+pydeseq2,perm13,CD14+ Monocytes,ok,16,"",14820,14820,14820,101,3644,37,712,3,0,0
+pydeseq2,perm13,CD8 T cells,ok,16,"",12884,12884,12884,82,937,14,96,0,0,0
+pydeseq2,perm13,Dendritic cells,ok,14,"",11897,11897,11897,46,957,6,132,1,0,0
+pydeseq2,perm13,Megakaryocytes,ok,10,"",9442,9442,9442,13,267,2,30,0,0,0
+pydeseq2,perm13,CD4 T cells,ok,16,"",15720,15720,15720,140,4533,79,657,11,0,0
+pydeseq2,perm13,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,76,1845,20,272,2,0,0
+pydeseq2,perm13,NK cells,ok,16,"",12919,12919,12919,109,1216,31,116,6,0,0
+pydeseq2,perm14,B cells,ok,16,"",13775,13775,13775,86,1817,24,179,1,0,0
+pydeseq2,perm14,CD14+ Monocytes,ok,16,"",14820,14820,14820,148,3663,47,714,4,0,0
+pydeseq2,perm14,CD8 T cells,ok,16,"",12884,12884,12884,69,930,10,96,0,0,0
+pydeseq2,perm14,CD4 T cells,ok,16,"",15720,15720,15720,141,4533,78,658,13,0,0
+pydeseq2,perm14,Megakaryocytes,ok,10,"",9442,9442,9442,9,272,1,32,0,0,0
+pydeseq2,perm14,Dendritic cells,ok,14,"",11909,11909,11909,48,956,11,129,0,0,0
+pydeseq2,perm14,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,69,1848,18,270,2,0,0
+pydeseq2,perm14,NK cells,ok,16,"",12919,12919,12919,101,1216,19,115,0,0,0
+pydeseq2,perm15,B cells,ok,16,"",13775,13775,13775,114,1819,35,179,6,0,0
+pydeseq2,perm15,CD14+ Monocytes,ok,16,"",14820,14820,14820,99,3661,44,715,10,0,0
+pydeseq2,perm15,CD8 T cells,ok,16,"",12884,12884,12884,89,929,30,97,3,0,0
+pydeseq2,perm15,CD4 T cells,ok,16,"",15720,15720,15720,111,4521,68,657,11,0,0
+pydeseq2,perm15,Dendritic cells,ok,12,"",11800,11800,11800,33,1061,3,144,0,0,0
+pydeseq2,perm15,Megakaryocytes,ok,10,"",9442,9442,9442,21,262,10,29,2,0,0
+pydeseq2,perm15,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,102,1846,38,270,9,0,0
+pydeseq2,perm15,NK cells,ok,16,"",12919,12919,12919,118,1207,35,115,6,0,0
+pydeseq2,perm16,B cells,ok,16,"",13775,13775,13775,86,1813,33,179,5,0,0
+pydeseq2,perm16,CD14+ Monocytes,ok,16,"",14820,14820,14820,68,3658,29,716,5,0,0
+pydeseq2,perm16,CD8 T cells,ok,16,"",12884,12884,12884,78,938,20,97,3,0,0
+pydeseq2,perm16,Dendritic cells,ok,12,"",11800,11800,11800,46,1068,6,146,1,0,0
+pydeseq2,perm16,Megakaryocytes,ok,10,"",9442,9442,9442,13,268,2,30,0,0,0
+pydeseq2,perm16,CD4 T cells,ok,16,"",15720,15720,15720,126,4529,75,657,16,0,0
+pydeseq2,perm16,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,89,1850,16,272,2,0,0
+pydeseq2,perm16,NK cells,ok,16,"",12919,12919,12919,113,1226,35,116,5,0,0
+pydeseq2,perm17,B cells,ok,16,"",13775,13775,13775,107,1815,37,178,3,0,0
+pydeseq2,perm17,CD14+ Monocytes,ok,16,"",14820,14820,14820,132,3636,66,714,13,0,0
+pydeseq2,perm17,CD8 T cells,ok,16,"",12884,12884,12884,75,939,17,98,3,0,0
+pydeseq2,perm17,Megakaryocytes,ok,10,"",9442,9442,9442,22,261,2,29,0,0,0
+pydeseq2,perm17,CD4 T cells,ok,16,"",15720,15720,15720,147,4531,78,658,17,0,0
+pydeseq2,perm17,Dendritic cells,ok,16,"",12001,12001,12001,22,867,4,118,1,0,0
+pydeseq2,perm17,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,76,1858,13,273,4,1,1
+pydeseq2,perm17,NK cells,ok,16,"",12919,12919,12919,81,1221,13,116,0,0,0
+pydeseq2,perm18,B cells,ok,16,"",13775,13775,13775,98,1816,33,179,6,0,0
+pydeseq2,perm18,CD14+ Monocytes,ok,16,"",14820,14820,14820,139,3643,87,714,33,0,0
+pydeseq2,perm18,CD8 T cells,ok,16,"",12884,12884,12884,70,931,14,96,0,0,0
+pydeseq2,perm18,CD4 T cells,ok,16,"",15720,15720,15720,146,4530,79,657,21,0,0
+pydeseq2,perm18,Dendritic cells,ok,14,"",11909,11909,11909,52,953,14,129,3,0,0
+pydeseq2,perm18,Megakaryocytes,ok,10,"",9442,9442,9442,15,267,5,29,1,0,0
+pydeseq2,perm18,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,100,1853,34,270,10,0,0
+pydeseq2,perm18,NK cells,ok,16,"",12919,12919,12919,96,1225,24,116,3,0,0
+pydeseq2,perm19,B cells,ok,16,"",13775,13775,13775,148,1793,55,176,14,0,0
+pydeseq2,perm19,CD14+ Monocytes,ok,16,"",14820,14820,14820,106,3658,61,715,27,0,0
+pydeseq2,perm19,CD8 T cells,ok,16,"",12884,12884,12884,83,936,14,97,3,0,0
+pydeseq2,perm19,Megakaryocytes,ok,10,"",9442,9442,9442,17,269,3,29,0,0,0
+pydeseq2,perm19,CD4 T cells,ok,16,"",15720,15720,15720,118,4527,68,657,8,0,0
+pydeseq2,perm19,Dendritic cells,ok,16,"",12001,12001,12001,44,877,5,120,0,0,0
+pydeseq2,perm19,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,114,1856,52,273,20,0,0
+pydeseq2,perm19,NK cells,ok,16,"",12919,12919,12919,101,1226,28,116,2,0,0
+pydeseq2,perm20,B cells,ok,16,"",13775,13775,13775,91,1816,27,179,5,0,0
+pydeseq2,perm20,CD14+ Monocytes,ok,16,"",14820,14820,14820,90,3663,24,716,7,0,0
+pydeseq2,perm20,CD4 T cells,ok,16,"",15720,15720,15720,129,4534,70,660,15,0,0
+pydeseq2,perm20,CD8 T cells,ok,16,"",12884,12884,12884,76,930,22,97,0,0,0
+pydeseq2,perm20,Megakaryocytes,ok,10,"",9442,9442,9442,22,255,1,28,0,0,0
+pydeseq2,perm20,Dendritic cells,ok,14,"",11909,11909,11909,40,948,3,129,0,0,0
+pydeseq2,perm20,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,103,1863,52,271,16,0,0
+pydeseq2,perm20,NK cells,ok,16,"",12919,12919,12919,92,1221,23,116,1,0,0
+pydeseq2,perm21,B cells,ok,16,"",13775,13775,13775,98,1814,36,179,6,0,0
+pydeseq2,perm21,CD14+ Monocytes,ok,16,"",14820,14820,14820,95,3648,40,714,4,0,0
+pydeseq2,perm21,CD8 T cells,ok,16,"",12884,12884,12884,71,925,18,96,2,0,0
+pydeseq2,perm21,CD4 T cells,ok,16,"",15720,15720,15720,151,4525,80,657,21,0,0
+pydeseq2,perm21,Megakaryocytes,ok,10,"",9442,9442,9442,21,263,3,29,0,0,0
+pydeseq2,perm21,Dendritic cells,ok,14,"",11909,11909,11909,45,967,10,133,0,0,0
+pydeseq2,perm21,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,95,1855,39,271,5,0,0
+pydeseq2,perm21,NK cells,ok,16,"",12919,12919,12919,105,1210,41,115,15,0,0
+pydeseq2,perm22,B cells,ok,16,"",13775,13775,13775,132,1819,36,179,8,0,0
+pydeseq2,perm22,CD14+ Monocytes,ok,16,"",14820,14820,14820,107,3651,55,715,9,0,0
+pydeseq2,perm22,CD4 T cells,ok,16,"",15720,15720,15720,115,4528,61,655,7,0,0
+pydeseq2,perm22,CD8 T cells,ok,16,"",12884,12884,12884,86,933,21,96,7,0,0
+pydeseq2,perm22,Dendritic cells,ok,14,"",11909,11909,11909,40,964,7,131,0,0,0
+pydeseq2,perm22,Megakaryocytes,ok,10,"",9442,9442,9442,5,268,0,29,0,0,0
+pydeseq2,perm22,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,61,1856,18,272,3,0,0
+pydeseq2,perm22,NK cells,ok,16,"",12919,12919,12919,117,1196,30,114,4,0,0
+pydeseq2,perm23,B cells,ok,16,"",13775,13775,13775,123,1819,46,179,5,0,0
+pydeseq2,perm23,CD14+ Monocytes,ok,16,"",14820,14820,14820,68,3651,29,716,10,0,1
+pydeseq2,perm23,CD4 T cells,ok,16,"",15720,15720,15720,135,4523,66,656,9,0,0
+pydeseq2,perm23,CD8 T cells,ok,16,"",12884,12884,12884,72,919,30,96,9,0,0
+pydeseq2,perm23,Megakaryocytes,ok,10,"",9442,9442,9442,14,267,2,29,0,0,0
+pydeseq2,perm23,Dendritic cells,ok,16,"",12001,12001,12001,46,878,5,120,1,0,0
+pydeseq2,perm23,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,106,1852,40,272,7,0,0
+pydeseq2,perm23,NK cells,ok,16,"",12919,12919,12919,99,1214,33,115,3,0,0
+pydeseq2,perm24,B cells,ok,16,"",13775,13775,13775,89,1803,39,178,8,0,2
+pydeseq2,perm24,CD14+ Monocytes,ok,16,"",14820,14820,14820,95,3654,58,716,15,0,0
+pydeseq2,perm24,CD4 T cells,ok,16,"",15720,15720,15720,111,4529,64,658,10,0,0
+pydeseq2,perm24,CD8 T cells,ok,16,"",12884,12884,12884,69,930,16,97,3,0,0
+pydeseq2,perm24,Megakaryocytes,ok,8,"",8974,8974,8974,6,257,1,28,0,0,0
+pydeseq2,perm24,Dendritic cells,ok,16,"",12001,12001,12001,53,874,11,119,3,0,0
+pydeseq2,perm24,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,79,1848,14,270,1,0,0
+pydeseq2,perm24,NK cells,ok,16,"",12919,12919,12919,105,1224,29,116,2,0,0
+pydeseq2,perm25,B cells,ok,16,"",13775,13775,13775,101,1808,37,177,5,0,0
+pydeseq2,perm25,CD14+ Monocytes,ok,16,"",14820,14820,14820,119,3656,83,717,37,0,0
+pydeseq2,perm25,CD4 T cells,ok,16,"",15720,15720,15720,131,4525,78,657,16,0,0
+pydeseq2,perm25,Megakaryocytes,ok,8,"",8974,8974,8974,10,281,1,30,0,0,0
+pydeseq2,perm25,CD8 T cells,ok,16,"",12884,12884,12884,68,934,16,97,3,0,0
+pydeseq2,perm25,Dendritic cells,ok,14,"",11909,11909,11909,63,972,12,133,3,0,0
+pydeseq2,perm25,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,83,1852,27,272,5,0,0
+pydeseq2,perm25,NK cells,ok,16,"",12919,12919,12919,95,1225,23,117,2,0,0
+pydeseq2,perm26,B cells,ok,16,"",13775,13775,13775,84,1809,23,178,7,0,0
+pydeseq2,perm26,CD14+ Monocytes,ok,16,"",14820,14820,14820,133,3659,70,715,12,0,0
+pydeseq2,perm26,CD8 T cells,ok,16,"",12884,12884,12884,85,936,24,97,5,0,0
+pydeseq2,perm26,CD4 T cells,ok,16,"",15720,15720,15720,148,4527,84,657,23,0,0
+pydeseq2,perm26,Megakaryocytes,ok,10,"",9442,9442,9442,6,270,1,30,0,0,0
+pydeseq2,perm26,Dendritic cells,ok,16,"",12001,12001,12001,44,861,7,115,3,0,0
+pydeseq2,perm26,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,68,1854,23,272,8,0,0
+pydeseq2,perm26,NK cells,ok,16,"",12919,12919,12919,112,1227,17,116,2,0,0
+pydeseq2,perm27,B cells,ok,16,"",13775,13775,13775,108,1819,36,179,4,0,0
+pydeseq2,perm27,CD14+ Monocytes,ok,16,"",14820,14820,14820,95,3651,49,715,10,3,3
+pydeseq2,perm27,CD4 T cells,ok,16,"",15720,15720,15720,142,4531,72,658,15,0,0
+pydeseq2,perm27,CD8 T cells,ok,16,"",12884,12884,12884,80,942,20,97,5,0,0
+pydeseq2,perm27,Dendritic cells,ok,12,"",11800,11800,11800,55,1065,10,147,1,0,0
+pydeseq2,perm27,Megakaryocytes,ok,10,"",9442,9442,9442,27,272,8,32,0,0,0
+pydeseq2,perm27,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,92,1858,36,273,6,0,0
+pydeseq2,perm27,NK cells,ok,16,"",12919,12919,12919,101,1208,24,115,5,0,0
+pydeseq2,perm28,B cells,ok,16,"",13775,13775,13775,100,1819,33,179,1,0,0
+pydeseq2,perm28,CD8 T cells,ok,16,"",12884,12884,12884,62,936,17,98,4,0,0
+pydeseq2,perm28,CD14+ Monocytes,ok,16,"",14820,14820,14820,168,3650,66,714,19,0,0
+pydeseq2,perm28,CD4 T cells,ok,16,"",15720,15720,15720,146,4526,84,657,21,0,0
+pydeseq2,perm28,Dendritic cells,ok,14,"",11909,11909,11909,43,966,7,132,0,0,0
+pydeseq2,perm28,Megakaryocytes,ok,10,"",9442,9442,9442,22,247,3,27,0,0,0
+pydeseq2,perm28,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,99,1855,44,270,7,0,0
+pydeseq2,perm28,NK cells,ok,16,"",12919,12919,12919,99,1230,26,116,2,0,0
+pydeseq2,perm29,B cells,ok,16,"",13775,13775,13775,120,1813,42,179,7,0,0
+pydeseq2,perm29,CD14+ Monocytes,ok,16,"",14820,14820,14820,93,3658,57,717,16,0,0
+pydeseq2,perm29,CD4 T cells,ok,16,"",15720,15720,15720,101,4521,56,657,9,1,1
+pydeseq2,perm29,CD8 T cells,ok,16,"",12884,12884,12884,64,934,19,98,5,0,0
+pydeseq2,perm29,Megakaryocytes,ok,12,"",9801,9801,9801,22,254,3,30,0,0,0
+pydeseq2,perm29,Dendritic cells,ok,16,"",12001,12001,12001,39,878,6,118,0,0,0
+pydeseq2,perm29,FCGR3A+ Monocytes,ok,16,"",13292,13292,13292,96,1855,36,271,6,0,0
+pydeseq2,perm29,NK cells,ok,16,"",12919,12919,12919,99,1206,26,115,5,0,0

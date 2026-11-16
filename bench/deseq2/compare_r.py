@@ -6,10 +6,16 @@ Needs Rscript with DESeq2 installed (e.g. ``apt install r-bioc-deseq2`` or
 BiocManager). For each scenario the same counts/design go through R
 ``DESeq()`` + ``results()`` and through CREST; the script reports the largest
 differences and wall times, and writes ``comparison.md``.
+
+This is a parity check; its timings are indicative only (R serial, CREST at whatever
+RAYON_NUM_THREADS the process has, recorded in ``CREST_threads``). The thread-matched
+DESeq2 timing comparison is ``kang_pseudobulk.py``. R's timing window is
+DESeqDataSetFromMatrix + DESeq + results, as in ``kang_pseudobulk.py``.
 """
 
 import argparse
 import json
+import os
 import subprocess
 import tempfile
 import time
@@ -28,8 +34,9 @@ cts <- as.matrix(read.csv(file.path(d, "counts.csv"), row.names = 1, check.names
 cd <- read.csv(file.path(d, "coldata.csv"), row.names = 1, stringsAsFactors = TRUE)
 cfg <- jsonlite::fromJSON(file.path(d, "cfg.json"))
 for (v in names(cfg$levels)) cd[[v]] <- factor(as.character(cd[[v]]), levels = cfg$levels[[v]])
-dds <- DESeqDataSetFromMatrix(round(cts), cd, as.formula(cfg$design))
+# timing window (same as kang_pseudobulk.py): DESeqDataSetFromMatrix + DESeq + results
 t0 <- proc.time()[["elapsed"]]
+dds <- DESeqDataSetFromMatrix(round(cts), cd, as.formula(cfg$design))
 dds <- DESeq(dds, sfType = cfg$sf_type, quiet = TRUE)
 res <- if (is.null(cfg$contrast)) results(dds) else results(dds, contrast = cfg$contrast)
 el <- proc.time()[["elapsed"]] - t0
@@ -122,6 +129,7 @@ def run(name, counts, obs, design, contrast, levels, sf_type="ratio", workdir=No
         "padj_NA_mismatch": int(np.sum(na_r != na_c)),
         "sig_R": len(sig_r), "sig_CREST": len(sig_c), "sig_overlap": len(sig_r & sig_c),
         "time_R_s": rmeta["elapsed"], "time_CREST_s": t_crest,
+        "CREST_threads": os.environ.get("RAYON_NUM_THREADS") or f"all ({os.cpu_count()})",
     }
     return out
 

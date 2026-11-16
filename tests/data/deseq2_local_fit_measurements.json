@@ -1,0 +1,522 @@
+{
+ "description": "Deviation of CREST from R for the local dispersion trend and the fixtures in tests/test_deseq2_local_fit.py; regenerate with measure_all() in that module. Trend: max |crest / R - 1| over the grid of each case; table columns: max |crest - R| / (1e-12 + |R|).",
+ "reference": {
+  "R": "R version 4.5.2 (2025-10-31)",
+  "DESeq2": "1.50.2",
+  "locfit": "1.5.9.12"
+ },
+ "linux_x86_64": {
+  "trend": {
+   "smooth_800": {
+    "max_rel_dev": 5.995204332975845e-15,
+    "points_beyond_range": 26
+   },
+   "low_counts_1500": {
+    "max_rel_dev": 6.217248937900877e-15,
+    "points_beyond_range": 26
+   },
+   "ties_40_levels": {
+    "max_rel_dev": 4.107825191113079e-15,
+    "points_beyond_range": 29
+   },
+   "ties_12_levels_x20": {
+    "max_rel_dev": 4.773959005888173e-15,
+    "points_beyond_range": 36
+   },
+   "single_mean": {
+    "max_rel_dev": 8.881784197001252e-16,
+    "points_beyond_range": 80
+   },
+   "few_genes_3": {
+    "max_rel_dev": 7.771561172376096e-15,
+    "points_beyond_range": 51
+   },
+   "few_genes_4": {
+    "max_rel_dev": 7.105427357601002e-15,
+    "points_beyond_range": 48
+   },
+   "few_genes_5": {
+    "max_rel_dev": 4.141131881851834e-14,
+    "points_beyond_range": 56
+   },
+   "few_genes_6": {
+    "max_rel_dev": 1.7430501486614958e-14,
+    "points_beyond_range": 40
+   },
+   "few_genes_8": {
+    "max_rel_dev": 1.6209256159527285e-14,
+    "points_beyond_range": 43
+   },
+   "few_genes_10": {
+    "max_rel_dev": 2.020605904817785e-14,
+    "points_beyond_range": 54
+   },
+   "few_genes_15": {
+    "max_rel_dev": 6.328271240363392e-15,
+    "points_beyond_range": 40
+   },
+   "few_genes_30": {
+    "max_rel_dev": 3.9968028886505635e-15,
+    "points_beyond_range": 38
+   },
+   "extreme_weights": {
+    "max_rel_dev": 1.2212453270876722e-14,
+    "points_beyond_range": 21
+   },
+   "wiggly_trend_1200": {
+    "max_rel_dev": 5.551115123125783e-15,
+    "points_beyond_range": 18
+   },
+   "gap_in_means": {
+    "max_rel_dev": 4.440892098500626e-15,
+    "points_beyond_range": 27
+   },
+   "outliers_800": {
+    "max_rel_dev": 3.9968028886505635e-15,
+    "points_beyond_range": 27
+   },
+   "floor_values_700": {
+    "max_rel_dev": 5.218048215738236e-15,
+    "points_beyond_range": 29
+   },
+   "constant_disp": {
+    "max_rel_dev": 0.0,
+    "points_beyond_range": 24
+   },
+   "decreasing_steep": {
+    "max_rel_dev": 4.884981308350689e-15,
+    "points_beyond_range": 37
+   },
+   "sorted_input": {
+    "max_rel_dev": 4.9960036108132044e-15,
+    "points_beyond_range": 32
+   },
+   "rounded_means": {
+    "max_rel_dev": 8.104628079763643e-15,
+    "points_beyond_range": 22
+   },
+   "B cell": {
+    "max_rel_dev": 1.1102230246251565e-14,
+    "points_beyond_range": 26
+   },
+   "IgA plasma cell": {
+    "max_rel_dev": 1.0103029524088925e-14,
+    "points_beyond_range": 24
+   },
+   "T follicular helper cell": {
+    "max_rel_dev": 1.5987211554602254e-14,
+    "points_beyond_range": 24
+   },
+   "effector memory CD4-positive, alpha-beta T cell": {
+    "max_rel_dev": 1.7319479184152442e-14,
+    "points_beyond_range": 28
+   },
+   "natural killer cell": {
+    "max_rel_dev": 9.992007221626409e-15,
+    "points_beyond_range": 26
+   },
+   "plasmacytoid dendritic cell": {
+    "max_rel_dev": 6.994405055138486e-15,
+    "points_beyond_range": 26
+   }
+  },
+  "trend_fallback": {
+   "size_factors": {
+    "na_mismatch": 0,
+    "max_dev": 3.1673793685603576e-15
+   },
+   "baseMean": {
+    "na_mismatch": 0,
+    "max_dev": 4.4756195479225246e-15
+   },
+   "dispGeneEst": {
+    "na_mismatch": 0,
+    "max_dev": 3.415926127781977e-13
+   },
+   "dispFit": {
+    "na_mismatch": 0,
+    "max_dev": 2.444348817790572e-13
+   },
+   "dispMAP": {
+    "na_mismatch": 0,
+    "max_dev": 1.5883199326445306e-13
+   },
+   "dispersion": {
+    "na_mismatch": 0,
+    "max_dev": 1.5883199326445306e-13
+   },
+   "maxCooks": {
+    "na_mismatch": 0,
+    "max_dev": 1.1121486562260547e-14
+   },
+   "log2FoldChange": {
+    "na_mismatch": 0,
+    "max_dev": 1.6014435130477715e-13
+   },
+   "lfcSE": {
+    "na_mismatch": 0,
+    "max_dev": 6.60481691939337e-14
+   },
+   "stat": {
+    "na_mismatch": 0,
+    "max_dev": 1.5472319667891127e-13
+   },
+   "pvalue": {
+    "na_mismatch": 0,
+    "max_dev": 1.0165429271048823e-10
+   },
+   "padj": {
+    "na_mismatch": 0,
+    "max_dev": 4.416150566735056e-11
+   }
+  },
+  "sparse_extreme": {
+   "n_capped": 392,
+   "n_live": 1487,
+   "below_cap": {
+    "baseMean": {
+     "na_mismatch": 0,
+     "max_dev": 4.676806330190259e-15
+    },
+    "dispFit": {
+     "na_mismatch": 0,
+     "max_dev": 4.752179501682208e-11
+    },
+    "dispMAP": {
+     "na_mismatch": 0,
+     "max_dev": 3.2533777198591678e-06
+    },
+    "dispersion": {
+     "na_mismatch": 0,
+     "max_dev": 3.2533777198591678e-06
+    },
+    "maxCooks": {
+     "na_mismatch": 0,
+     "max_dev": 0.0
+    },
+    "log2FoldChange": {
+     "na_mismatch": 0,
+     "max_dev": 1.1401329733118478e-05
+    },
+    "lfcSE": {
+     "na_mismatch": 0,
+     "max_dev": 1.3696146399948487e-06
+    },
+    "stat": {
+     "na_mismatch": 0,
+     "max_dev": 1.2770926882203862e-05
+    },
+    "pvalue": {
+     "na_mismatch": 0,
+     "max_dev": 1.898127844675616e-05
+    }
+   },
+   "at_cap": {
+    "baseMean": {
+     "na_mismatch": 0,
+     "max_dev": 4.459179381930172e-15
+    },
+    "dispFit": {
+     "na_mismatch": 0,
+     "max_dev": 4.753271337586573e-11
+    },
+    "dispMAP": {
+     "na_mismatch": 0,
+     "max_dev": 4.233445712229854e-08
+    },
+    "dispersion": {
+     "na_mismatch": 0,
+     "max_dev": 0.0
+    },
+    "maxCooks": {
+     "na_mismatch": 0,
+     "max_dev": 0.0
+    },
+    "log2FoldChange": {
+     "na_mismatch": 0,
+     "max_dev": 9.26218111943913
+    },
+    "lfcSE": {
+     "na_mismatch": 0,
+     "max_dev": 0.00035993509940023194
+    },
+    "stat": {
+     "na_mismatch": 0,
+     "max_dev": 9.262196102422788
+    },
+    "pvalue": {
+     "na_mismatch": 0,
+     "max_dev": 3.346296574204854
+    }
+   },
+   "sig_0.1": {
+    "CREST": 92,
+    "R": 89,
+    "shared": 85
+   },
+   "sig_0.05": {
+    "CREST": 77,
+    "R": 78,
+    "shared": 77
+   }
+  },
+  "mdc_parametric_coefficients_max_rel_dev": 1.9595436384634013e-13
+ },
+ "macos_arm64": {
+  "trend": {
+   "smooth_800": {
+    "max_rel_dev": 5.995204332975845e-15,
+    "points_beyond_range": 26
+   },
+   "low_counts_1500": {
+    "max_rel_dev": 6.217248937900877e-15,
+    "points_beyond_range": 26
+   },
+   "ties_40_levels": {
+    "max_rel_dev": 4.107825191113079e-15,
+    "points_beyond_range": 29
+   },
+   "ties_12_levels_x20": {
+    "max_rel_dev": 4.773959005888173e-15,
+    "points_beyond_range": 36
+   },
+   "single_mean": {
+    "max_rel_dev": 8.881784197001252e-16,
+    "points_beyond_range": 80
+   },
+   "few_genes_3": {
+    "max_rel_dev": 7.771561172376096e-15,
+    "points_beyond_range": 51
+   },
+   "few_genes_4": {
+    "max_rel_dev": 7.105427357601002e-15,
+    "points_beyond_range": 48
+   },
+   "few_genes_5": {
+    "max_rel_dev": 4.141131881851834e-14,
+    "points_beyond_range": 56
+   },
+   "few_genes_6": {
+    "max_rel_dev": 1.7430501486614958e-14,
+    "points_beyond_range": 40
+   },
+   "few_genes_8": {
+    "max_rel_dev": 1.6209256159527285e-14,
+    "points_beyond_range": 43
+   },
+   "few_genes_10": {
+    "max_rel_dev": 2.020605904817785e-14,
+    "points_beyond_range": 54
+   },
+   "few_genes_15": {
+    "max_rel_dev": 6.328271240363392e-15,
+    "points_beyond_range": 40
+   },
+   "few_genes_30": {
+    "max_rel_dev": 3.9968028886505635e-15,
+    "points_beyond_range": 38
+   },
+   "extreme_weights": {
+    "max_rel_dev": 1.2212453270876722e-14,
+    "points_beyond_range": 21
+   },
+   "wiggly_trend_1200": {
+    "max_rel_dev": 5.551115123125783e-15,
+    "points_beyond_range": 18
+   },
+   "gap_in_means": {
+    "max_rel_dev": 4.440892098500626e-15,
+    "points_beyond_range": 27
+   },
+   "outliers_800": {
+    "max_rel_dev": 3.9968028886505635e-15,
+    "points_beyond_range": 27
+   },
+   "floor_values_700": {
+    "max_rel_dev": 5.218048215738236e-15,
+    "points_beyond_range": 29
+   },
+   "constant_disp": {
+    "max_rel_dev": 0.0,
+    "points_beyond_range": 24
+   },
+   "decreasing_steep": {
+    "max_rel_dev": 4.884981308350689e-15,
+    "points_beyond_range": 37
+   },
+   "sorted_input": {
+    "max_rel_dev": 4.9960036108132044e-15,
+    "points_beyond_range": 32
+   },
+   "rounded_means": {
+    "max_rel_dev": 8.104628079763643e-15,
+    "points_beyond_range": 22
+   },
+   "B cell": {
+    "max_rel_dev": 1.1102230246251565e-14,
+    "points_beyond_range": 26
+   },
+   "IgA plasma cell": {
+    "max_rel_dev": 1.0103029524088925e-14,
+    "points_beyond_range": 24
+   },
+   "T follicular helper cell": {
+    "max_rel_dev": 1.5987211554602254e-14,
+    "points_beyond_range": 24
+   },
+   "effector memory CD4-positive, alpha-beta T cell": {
+    "max_rel_dev": 1.7319479184152442e-14,
+    "points_beyond_range": 28
+   },
+   "natural killer cell": {
+    "max_rel_dev": 9.992007221626409e-15,
+    "points_beyond_range": 26
+   },
+   "plasmacytoid dendritic cell": {
+    "max_rel_dev": 6.994405055138486e-15,
+    "points_beyond_range": 26
+   }
+  },
+  "trend_fallback": {
+   "size_factors": {
+    "na_mismatch": 0,
+    "max_dev": 3.1673793685603576e-15
+   },
+   "baseMean": {
+    "na_mismatch": 0,
+    "max_dev": 4.4756195479225246e-15
+   },
+   "dispGeneEst": {
+    "na_mismatch": 0,
+    "max_dev": 3.604179624177791e-13
+   },
+   "dispFit": {
+    "na_mismatch": 0,
+    "max_dev": 2.6327087355476845e-13
+   },
+   "dispMAP": {
+    "na_mismatch": 0,
+    "max_dev": 1.6946418953488777e-13
+   },
+   "dispersion": {
+    "na_mismatch": 0,
+    "max_dev": 1.6946418953488777e-13
+   },
+   "maxCooks": {
+    "na_mismatch": 0,
+    "max_dev": 1.1121486562260547e-14
+   },
+   "log2FoldChange": {
+    "na_mismatch": 0,
+    "max_dev": 9.248395270456494e-14
+   },
+   "lfcSE": {
+    "na_mismatch": 0,
+    "max_dev": 7.008708601514549e-14
+   },
+   "stat": {
+    "na_mismatch": 0,
+    "max_dev": 1.029058314056336e-13
+   },
+   "pvalue": {
+    "na_mismatch": 0,
+    "max_dev": 1.0165429271048823e-10
+   },
+   "padj": {
+    "na_mismatch": 0,
+    "max_dev": 4.4163206043126704e-11
+   }
+  },
+  "sparse_extreme": {
+   "n_capped": 392,
+   "n_live": 1487,
+   "below_cap": {
+    "baseMean": {
+     "na_mismatch": 0,
+     "max_dev": 4.676806330190259e-15
+    },
+    "dispFit": {
+     "na_mismatch": 0,
+     "max_dev": 4.752179501682208e-11
+    },
+    "dispMAP": {
+     "na_mismatch": 0,
+     "max_dev": 3.2533777189360666e-06
+    },
+    "dispersion": {
+     "na_mismatch": 0,
+     "max_dev": 3.2533777189360666e-06
+    },
+    "maxCooks": {
+     "na_mismatch": 0,
+     "max_dev": 0.0
+    },
+    "log2FoldChange": {
+     "na_mismatch": 0,
+     "max_dev": 1.1401329733118478e-05
+    },
+    "lfcSE": {
+     "na_mismatch": 0,
+     "max_dev": 1.3696146396334426e-06
+    },
+    "stat": {
+     "na_mismatch": 0,
+     "max_dev": 1.27709268818651e-05
+    },
+    "pvalue": {
+     "na_mismatch": 0,
+     "max_dev": 1.898127844607403e-05
+    }
+   },
+   "at_cap": {
+    "baseMean": {
+     "na_mismatch": 0,
+     "max_dev": 4.459179381930172e-15
+    },
+    "dispFit": {
+     "na_mismatch": 0,
+     "max_dev": 4.753209795678349e-11
+    },
+    "dispMAP": {
+     "na_mismatch": 0,
+     "max_dev": 4.2334456301120425e-08
+    },
+    "dispersion": {
+     "na_mismatch": 0,
+     "max_dev": 0.0
+    },
+    "maxCooks": {
+     "na_mismatch": 0,
+     "max_dev": 0.0
+    },
+    "log2FoldChange": {
+     "na_mismatch": 0,
+     "max_dev": 9.26218111943913
+    },
+    "lfcSE": {
+     "na_mismatch": 0,
+     "max_dev": 0.00035993509940023194
+    },
+    "stat": {
+     "na_mismatch": 0,
+     "max_dev": 9.262196102422788
+    },
+    "pvalue": {
+     "na_mismatch": 0,
+     "max_dev": 3.346296574204854
+    }
+   },
+   "sig_0.1": {
+    "CREST": 92,
+    "R": 89,
+    "shared": 85
+   },
+   "sig_0.05": {
+    "CREST": 77,
+    "R": 78,
+    "shared": 77
+   }
+  },
+  "mdc_parametric_coefficients_max_rel_dev": 1.9595436384634013e-13
+ }
+}
