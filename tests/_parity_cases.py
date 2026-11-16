@@ -7,7 +7,10 @@ returns ``{"meta": ..., "metrics": ..., "errors": ...}``; a comparison that cann
 scanpy is recorded under ``errors`` instead of stopping the others.
 
 Both tools start from the same raw counts and the same unique gene names; scanpy never reads the
-files itself. The module is used by ``tests/test_scanpy_parity_matrix.py`` and can be run directly to
+files itself. The groups used by the differential-expression, ingest and Leiden-agreement comparisons are
+fixed labels stored in ``tests/data/<dataset>_leiden.npz``, not labels clustered during the run: a
+clustering of scanpy's graph changes with the floating-point behaviour of the host and the numpy / scipy
+release, and the deviations of the group statistics change with it. The module is used by ``tests/test_scanpy_parity_matrix.py`` and can be run directly to
 produce the measurements that the tolerances were derived from::
 
     python tests/_parity_cases.py pbmc3k=/path/to/hg19 pbmc10k=/path/to/pbmc10k.h5 --out results.json
@@ -46,6 +49,7 @@ DATASETS = {
     "pbmc3k": dict(max_genes=2500, max_pct_mt=5.0, n_spiked=150),
     "pbmc10k": dict(max_genes=7000, max_pct_mt=20.0, n_spiked=600),
 }
+DATA_DIR = Path(__file__).resolve().parent / "data"
 B_MARKERS = ["CD79A", "MS4A1", "CD79B", "CD19", "BANK1", "IGHM", "CD74", "HLA-DRA", "HLA-DRB1", "CD37"]
 
 
@@ -72,6 +76,43 @@ def load_raw(path):
     X.sort_indices()
     ids = list(bf.var["gene_ids"].to_numpy()) if "gene_ids" in bf.var.columns else [f"G{i}" for i in range(X.shape[1])]
     return X, unique_names(bf.var_names), ids
+
+
+def fixed_labels(name, cell_ids):
+    """Group labels (strings) of the cells ``cell_ids`` (column positions in the data file) from tests/data/<name>_leiden.npz."""
+    fx = np.load(DATA_DIR / f"{name}_leiden.npz")
+    where = {int(c): i for i, c in enumerate(fx["kept_cell_index"])}
+    missing = [int(c) for c in cell_ids if int(c) not in where]
+    if missing:
+        raise ValueError(f"{len(missing)} cells (first: {missing[0]}) have no label in {name}_leiden.npz")
+    return np.array([str(int(fx["leiden"][where[int(c)]])) for c in cell_ids])
+
+
+def make_label_fixture(name, path, out):
+    """Write the label fixture of a data set: scanpy's Leiden clustering (leidenalg, resolution 1, seed 0) of the cells kept by
+    min_genes=200 and min_cells=3, after normalize_total(1e4), log1p, the tutorial HVG selection, scale(max_value=10), 50 PCs
+    and neighbors(n_neighbors=15, n_pcs=40). Run once with the pinned reference stack; the stored labels are the fixture
+    and are not recomputed by the tests (``pbmc3k_leiden.npz`` predates this function and has the same layout)."""
+    from importlib import metadata
+    import scanpy as sc
+    X, names, ids = load_raw(path)
+    a = _adata(X, names)
+    sc.pp.filter_cells(a, min_genes=MIN_GENES)
+    sc.pp.filter_genes(a, min_cells=MIN_CELLS)
+    kept = a.obs_names.astype(int).to_numpy()
+    sc.pp.normalize_total(a, target_sum=1e4)
+    sc.pp.log1p(a)
+    sc.pp.highly_variable_genes(a, min_mean=0.0125, max_mean=3, min_disp=0.5)
+    a = a[:, a.var["highly_variable"]].copy()
+    sc.pp.scale(a, max_value=10)
+    sc.pp.pca(a, n_comps=N_COMPS, svd_solver="arpack")
+    sc.pp.neighbors(a, n_neighbors=N_NEIGHBORS, n_pcs=N_PCS_GRAPH, random_state=0)
+    sc.tl.leiden(a, resolution=1.0, random_state=0, flavor="leidenalg", n_iterations=-1, directed=True)
+    labels = a.obs["leiden"].astype(int).to_numpy().astype(np.uint8)
+    info = (f"Leiden labels (scanpy {metadata.version('scanpy')}, leidenalg, resolution 1, seed 0) of the {name} cells kept by min_genes=200 and "
+            f"min_cells=3; kept_cell_index = positions in the data file's column order")
+    np.savez_compressed(out, kept_cell_index=kept.astype(np.int16), leiden=labels, n_cells_total=np.int32(X.shape[0]), info=np.str_(info))
+    return len(kept), int(labels.max()) + 1
 
 
 def _frame(X, names, ids):
@@ -246,6 +287,8 @@ class Measure:
         self.put("qc.cells_after_max_filters.n_different", 0 if same else 1)
         assert same, "the two tools keep different cells after the max_genes / pct_mt filter"
         self.a_raw, self.a, self.bf = a.copy(), a, bf
+        self.labels = fixed_labels(self.name, bf.obs["cell_id"].to_numpy())
+        a.obs["g"] = self.labels
         self.meta.update(n_cells_raw=int(self.X.shape[0]), n_genes_raw=int(self.X.shape[1]),
                          n_cells=int(a.n_obs), n_genes=int(a.n_vars))
 
@@ -392,8 +435,8 @@ class Measure:
             for k, lab in (("crest", lc), ("leidenalg", ll), ("igraph", li)):
                 res[k].append((q(lab), len(set(map(int, lab)))))
             ari.append(adjusted_rand_score(lc, li))
-            if s == 0:
-                self.labels = np.array([str(x) for x in li])
+            if s == 0:  # the labels of this live run are not used downstream; their agreement with the fixed labels is recorded
+                self.meta["leiden_seed0_scanpy_igraph_ari_vs_fixed_labels"] = float(adjusted_rand_score(self.labels, li))
         mean = {k: np.mean(v, axis=0) for k, v in res.items()}
         self.put("leiden.modularity_shortfall_vs_leidenalg", max(0.0, mean["leidenalg"][0] - mean["crest"][0]))
         self.put("leiden.modularity_shortfall_vs_scanpy_igraph", max(0.0, mean["igraph"][0] - mean["crest"][0]))
@@ -401,7 +444,6 @@ class Measure:
         self.put("leiden.n_clusters_mean_diff_vs_scanpy_igraph", abs(mean["crest"][1] - mean["igraph"][1]))
         self.meta["leiden"] = {k: {"modularity": float(v[0]), "n_clusters": float(v[1])} for k, v in mean.items()}
         self.meta["leiden_ari_crest_vs_scanpy_igraph_mean"] = float(np.mean(ari))
-        a.obs["g"] = self.labels
 
     # ---- UMAP trustworthiness (CREST runs in a one-thread subprocess: its parallel SGD uses another schedule)
     def umap(self):
@@ -607,8 +649,15 @@ def measure(name, path):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("datasets", nargs="+", help="name=path, name is pbmc3k or pbmc10k")
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--out", help="JSON file for the measurements")
+    ap.add_argument("--make-labels", metavar="NPZ", help="write the label fixture of the first data set to NPZ and stop")
     args = ap.parse_args(argv)
+    if args.make_labels:
+        name, path = args.datasets[0].split("=", 1)
+        print(name, "cells, clusters:", make_label_fixture(name, path, args.make_labels))
+        return 0
+    if not args.out:
+        ap.error("--out is required")
     result = {}
     for item in args.datasets:
         name, path = item.split("=", 1)
