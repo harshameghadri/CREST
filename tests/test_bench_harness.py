@@ -2188,3 +2188,57 @@ def test_public_text_of_the_protocol_files_names_no_internal_item():
     hits = [f"{p.name}:{i}: {ln.strip()[:80]}" for p in files if p.exists() for i, ln in enumerate(p.read_text().splitlines(), 1)
             if FORBIDDEN_PUBLIC.search(ln)]
     assert not hits, "\n".join(hits)
+
+
+# --------------------------------------------------------------------------- driver: grid mode and results directory
+def _driver(*args):
+    return subprocess.run(["bash", str(REPO / "scripts" / "crest_paper_bench.sh"), *args], capture_output=True, text=True, timeout=60)
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"needs --pilot")
+def test_driver_refuses_the_best_grid_mode_without_a_pilot(tmp_path):
+    r = _driver("--workdir", str(tmp_path), "--grid-mode", "best", "--dry-run")
+    assert r.returncode == 2 and "needs --pilot" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"full or best")
+def test_driver_rejects_an_unknown_grid_mode(tmp_path):
+    r = _driver("--workdir", str(tmp_path), "--grid-mode", "sideways", "--dry-run")
+    assert r.returncode == 2 and "full or best" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"grid-mode")
+def test_driver_forwards_the_grid_mode_to_the_planner():
+    block = _shell_block(r'run_all\.py --data-dir "\$DATA" --out "\$OUT" --datasets \$DATASETS --repeats', r"echo --dry-run\)")
+    assert '--grid-mode "$GRID_MODE"' in block, "the timed runs do not receive --grid-mode"
+    assert '"grid_mode": "$GRID_MODE"' in SCRIPT, "grid-mode is not recorded in meta.json"
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"grid-mode")
+def test_driver_help_lists_the_grid_mode_and_stamp_options():
+    r = _driver("--help")
+    assert r.returncode == 0
+    for opt in ("--grid-mode", "--stamp"):
+        assert opt in r.stdout, f"{opt} is not in the --help text (grid-mode)"
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"rehearsal")
+def test_driver_results_directory_name_can_be_given_and_defaults_to_host_and_time():
+    line = next(ln for ln in SCRIPT.splitlines() if ln.startswith("STAMP="))
+    named = _bash(f'STAMP_ARG=rehearsal; {line}\necho "$STAMP"')
+    assert named.stdout.strip() == "rehearsal", named.stdout + named.stderr
+    default = _bash(f'STAMP_ARG=; {line}\necho "$STAMP"')
+    assert re.fullmatch(r".+-\d{8}-\d{4}", default.stdout.strip()), default.stdout
+
+
+def test_best_grid_mode_runs_one_the_pilot_best_and_all_cpus(run_all, monkeypatch):
+    monkeypatch.setattr(os, "cpu_count", lambda: 64)
+    tuning = {"best_threads": {"crest": {"pbmc3k": 16}, "scanpy": {"pbmc3k": 8}}}
+    a = Namespace(main_threads=[1, 2, 4, 8, 16, 32, 64], ooc_threads=None, profile="core", datasets=["pbmc3k"],
+                  tools=["crest", "scanpy"], scanpy_max_cells=0, no_pin=False, thread_dataset=None, threads_scan=None,
+                  module_repeats=None, repeats=1, seed=0, grid_mode="best", tuning_data=tuning)
+    jobs = run_all.plan(a)
+    assert sorted({j["threads"] for j in jobs if j["tool"] == "crest"}) == [1, 16, 64]
+    assert sorted({j["threads"] for j in jobs if j["tool"] == "scanpy"}) == [1, 8, 64]
+    a.grid_mode = "full"
+    assert sorted({j["threads"] for j in run_all.plan(a) if j["tool"] == "scanpy"}) == [1, 2, 4, 8, 16, 32, 64]

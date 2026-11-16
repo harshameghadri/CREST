@@ -62,6 +62,10 @@
 #   --controls "x y"       control runs kept out of every statistic: unpinned, default-settings
 #                          (default: both in the standard/full tiers, none in quick/smoke)
 #   --lean-scanpy          also run the memory-lean scanpy profile (core runs; reported in its own memory table)
+#   --grid-mode MODE       full (default): every thread count of the grid on every dataset; best: only 1, the best thread count of
+#                          the tuning pilot for each (tool, dataset) and all cores (needs --pilot)
+#   --stamp NAME           name of the results directory below <workdir>/results (default: <host>-<date>-<time>); an existing
+#                          directory is continued: finished runs are skipped, the others are run again
 #   --allow-incomplete     write a draft report although required result files are missing
 #   --module-repeats K     repeats of the optional-module runs       (default: 3; 2 in the quick/smoke tiers)
 #   --scrublet-max-cells N skip Scrublet in module runs above N cells (default: 150000; 0 = never skip)
@@ -105,6 +109,7 @@ OOC_THREADS=""
 MODULE_REPEATS=""
 SCRUBLET_MAX=150000
 PILOT=0; PILOT_DS=""; CONTROLS="__default__"; LEAN=0; ALLOW_INCOMPLETE=0
+GRID_MODE="full"; STAMP_ARG=""
 NO_PIN=0; SKIP_TESTS=0; SKIP_MODULES=0; SKIP_SCAN=0; SKIP_BUILD=0; INSTALL_UV=0; INSTALL_RUST=0
 LIST=0; DRY=0
 
@@ -127,6 +132,8 @@ while [[ $# -gt 0 ]]; do
     --pilot-datasets) PILOT_DS="$2"; shift 2 ;;
     --controls) CONTROLS="$2"; shift 2 ;;
     --lean-scanpy) LEAN=1; shift ;;
+    --grid-mode) GRID_MODE="$2"; shift 2 ;;
+    --stamp) STAMP_ARG="$2"; shift 2 ;;
     --allow-incomplete) ALLOW_INCOMPLETE=1; shift ;;
     --ooc-threads) OOC_THREADS="$2"; shift 2 ;;
     --module-repeats) MODULE_REPEATS="$2"; shift 2 ;;
@@ -140,10 +147,15 @@ while [[ $# -gt 0 ]]; do
     --install-rust) INSTALL_RUST=1; shift ;;
     --list-datasets) LIST=1; shift ;;
     --dry-run) DRY=1; shift ;;
-    -h|--help) sed -n '2,87p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,91p' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (see --help)"; exit 2 ;;
   esac
 done
+
+case "$GRID_MODE" in full|best) ;; *) echo "--grid-mode must be full or best (got: $GRID_MODE)"; exit 2 ;; esac
+if [[ "$GRID_MODE" == "best" && $PILOT -eq 0 ]]; then
+  echo "--grid-mode best needs --pilot: the pilot chooses the grid points"; exit 2
+fi
 
 # Keep every cache and install under the work directory (the home disk may be small).
 if ! mkdir -p "$WORKDIR" 2>/dev/null || [[ ! -w "$WORKDIR" ]]; then
@@ -214,7 +226,7 @@ if [[ -z "$OOC_THREADS" ]]; then
 fi
 echo "  scanpy is skipped above $SCANPY_MAX cells (--scanpy-max-cells 0 disables the cap)"
 
-STAMP="$(hostname -s 2>/dev/null || hostname)-$(date +%Y%m%d-%H%M)"
+STAMP="${STAMP_ARG:-$(hostname -s 2>/dev/null || hostname)-$(date +%Y%m%d-%H%M)}"
 OUT="$WORKDIR/results/$STAMP"
 mkdir -p "$OUT"/{env,logs,modules}
 exec > >(tee -a "$OUT/logs/driver.log") 2>&1
@@ -398,6 +410,7 @@ fi
 bold "6b. Timed runs"
 "$PY" bench/paper/run_all.py --data-dir "$DATA" --out "$OUT" --datasets $DATASETS --repeats "$REPEATS" \
   --profile "$PROFILE" --main-threads $MAIN_THREADS --ooc-threads $OOC_THREADS --module-repeats "$MODULE_REPEATS" \
+  --grid-mode "$GRID_MODE" \
   --scrublet-max-cells "$SCRUBLET_MAX" ${TOOL_ARGS[@]+"${TOOL_ARGS[@]}"} ${CTL_ARGS[@]+"${CTL_ARGS[@]}"} ${TUNE_ARGS[@]+"${TUNE_ARGS[@]}"} \
   --scanpy-max-cells "$SCANPY_MAX" --timeout "$TIMEOUT" ${SCAN_ARGS[@]+"${SCAN_ARGS[@]}"} ${PIN_ARGS[@]+"${PIN_ARGS[@]}"} \
   $([[ $DRY -eq 1 ]] && echo --dry-run)
@@ -465,7 +478,7 @@ import json, sys
 json.dump({"stamp": "$STAMP", "host": "$(hostname -s 2>/dev/null || hostname)", "commit": "$COMMIT", "ref": "$REF",
            "repo": "$REPO", "tier": "$TIER", "datasets": "$DATASETS".split(), "repeats": $REPEATS,
            "main_threads": "$MAIN_THREADS".split(), "ooc_threads": "$OOC_THREADS".split(),
-           "thread_scan": "$THREADS".split(), "thread_dataset": "$THREAD_DS", "profile": "$PROFILE",
+           "thread_scan": "$THREADS".split(), "thread_dataset": "$THREAD_DS", "profile": "$PROFILE", "grid_mode": "$GRID_MODE",
            "versions": json.load(open("$E/python_env.json")).get("versions"),
            "R_versions": json.load(open("$E/R_versions.json"))}, open(sys.argv[1], "w"), indent=1)
 PYEOF
