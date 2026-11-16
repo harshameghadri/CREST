@@ -156,7 +156,7 @@ genes the reported mean lies below the fitted range, in locfit's quadratic extra
   `lowess` and `loess`. No gene fails the beta fit in R in these data. The rows that R refits
   after IRLS diverges are pinned in `tests/test_deseq2_replace_hat.py` (scripts `make_replace_inputs.py` and
   `make_replace_fixtures.R`): 16 samples in groups of 4 and 12, with 450 genes that have zero counts in the group of 4 and
-  heavy-tailed counts in the other, 313 of them refit before any replacement. It pins the replaced genes, the base means after replacement, the dispersions and the first-pass Cook's distance (the run without replacement). `maxCooks` after replacement is not pinned: it is the distance of the replaced counts, around 4e-6 on the refit rows, and differs from R's in relative terms (up to 29.7 on the fixture, 0.84 over the 24,245 genes of "IgA plasma cell"; median 2.7e-8 there) because it follows the point at which the refit lands on a flat likelihood.
+  heavy-tailed counts in the other, 313 of them refit before any replacement. It pins the replaced genes, the base means after replacement, the dispersions and the first-pass Cook's distance (the run without replacement). `maxCooks` after replacement is not pinned: on the refit rows its values are around 4e-6, and they differ from R's in relative terms (up to 29.7 on the fixture, 0.84 over the 24,245 genes of "IgA plasma cell"; median 2.7e-8 there); the cause of this difference has not been traced.
 
 ## Speed
 

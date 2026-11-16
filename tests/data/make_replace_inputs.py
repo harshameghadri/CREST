@@ -9,7 +9,7 @@ It writes
 Two groups: ``a`` has 4 samples (below minReplicatesForReplace = 7: never replaced), ``b`` has 12 (replaceable).
 The genes are of two kinds: ordinary negative-binomial genes that carry the dispersion trend, and genes with zero counts in
 all of group ``a`` and heavy-tailed counts in group ``b``. For the second kind the coefficient of the group is not finite, the
-iteratively reweighted least squares fit diverges, and both tools refit the row (``betaConv`` is FALSE in R); the hat
+iteratively reweighted least squares fit diverges, and both tools refit the row; the hat
 diagonals behind Cook's distance of these rows then decide which counts are replaced. The reference output is produced by
 make_replace_fixtures.R; nothing written here is a result.
 """
