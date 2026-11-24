@@ -1,0 +1,1 @@
+- Benchmark: with `--memory-cap-gb N` (driver default: three quarters of the RAM) every run starts in its own memory scope, so a run that the kernel kills for lack of memory is recorded with status `oom`, the cap and its peak memory and the pass goes on instead of ending; a resumed pass keeps an `oom` result obtained at the same cap.

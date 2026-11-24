@@ -66,6 +66,8 @@
 #                          the tuning pilot for each (tool, dataset) and all cores (needs --pilot)
 #   --stamp NAME           name of the results directory below <workdir>/results (default: <host>-<date>-<time>); an existing
 #                          directory is continued: finished runs are skipped, the others are run again
+#   --memory-cap-gb N      every run starts in its own memory scope of N GB (systemd-run --user --scope); a run that is killed for
+#                          lack of memory is recorded as status 'oom' and the pass goes on (default auto: 3/4 of the RAM; 0 = no cap)
 #   --allow-incomplete     write a draft report although required result files are missing
 #   --module-repeats K     repeats of the optional-module runs       (default: 3; 2 in the quick/smoke tiers)
 #   --scrublet-max-cells N skip Scrublet in module runs above N cells (default: 150000; 0 = never skip)
@@ -109,7 +111,7 @@ OOC_THREADS=""
 MODULE_REPEATS=""
 SCRUBLET_MAX=150000
 PILOT=0; PILOT_DS=""; CONTROLS="__default__"; LEAN=0; ALLOW_INCOMPLETE=0
-GRID_MODE="full"; STAMP_ARG=""
+GRID_MODE="full"; STAMP_ARG=""; MEM_CAP="auto"
 NO_PIN=0; SKIP_TESTS=0; SKIP_MODULES=0; SKIP_SCAN=0; SKIP_BUILD=0; INSTALL_UV=0; INSTALL_RUST=0
 LIST=0; DRY=0
 
@@ -134,6 +136,7 @@ while [[ $# -gt 0 ]]; do
     --lean-scanpy) LEAN=1; shift ;;
     --grid-mode) GRID_MODE="$2"; shift 2 ;;
     --stamp) STAMP_ARG="$2"; shift 2 ;;
+    --memory-cap-gb) MEM_CAP="$2"; shift 2 ;;
     --allow-incomplete) ALLOW_INCOMPLETE=1; shift ;;
     --ooc-threads) OOC_THREADS="$2"; shift 2 ;;
     --module-repeats) MODULE_REPEATS="$2"; shift 2 ;;
@@ -147,7 +150,7 @@ while [[ $# -gt 0 ]]; do
     --install-rust) INSTALL_RUST=1; shift ;;
     --list-datasets) LIST=1; shift ;;
     --dry-run) DRY=1; shift ;;
-    -h|--help) sed -n '2,91p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,93p' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (see --help)"; exit 2 ;;
   esac
 done
@@ -207,6 +210,8 @@ NEED_GB=$([[ "$TIER" == "full" ]] && echo 60 || ([[ "$TIER" == "quick" || "$TIER
 echo "  free disk in $WORKDIR: ${FREE_GB} GB (tier '$TIER' needs ~${NEED_GB} GB)"
 [[ $FREE_GB -ge $NEED_GB ]] || die "not enough disk space"
 if [[ -z "$SCANPY_MAX" ]]; then SCANPY_MAX=$(( RAM_GB * 12500 )); fi
+if [[ "$MEM_CAP" == "auto" ]]; then MEM_CAP=$(( RAM_GB * 3 / 4 )); fi
+[[ "$MEM_CAP" =~ ^[0-9]+$ ]] || die "--memory-cap-gb must be a whole number of GB, auto or 0 (got: $MEM_CAP)"
 SMALL=0; [[ "$TIER" == "quick" || "$TIER" == "smoke" ]] && SMALL=1
 if [[ -z "$REPEATS" ]]; then REPEATS=$([[ $SMALL -eq 1 ]] && echo 2 || echo 5); fi
 if [[ -z "$MODULE_REPEATS" ]]; then MODULE_REPEATS=$([[ $SMALL -eq 1 ]] && echo 2 || echo 3); fi
@@ -225,6 +230,7 @@ if [[ -z "$OOC_THREADS" ]]; then
   if [[ "$TIER" == "smoke" ]]; then OOC_THREADS="$(clip 4)"; else OOC_THREADS="$(clip 8 "$NCPU")"; fi
 fi
 echo "  scanpy is skipped above $SCANPY_MAX cells (--scanpy-max-cells 0 disables the cap)"
+echo "  per-run memory cap: $MEM_CAP GB (0 = none)"
 
 STAMP="${STAMP_ARG:-$(hostname -s 2>/dev/null || hostname)-$(date +%Y%m%d-%H%M)}"
 OUT="$WORKDIR/results/$STAMP"
@@ -403,14 +409,14 @@ if [[ $PILOT -eq 1 ]]; then
   [[ -n "$PILOT_DS" ]] || PILOT_DS="$THREAD_DS"
   bold "6a. Tuning pilot (untimed; results in $OUT/pilot, choice in $OUT/tuning.json)"
   "$PY" bench/paper/run_all.py --data-dir "$DATA" --out "$OUT" --datasets $DATASETS --mode pilot --pilot-datasets $PILOT_DS \
-    --main-threads $MAIN_THREADS --timeout "$TIMEOUT" ${PIN_ARGS[@]+"${PIN_ARGS[@]}"} \
+    --main-threads $MAIN_THREADS --timeout "$TIMEOUT" --memory-cap-gb "$MEM_CAP" ${PIN_ARGS[@]+"${PIN_ARGS[@]}"} \
     $([[ $DRY -eq 1 ]] && echo --dry-run)
   [[ $DRY -eq 1 ]] || TUNE_ARGS=(--tuning "$OUT/tuning.json")
 fi
 bold "6b. Timed runs"
 "$PY" bench/paper/run_all.py --data-dir "$DATA" --out "$OUT" --datasets $DATASETS --repeats "$REPEATS" \
   --profile "$PROFILE" --main-threads $MAIN_THREADS --ooc-threads $OOC_THREADS --module-repeats "$MODULE_REPEATS" \
-  --grid-mode "$GRID_MODE" \
+  --grid-mode "$GRID_MODE" --memory-cap-gb "$MEM_CAP" \
   --scrublet-max-cells "$SCRUBLET_MAX" ${TOOL_ARGS[@]+"${TOOL_ARGS[@]}"} ${CTL_ARGS[@]+"${CTL_ARGS[@]}"} ${TUNE_ARGS[@]+"${TUNE_ARGS[@]}"} \
   --scanpy-max-cells "$SCANPY_MAX" --timeout "$TIMEOUT" ${SCAN_ARGS[@]+"${SCAN_ARGS[@]}"} ${PIN_ARGS[@]+"${PIN_ARGS[@]}"} \
   $([[ $DRY -eq 1 ]] && echo --dry-run)
@@ -478,7 +484,7 @@ import json, sys
 json.dump({"stamp": "$STAMP", "host": "$(hostname -s 2>/dev/null || hostname)", "commit": "$COMMIT", "ref": "$REF",
            "repo": "$REPO", "tier": "$TIER", "datasets": "$DATASETS".split(), "repeats": $REPEATS,
            "main_threads": "$MAIN_THREADS".split(), "ooc_threads": "$OOC_THREADS".split(),
-           "thread_scan": "$THREADS".split(), "thread_dataset": "$THREAD_DS", "profile": "$PROFILE", "grid_mode": "$GRID_MODE",
+           "thread_scan": "$THREADS".split(), "thread_dataset": "$THREAD_DS", "profile": "$PROFILE", "grid_mode": "$GRID_MODE", "memory_cap_gb": $MEM_CAP,
            "versions": json.load(open("$E/python_env.json")).get("versions"),
            "R_versions": json.load(open("$E/R_versions.json"))}, open(sys.argv[1], "w"), indent=1)
 PYEOF
