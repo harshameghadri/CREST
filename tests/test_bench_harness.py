@@ -2242,3 +2242,117 @@ def test_best_grid_mode_runs_one_the_pilot_best_and_all_cpus(run_all, monkeypatc
     assert sorted({j["threads"] for j in jobs if j["tool"] == "scanpy"}) == [1, 8, 64]
     a.grid_mode = "full"
     assert sorted({j["threads"] for j in run_all.plan(a) if j["tool"] == "scanpy"}) == [1, 2, 4, 8, 16, 32, 64]
+
+
+# --------------------------------------------------------------------------- per-run memory scope
+@pytest.mark.baseline_fails(ref="rc0", raises=AttributeError, match=r"scope_command")
+def test_scope_command_limits_memory_without_swap_and_keeps_the_cpu_weight(run_all):
+    cmd = run_all.scope_command(["python", "run_one.py", "--tool", "crest"], 92, "unit1", cpu_weight=20)
+    assert cmd[:4] == ["systemd-run", "--user", "--scope", "--quiet"]
+    assert "--unit=unit1" in cmd and "MemoryMax=92G" in cmd and "MemorySwapMax=0" in cmd and "CPUWeight=20" in cmd
+    assert cmd[cmd.index("--") + 1:] == ["python", "run_one.py", "--tool", "crest"]
+    assert not any(c.startswith("CPUWeight") for c in run_all.scope_command(["x"], 8, "u"))
+
+
+class _FakePopen:
+    """Stands in for the run process: records the command and returns a chosen status."""
+    calls: list = []
+    returncode = 0
+
+    def __init__(self, cmd, **kw):
+        type(self).calls.append(cmd)
+        self.pid = 4242
+
+    def wait(self, timeout=None):
+        return type(self).returncode
+
+
+def _oom_job():
+    import protocol
+    return {"dataset": "pbmc3k", "tool": "scanpy", "threads": 1, "profile": "core", "save": False, "pin": True,
+            "variant": "default", "control": None, "repeat": 0, "settings": protocol.variant_settings("scanpy", "default", 1)}
+
+
+def _oom_args(tmp_path, cap):
+    (tmp_path / "raw").mkdir(exist_ok=True)
+    (tmp_path / "logs").mkdir(exist_ok=True)
+    return Namespace(out=str(tmp_path), data_dir=str(tmp_path), timeout=60, sample_interval=0.05, scrublet_max_cells=0,
+                     memory_cap_gb=cap, cpu_weight=20, no_pin=False)
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AttributeError, match=r"scope_result")
+def test_an_out_of_memory_kill_is_recorded_as_status_oom_and_ends_only_that_run(run_all, monkeypatch, tmp_path):
+    _FakePopen.calls, _FakePopen.returncode = [], 137
+    monkeypatch.setattr(run_all.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(run_all, "scope_result", lambda unit: ("oom-kill", 91.7))
+    a, job = _oom_args(tmp_path, 92), _oom_job()
+    status = run_all.run(job, a, tmp_path / "logs", tmp_path / "raw")
+    assert status.startswith("oom") and "92 GB" in status
+    cmd = _FakePopen.calls[0]
+    assert cmd[0] == "systemd-run" and "MemoryMax=92G" in cmd and "--tool" in cmd[cmd.index("--"):]
+    rec = json.loads((tmp_path / "raw" / "scanpy__pbmc3k__core__t1__r0.json").read_text())
+    assert rec["status"] == "oom" and rec["memory_cap_gb"] == 92 and rec["memory_peak_gb"] == 91.7
+    att = [json.loads(x) for x in (tmp_path / "attempts.jsonl").read_text().splitlines()]
+    assert att[-1]["status"] == "oom" and att[-1]["memory_cap_gb"] == 92
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AttributeError, match=r"scope_result")
+def test_a_resumed_pass_keeps_an_oom_result_at_the_same_cap_and_retries_it_at_another(run_all, monkeypatch, tmp_path):
+    _FakePopen.calls, _FakePopen.returncode = [], 137
+    monkeypatch.setattr(run_all.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(run_all, "scope_result", lambda unit: ("oom-kill", 91.7))
+    job = _oom_job()
+    run_all.run(job, _oom_args(tmp_path, 92), tmp_path / "logs", tmp_path / "raw")
+    assert run_all.run(job, _oom_args(tmp_path, 92), tmp_path / "logs", tmp_path / "raw") == "skip"
+    assert len(_FakePopen.calls) == 1
+    run_all.run(job, _oom_args(tmp_path, 64), tmp_path / "logs", tmp_path / "raw")
+    assert len(_FakePopen.calls) == 2
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AttributeError, match=r"scope_result")
+def test_a_failure_that_is_not_an_oom_kill_stays_failed_and_the_timeout_is_never_oom(run_all, monkeypatch, tmp_path):
+    _FakePopen.calls, _FakePopen.returncode = [], 1
+    monkeypatch.setattr(run_all.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(run_all, "scope_result", lambda unit: ("exit-code", 3.0))
+    status = run_all.run(_oom_job(), _oom_args(tmp_path, 92), tmp_path / "logs", tmp_path / "raw")
+    assert status.startswith("failed")
+    rec = json.loads((tmp_path / "raw" / "scanpy__pbmc3k__core__t1__r0.json").read_text())
+    assert rec["status"] == "failed"
+    # a SIGKILL with no answer from systemd is read as an out-of-memory kill, a timeout never is
+    _FakePopen.returncode = 137
+    monkeypatch.setattr(run_all, "scope_result", lambda unit: (None, None))
+    assert run_all.run(_oom_job(), _oom_args(tmp_path, 92), tmp_path / "logs", tmp_path / "raw").startswith("oom")
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AttributeError, match=r"memory_scope_available")
+def test_without_a_memory_cap_the_run_is_not_wrapped_and_the_scope_check_needs_systemd(run_all, monkeypatch, tmp_path):
+    _FakePopen.calls, _FakePopen.returncode = [], 0
+    monkeypatch.setattr(run_all.subprocess, "Popen", _FakePopen)
+    run_all.run(_oom_job(), _oom_args(tmp_path, 0), tmp_path / "logs", tmp_path / "raw")
+    assert _FakePopen.calls[0][0] == sys.executable
+    monkeypatch.setattr(run_all.shutil, "which", lambda name: None)
+    assert run_all.memory_scope_available() is False
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"memory-cap-gb")
+def test_driver_memory_cap_defaults_to_three_quarters_of_the_ram_and_reaches_both_planner_calls():
+    assert SCRIPT.count('--memory-cap-gb "$MEM_CAP"') == 2, "the pilot and the timed runs must both get --memory-cap-gb"
+    line = next(ln for ln in SCRIPT.splitlines() if ln.startswith('if [[ "$MEM_CAP" == "auto" ]]'))
+    for ram, arg, want in ((123, "auto", "92"), (64, "auto", "48"), (123, "70", "70"), (123, "0", "0")):
+        out = _bash(f'RAM_GB={ram}; MEM_CAP={arg}; {line}\necho "$MEM_CAP"')
+        assert out.stdout.strip() == want, f"RAM {ram}, cap {arg}: {out.stdout.strip()!r} != {want!r}"
+    assert '"memory_cap_gb": $MEM_CAP' in SCRIPT, "memory-cap-gb is not recorded in meta.json"
+    assert "--memory-cap-gb" in _driver("--help").stdout
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"oom")
+def test_preregistration_states_the_per_run_memory_scope_and_the_oom_status():
+    t = PREREG.read_text(encoding="utf-8")
+    assert "`oom`" in t and "--memory-cap-gb" in t and "MemoryMax" in t, "the per-run memory scope (oom) is not in the template"
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"cp -f")
+def test_driver_can_continue_a_results_directory_whose_environment_files_are_read_only():
+    """Files copied from /proc are read-only; a second pass in the same directory (--stamp) must overwrite them."""
+    lines = [ln.strip() for ln in SCRIPT.splitlines() if "cp " in ln and "/proc/" in ln]
+    assert lines and all("cp -f /proc/" in seg for ln in lines for seg in ln.split(";") if "/proc/" in seg), lines

@@ -44,6 +44,10 @@ Design choices for publishable numbers:
   report. The first attempt's files are kept under ``raw/_quiet/``;
 * a run killed by the OS (out of memory) or by the timeout is recorded as a
   failed run with its reason, never silently dropped;
+* memory scope: with ``--memory-cap-gb`` every run starts in its own systemd scope (``MemoryMax`` = the cap, swap off, the
+  CPU weight of the scope the pass runs in), so that one run's out-of-memory kill ends that run only. Such a run is recorded with
+  status ``oom``, the cap and the scope's peak memory, and the pass goes on; a resumed pass keeps an ``oom`` result
+  that was obtained at the same cap and runs the other failed runs again;
 * the plan is resumable: runs whose JSON already exists with status ok are skipped;
 * every attempt (ok, failed, timed out, skipped on resume) is appended to
   ``attempts.jsonl``, which is never truncated: a resume that succeeds on retry does not
@@ -59,6 +63,7 @@ import argparse
 import json
 import os
 import random
+import shutil
 import signal
 import subprocess
 import sys
@@ -211,6 +216,53 @@ def load_attempts(out: Path) -> list[dict]:
     return [json.loads(x) for x in f.read_text().splitlines() if x.strip()] if f.exists() else []
 
 
+
+# --------------------------------------------------------------------------- per-run memory scope
+def own_cpu_weight() -> int | None:
+    """``cpu.weight`` of the cgroup this process runs in when it is not the default 100, so that a run's scope keeps
+    the priority of the scope the pass was started in (a new scope would otherwise start at the default)."""
+    try:
+        rel = Path("/proc/self/cgroup").read_text().strip().splitlines()[0].split(":", 2)[2]
+        weight = int((Path("/sys/fs/cgroup") / rel.lstrip("/") / "cpu.weight").read_text())
+    except (OSError, ValueError, IndexError):
+        return None
+    return weight if weight != 100 else None
+
+
+def memory_scope_available() -> bool:
+    """True when ``systemd-run --user --scope`` with a memory limit works on this machine."""
+    if not shutil.which("systemd-run"):
+        return False
+    try:
+        r = subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "-p", "MemoryMax=1G", "true"],
+                           capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0
+
+
+def scope_command(cmd: list[str], cap_gb: float, unit: str, cpu_weight: int | None = None) -> list[str]:
+    """``cmd`` started in its own scope: memory limit ``cap_gb`` GB, no swap, optionally a CPU weight."""
+    props = ["-p", f"MemoryMax={cap_gb:g}G", "-p", "MemorySwapMax=0"]
+    if cpu_weight:
+        props += ["-p", f"CPUWeight={int(cpu_weight)}"]
+    return ["systemd-run", "--user", "--scope", "--quiet", f"--unit={unit}", *props, "--", *cmd]
+
+
+def scope_result(unit: str) -> tuple[str | None, float | None]:
+    """(result, peak memory in GB) of a finished scope; ``result`` is ``oom-kill`` after an out-of-memory kill.
+    The failed scope is cleared afterwards. (None, None) when systemd cannot be asked."""
+    try:
+        r = subprocess.run(["systemctl", "--user", "show", f"{unit}.scope", "-p", "Result", "-p", "MemoryPeak"],
+                           capture_output=True, text=True, timeout=30)
+        kv = dict(line.split("=", 1) for line in r.stdout.splitlines() if "=" in line)
+        subprocess.run(["systemctl", "--user", "reset-failed", f"{unit}.scope"], capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None, None
+    peak = kv.get("MemoryPeak", "")
+    return kv.get("Result") or None, (int(peak) / 2**30 if peak.isdigit() else None)
+
+
 def run(job: dict, a, log_dir: Path, raw: Path | None = None, force: bool = False) -> str:
     raw = raw or Path(a.out) / "raw"
     tag = protocol.job_tag(job)
@@ -218,9 +270,16 @@ def run(job: dict, a, log_dir: Path, raw: Path | None = None, force: bool = Fals
     rec = {"tag": tag, **{k: job[k] for k in ("tool", "dataset", "profile", "threads", "repeat")},
            "variant": job.get("variant"), "control": job.get("control"),
            "started": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
-    if not force and js.exists() and json.loads(js.read_text()).get("status") == "ok":
-        _log_attempt(a, {**rec, "status": "skipped", "reason": "already ok (resume)", "seconds": 0.0})
-        return "skip"
+    cap = getattr(a, "memory_cap_gb", None) or None
+    if not force and js.exists():
+        prev = json.loads(js.read_text())
+        if prev.get("status") == "ok":
+            _log_attempt(a, {**rec, "status": "skipped", "reason": "already ok (resume)", "seconds": 0.0})
+            return "skip"
+        if prev.get("status") == "oom" and cap and prev.get("memory_cap_gb") == cap:
+            _log_attempt(a, {**rec, "status": "skipped", "reason": f"out of memory at the same cap of {cap:g} GB (resume)",
+                             "seconds": 0.0})
+            return "skip"
     env = dict(os.environ)
     for v in (*THREAD_VARS, "NUMBA_THREADING_LAYER"):
         env.pop(v, None)
@@ -239,6 +298,10 @@ def run(job: dict, a, log_dir: Path, raw: Path | None = None, force: bool = Fals
         cmd.append("--save-outputs")
     if job["profile"] == "full" and a.scrublet_max_cells:
         cmd += ["--scrublet-max-cells", str(a.scrublet_max_cells)]
+    unit = None
+    if cap:
+        unit = f"crest-bench-{os.getpid()}-{int(time.time() * 1000) % 10**9}"
+        cmd = scope_command(cmd, cap, unit, getattr(a, "cpu_weight", None))
     t0 = time.time()
     env["CREST_BENCH_SPAWN_TIME"] = repr(t0)   # run_one measures its start-up from here
     with open(log_dir / f"{tag}.log", "w") as lf:
@@ -262,7 +325,21 @@ def run(job: dict, a, log_dir: Path, raw: Path | None = None, force: bool = Fals
                          "quiet_violation": bool(quiet.get("violated"))})
         return "ok"
     reason = "timeout" if rc == "timeout" else ("killed (likely out of memory)" if rc in (-9, 137) else f"exit {rc}")
+    oom, peak = False, None
+    if unit and rc != "timeout":
+        result, peak = scope_result(unit)
+        oom = result == "oom-kill" or (result is None and rc in (-9, 137))
     own = json.loads(js.read_text()) if js.exists() else None
+    if oom:
+        reason = f"out of memory at the per-run cap of {cap:g} GB" + (f" (scope peak {peak:.1f} GB)" if peak else "")
+        js.write_text(json.dumps({**(own or {}), "tool": job["tool"], "dataset": job["dataset"], "threads": job["threads"],
+                                  "repeat": job["repeat"], "profile": job["profile"], "status": "oom",
+                                  "control": job.get("control"), "variant": job.get("variant"), "error": reason,
+                                  "memory_cap_gb": cap, "memory_peak_gb": peak, "total_seconds": el,
+                                  "steps": (own or {}).get("steps", {})}, indent=1, default=float))
+        _log_attempt(a, {**rec, "status": "oom", "returncode": rc, "reason": reason, "memory_cap_gb": cap,
+                         "seconds": el, "log": str(log_dir / f"{tag}.log")})
+        return f"oom: {reason}"
     if own is not None and own.get("status") == "error" and own.get("error"):
         reason = f"{reason}: {own['error']}"  # run_one caught the exception and recorded it
     elif own is None or own.get("status") == "ok":  # no JSON from this attempt (killed), or a stale ok one
@@ -393,6 +470,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--thread-dataset", default=None)
     ap.add_argument("--scanpy-max-cells", type=int, default=0)
     ap.add_argument("--timeout", type=int, default=7200)
+    ap.add_argument("--memory-cap-gb", type=float, default=0,
+                    help="start every run in its own memory scope of this many GB (systemd-run --user --scope; 0 = no cap): "
+                         "an out-of-memory kill is then recorded as status 'oom' for that run and the pass goes on")
     ap.add_argument("--sample-interval", type=float, default=0.05, help="memory and load sampling interval (s)")
     ap.add_argument("--no-quiet-rerun", action="store_true", help="do not re-run runs that violate the quiet-host rule")
     ap.add_argument("--no-pin", action="store_true", help="no pinning for any run")
@@ -405,6 +485,10 @@ def main():
     a = build_parser().parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
+    a.cpu_weight = own_cpu_weight()
+    if a.memory_cap_gb and not a.dry_run and not memory_scope_available():
+        print(f"WARNING: no user systemd scope with a memory limit here: --memory-cap-gb {a.memory_cap_gb:g} is NOT applied")
+        a.memory_cap_gb = 0
     if a.mode == "pilot":
         if not a.pilot_datasets:
             sys.exit("--mode pilot needs --pilot-datasets")

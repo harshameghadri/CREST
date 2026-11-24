@@ -170,7 +170,11 @@ wherever its 9.7M cells are mentioned.
 * A CREST or R failure on a dataset is a reported result, unless the problem is critical by the release rules (silently
   wrong results on plausible input, a crash on plausible input, or a false published claim); then the code is fixed before
   the run, not during it.
-* Out-of-memory kills and timeouts (`--timeout`, FILL) are recorded as failed runs with their reason.
+* Out-of-memory kills and timeouts (`--timeout`, FILL) are recorded as failed runs with their reason. Every run starts in its own
+  memory scope (`systemd-run --user --scope`, `MemoryMax` = the cap, swap off), so that one run's kill ends that run only: it is
+  recorded with status `oom`, the cap and the scope's peak memory, and the pass goes on. Per-run memory cap: FILL (`--memory-cap-gb`;
+  default 3/4 of the RAM, 92 GB on the 123 GB workstation of the shake-down). A resumed pass keeps an `oom` result obtained at the
+  same cap and runs the other failed runs again.
 * **Required result files** per planned (tool, dataset, threads, repeat): its JSON always; for a successful run also its
   timeline CSV; for the run that saves outputs also the per-cell `.outputs.npz`. `summarize.py` exits non-zero when
   one is missing; the report of a draft made with `--allow-incomplete` carries an INCOMPLETE banner.
