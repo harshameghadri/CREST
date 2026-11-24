@@ -1,1 +1,2 @@
 - Benchmark: with `--memory-cap-gb N` (driver default: three quarters of the RAM) every run starts in its own memory scope, so a run that the kernel kills for lack of memory is recorded with status `oom`, the cap and its peak memory and the pass goes on instead of ending; a resumed pass keeps an `oom` result obtained at the same cap.
+- Benchmark driver: continuing a results directory with `--stamp` no longer stops when the copied machine files (`cpuinfo.txt`, `meminfo.txt`) are read-only.

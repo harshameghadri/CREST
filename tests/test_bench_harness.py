@@ -2349,3 +2349,10 @@ def test_driver_memory_cap_defaults_to_three_quarters_of_the_ram_and_reaches_bot
 def test_preregistration_states_the_per_run_memory_scope_and_the_oom_status():
     t = PREREG.read_text(encoding="utf-8")
     assert "`oom`" in t and "--memory-cap-gb" in t and "MemoryMax" in t, "the per-run memory scope (oom) is not in the template"
+
+
+@pytest.mark.baseline_fails(ref="rc0", raises=AssertionError, match=r"cp -f")
+def test_driver_can_continue_a_results_directory_whose_environment_files_are_read_only():
+    """Files copied from /proc are read-only; a second pass in the same directory (--stamp) must overwrite them."""
+    lines = [ln.strip() for ln in SCRIPT.splitlines() if "cp " in ln and "/proc/" in ln]
+    assert lines and all("cp -f /proc/" in seg for ln in lines for seg in ln.split(";") if "/proc/" in seg), lines

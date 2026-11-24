@@ -289,7 +289,7 @@ uname -a > "$E/uname.txt"
 { [[ -f /etc/os-release ]] && cat /etc/os-release; sw_vers 2>/dev/null || true; } > "$E/os.txt"
 if [[ "$OS" == "Linux" ]]; then
   lscpu > "$E/lscpu.txt" 2>/dev/null || true
-  cp /proc/cpuinfo "$E/cpuinfo.txt"; cp /proc/meminfo "$E/meminfo.txt"
+  cp -f /proc/cpuinfo "$E/cpuinfo.txt"; cp -f /proc/meminfo "$E/meminfo.txt"
   cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor > "$E/governor.txt" 2>/dev/null || echo "n/a" > "$E/governor.txt"
   { cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null && echo "(intel no_turbo)"; \
     cat /sys/devices/system/cpu/cpufreq/boost 2>/dev/null && echo "(boost)"; } > "$E/turbo.txt" || true
